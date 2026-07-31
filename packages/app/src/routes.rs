@@ -10,6 +10,7 @@ use hyperchad::{
 use serde::Deserialize;
 use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
+use words_with_spouses_game_domain::{Coordinate, GameCommand, Placement, TileId};
 
 use crate::{
     AccountWorkflowError, AuthenticatedDashboard, AuthorizedGamePage, PresentationError,
@@ -17,6 +18,61 @@ use crate::{
     load_authorized_game_page, login_and_create_session, logout_session, move_history_component,
     rack_component, register_and_create_session, status_component,
 };
+
+#[derive(Debug, Deserialize)]
+struct PendingMoveForm {
+    command: String,
+    #[serde(default)]
+    tile_ids: Vec<u16>,
+    #[serde(default)]
+    x: Vec<u8>,
+    #[serde(default)]
+    y: Vec<u8>,
+    #[serde(default)]
+    blank_letters: Vec<String>,
+}
+
+impl PendingMoveForm {
+    fn game_command(&self) -> Result<GameCommand, &'static str> {
+        match self.command.as_str() {
+            "PLAY" => {
+                if self.tile_ids.is_empty()
+                    || self.tile_ids.len() != self.x.len()
+                    || self.tile_ids.len() != self.y.len()
+                    || (!self.blank_letters.is_empty()
+                        && self.blank_letters.len() != self.tile_ids.len())
+                {
+                    return Err("Every selected tile needs one board coordinate.");
+                }
+                let placements = self
+                    .tile_ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, tile_id)| {
+                        let blank_letter = self.blank_letters.get(index).and_then(|value| {
+                            value
+                                .trim()
+                                .chars()
+                                .next()
+                                .map(|letter| letter.to_ascii_uppercase())
+                        });
+                        Placement {
+                            tile_id: TileId::new(*tile_id),
+                            coordinate: Coordinate::new(self.x[index], self.y[index]),
+                            blank_letter,
+                        }
+                    })
+                    .collect();
+                Ok(GameCommand::Play { placements })
+            }
+            "EXCHANGE" if !self.tile_ids.is_empty() => Ok(GameCommand::Exchange {
+                tile_ids: self.tile_ids.iter().copied().map(TileId::new).collect(),
+            }),
+            "EXCHANGE" => Err("Select at least one tile to exchange."),
+            _ => Err("Unknown turn action."),
+        }
+    }
+}
 
 /// Account credential form accepted by renderer-neutral routes.
 #[derive(Debug, Deserialize)]
@@ -135,6 +191,63 @@ fn dashboard_refresh_page() -> Container {
     .into()
 }
 
+async fn game_turn_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    game_id: &str,
+    now: OffsetDateTime,
+) -> Container {
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return error_component("Your session expired. Sign in and review the game again.");
+    };
+    let Ok(game_id) = game_id.parse() else {
+        return error_component("The game route is invalid.");
+    };
+    let form: PendingMoveForm = match request.parse_form() {
+        Ok(form) => form,
+        Err(_) => return error_component("Select tiles and provide valid coordinates."),
+    };
+    let command = match form.game_command() {
+        Ok(command) => command,
+        Err(message) => return error_component(message),
+    };
+    let Ok(state) = crate::recover_game(database, game_id).await else {
+        return error_component("The game could not be loaded. Try again.");
+    };
+    let command_id = uuid::Uuid::new_v4().to_string();
+    let idempotency_key = uuid::Uuid::new_v4().to_string();
+    match crate::submit_game_command(
+        database,
+        game_id,
+        &user_id,
+        &command_id,
+        &idempotency_key,
+        state.revision,
+        &command,
+        now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX),
+    )
+    .await
+    {
+        Ok(_) => container! {
+            section id="turn-result" {
+                span { "Turn accepted. Live game subscribers will receive the new revision." }
+            }
+        }
+        .into(),
+        Err(crate::GameServiceError::Conflict { .. }) => error_component(
+            "This game changed in another tab. Review the latest board and resubmit.",
+        ),
+        Err(crate::GameServiceError::Unauthorized) => {
+            error_component("You are not authorized to act in this game.")
+        }
+        Err(crate::GameServiceError::UnsupportedCompatibility) => {
+            error_component("This game requires an unsupported rules or dictionary version.")
+        }
+        Err(crate::GameServiceError::Domain(error)) => error_component(&error.to_string()),
+        Err(_) => error_component("The turn could not be persisted. Try again."),
+    }
+}
+
 /// Builds the database-backed renderer-neutral application router.
 #[must_use]
 pub fn create_product_router(database: Arc<dyn Database>, csrf_token: String) -> Router {
@@ -191,8 +304,16 @@ pub fn create_product_router(database: Arc<dyn Database>, csrf_token: String) ->
         move |request: RouteRequest| {
             let database = database.clone();
             async move {
-                Ok(game_route(&*database, &request, OffsetDateTime::now_utc()).await)
-                    as Result<Container, Box<dyn std::error::Error>>
+                let game_path = request.path.strip_prefix("/games/").unwrap_or_default();
+                if let Some(game_id) = game_path.strip_suffix("/turn") {
+                    Ok(
+                        game_turn_route(&*database, &request, game_id, OffsetDateTime::now_utc())
+                            .await,
+                    ) as Result<Container, Box<dyn std::error::Error>>
+                } else {
+                    Ok(game_route(&*database, &request, OffsetDateTime::now_utc()).await)
+                        as Result<Container, Box<dyn std::error::Error>>
+                }
             }
         },
     );
@@ -368,6 +489,42 @@ fn score_totals_label(totals: Option<&UserScoreTotals>) -> String {
     )
 }
 
+/// Renders renderer-neutral pending placement/exchange form controls.
+#[must_use]
+pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
+    let action = format!("/games/{}/turn", game.game_id);
+    container! {
+        section id="turn-composer" gap=12 {
+            h2 { "Compose turn" }
+            span { "Select one or more rack tile IDs and provide matching board coordinates. Blank letters are optional and normalized server-side." }
+            form hx-post=(action.as_str()) hx-target="#turn-result" gap=8 {
+                select name="command" {
+                    option value="PLAY" { "Play tiles" }
+                    option value="EXCHANGE" { "Exchange tiles" }
+                }
+                @for (tile_id, letter, points) in &game.view.rack {
+                    @let label = format!("Tile {tile_id}: {letter} ({points})");
+                    div {
+                        input type=checkbox name="tile_ids" value=(tile_id);
+                        span { (label) }
+                    }
+                }
+                input type=text name="x" placeholder="x coordinates (repeat per tile)";
+                input type=text name="y" placeholder="y coordinates (repeat per tile)";
+                input type=text name="blank_letters" placeholder="blank letter (optional)";
+                button type=submit { "Submit turn" }
+            }
+            div gap=8 {
+                button fx-click="unplace-selected" { "Unplace selected" }
+                button fx-click="reorder-rack" { "Reorder rack" }
+                button fx-click="select-blank-letter" { "Choose blank letter" }
+            }
+            section id="turn-result" { span { "Pending placements are local until submitted." } }
+        }
+    }
+    .into()
+}
+
 /// Renders public board/status/history and only the authorized viewer's rack.
 #[must_use]
 pub fn game_page(game: &AuthorizedGamePage) -> Container {
@@ -380,6 +537,7 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
     let board = board_component(&game.view);
     let status = status_component(&game.view);
     let rack = rack_component(&game.view);
+    let composer = turn_composer(game);
     let history = move_history_component(&game.history);
     let game_channel = format!("game:{}", game.game_id);
     let pass_command_id = uuid::Uuid::new_v4().to_string();
@@ -405,6 +563,9 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
                 (board)
                 (status)
                 (rack)
+                @if !game.completed {
+                    (composer)
+                }
                 (history)
                 section id="final-score-adjustments" {
                     h2 { "Final score adjustments" }
@@ -499,6 +660,36 @@ mod tests {
     };
 
     #[test]
+    fn pending_move_forms_build_play_exchange_and_blank_commands() {
+        let play = PendingMoveForm {
+            command: "PLAY".to_string(),
+            tile_ids: vec![3, 4],
+            x: vec![7, 8],
+            y: vec![7, 7],
+            blank_letters: vec!["a".to_string(), String::new()],
+        }
+        .game_command()
+        .expect("play command builds");
+        assert!(matches!(
+            play,
+            GameCommand::Play { placements }
+                if placements[0].blank_letter == Some('A')
+                    && placements[1].blank_letter.is_none()
+        ));
+
+        let exchange = PendingMoveForm {
+            command: "EXCHANGE".to_string(),
+            tile_ids: vec![3, 4],
+            x: Vec::new(),
+            y: Vec::new(),
+            blank_letters: Vec::new(),
+        }
+        .game_command()
+        .expect("exchange command builds");
+        assert!(matches!(exchange, GameCommand::Exchange { tile_ids } if tile_ids.len() == 2));
+    }
+
+    #[test]
     fn database_backed_routes_render_dashboard_and_private_game() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -550,6 +741,9 @@ mod tests {
             assert!(page.contains("data-shared-state-channel"));
             assert!(page.contains("data-shared-state-command=\"PASS\""));
             assert!(page.contains("data-shared-state-expected-revision=\"1\""));
+            assert!(page.contains("turn-composer"));
+            assert!(page.contains("value=\"PLAY\""));
+            assert!(page.contains("value=\"EXCHANGE\""));
             assert!(!page.contains("bag"));
         });
     }

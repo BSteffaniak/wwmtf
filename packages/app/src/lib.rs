@@ -58,7 +58,7 @@ pub use projections::{
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,
     game_page, game_route, game_view_response, logged_out_response, login_page, logout_page,
-    register_page, signed_out_page,
+    register_page, signed_out_page, turn_composer,
 };
 pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
 pub use shared_state_security::{GameSharedStateDispatcher, game_channel, shared_state_dispatcher};
