@@ -140,6 +140,9 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec![
             text("game_id"),
             text("status"),
+            nullable_text("active_player_user_id"),
+            bigint("canonical_revision"),
+            nullable_bigint("last_score"),
             nullable_text("winner_user_id"),
             bigint("updated_at_ms"),
         ],
@@ -152,7 +155,7 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
             text("move_id"),
             text("game_id"),
             bigint("revision"),
-            text("player_user_id"),
+            nullable_text("player_user_id"),
             text("event_kind"),
             bigint("score_delta"),
             bigint("created_at_ms"),

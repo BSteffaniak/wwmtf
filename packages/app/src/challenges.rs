@@ -1,0 +1,521 @@
+//! Private direct challenges and exactly-once game creation.
+
+use switchy_database::{
+    Database,
+    query::{FilterableQuery as _, SortDirection},
+};
+use thiserror::Error;
+use time::OffsetDateTime;
+use uuid::Uuid;
+use words_with_spouses_game_domain::{
+    DictionaryRef, GameId, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
+    initialize_game,
+};
+
+/// Durable direct challenge status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeStatus {
+    Pending,
+    Accepted,
+    Declined,
+    Cancelled,
+}
+
+impl ChallengeStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Accepted => "ACCEPTED",
+            Self::Declined => "DECLINED",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+}
+
+/// Creates one pending challenge between distinct users.
+///
+/// # Errors
+///
+/// * Returns [`ChallengeError::Invalid`] for self-challenges.
+/// * Returns [`ChallengeError::Duplicate`] for an existing pending pair.
+/// * Returns [`ChallengeError::Database`] when storage fails.
+#[allow(clippy::similar_names)]
+pub async fn create_challenge(
+    db: &dyn Database,
+    challenger_user_id: &str,
+    challenged_user_id: &str,
+    now: OffsetDateTime,
+) -> Result<String, ChallengeError> {
+    if challenger_user_id == challenged_user_id {
+        return Err(ChallengeError::Invalid);
+    }
+    let existing = db
+        .select("challenges")
+        .where_eq("challenger_user_id", challenger_user_id)
+        .where_eq("challenged_user_id", challenged_user_id)
+        .where_eq("status", ChallengeStatus::Pending.as_str())
+        .execute(db)
+        .await?;
+    if !existing.is_empty() {
+        return Err(ChallengeError::Duplicate);
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = timestamp_ms(now)?;
+    db.insert("challenges")
+        .value("challenge_id", id.clone())
+        .value("challenger_user_id", challenger_user_id)
+        .value("challenged_user_id", challenged_user_id)
+        .value("status", ChallengeStatus::Pending.as_str())
+        .value("created_at_ms", now)
+        .value("updated_at_ms", now)
+        .execute(db)
+        .await?;
+    Ok(id)
+}
+
+/// Declines a pending challenge as its recipient.
+///
+/// # Errors
+///
+/// * Returns [`ChallengeError::Unauthorized`] unless one owned pending challenge changes.
+pub async fn decline_challenge(
+    db: &dyn Database,
+    challenge_id: &str,
+    challenged_user_id: &str,
+    now: OffsetDateTime,
+) -> Result<(), ChallengeError> {
+    update_status(
+        db,
+        challenge_id,
+        "challenged_user_id",
+        challenged_user_id,
+        ChallengeStatus::Declined,
+        now,
+    )
+    .await
+}
+
+/// Cancels a pending challenge as its creator.
+///
+/// # Errors
+///
+/// * Returns [`ChallengeError::Unauthorized`] unless one owned pending challenge changes.
+pub async fn cancel_challenge(
+    db: &dyn Database,
+    challenge_id: &str,
+    challenger_user_id: &str,
+    now: OffsetDateTime,
+) -> Result<(), ChallengeError> {
+    update_status(
+        db,
+        challenge_id,
+        "challenger_user_id",
+        challenger_user_id,
+        ChallengeStatus::Cancelled,
+        now,
+    )
+    .await
+}
+
+async fn update_status(
+    db: &dyn Database,
+    challenge_id: &str,
+    owner_column: &str,
+    owner_id: &str,
+    status: ChallengeStatus,
+    now: OffsetDateTime,
+) -> Result<(), ChallengeError> {
+    let updated = db
+        .update("challenges")
+        .value("status", status.as_str())
+        .value("updated_at_ms", timestamp_ms(now)?)
+        .where_eq("challenge_id", challenge_id)
+        .where_eq(owner_column, owner_id)
+        .where_eq("status", ChallengeStatus::Pending.as_str())
+        .execute(db)
+        .await?;
+    if updated.len() != 1 {
+        return Err(ChallengeError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Accepts a pending challenge and creates its game exactly once in one transaction.
+///
+/// Seat order follows challenger then challenged, with the challenger taking the first turn for
+/// the pinned profile version.
+///
+/// # Errors
+///
+/// * Returns [`ChallengeError::Unauthorized`] unless the caller owns one pending challenge.
+/// * Returns initialization, serialization, timestamp, or database failures.
+#[allow(clippy::similar_names)]
+pub async fn accept_challenge(
+    db: &dyn Database,
+    challenge_id: &str,
+    challenged_user_id: &str,
+    now: OffsetDateTime,
+    shuffle_seed: u64,
+) -> Result<GameId, ChallengeError> {
+    let tx = db.begin_transaction().await?;
+    let rows = tx
+        .select("challenges")
+        .where_eq("challenge_id", challenge_id)
+        .where_eq("challenged_user_id", challenged_user_id)
+        .where_eq("status", ChallengeStatus::Pending.as_str())
+        .execute(&*tx)
+        .await?;
+    let row = rows.first().ok_or(ChallengeError::Unauthorized)?;
+    let challenger_user_id = string_column(row, "challenger_user_id")?;
+    let accepted = tx
+        .update("challenges")
+        .value("status", ChallengeStatus::Accepted.as_str())
+        .value("updated_at_ms", timestamp_ms(now)?)
+        .where_eq("challenge_id", challenge_id)
+        .where_eq("status", ChallengeStatus::Pending.as_str())
+        .execute(&*tx)
+        .await?;
+    if accepted.len() != 1 {
+        tx.rollback().await?;
+        return Err(ChallengeError::Unauthorized);
+    }
+
+    let game_id = create_game_in_transaction(
+        &*tx,
+        &challenger_user_id,
+        challenged_user_id,
+        now,
+        shuffle_seed,
+        &format!("accept:{challenge_id}"),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(game_id)
+}
+
+/// Creates one initialized game inside an existing transaction.
+///
+/// # Errors
+///
+/// * Returns compatibility, initialization, serialization, timestamp, or database failures.
+pub async fn create_game_in_transaction(
+    tx: &dyn Database,
+    first_user_id: &str,
+    second_user_id: &str,
+    now: OffsetDateTime,
+    shuffle_seed: u64,
+    idempotency_key: &str,
+) -> Result<GameId, ChallengeError> {
+    if first_user_id == second_user_id {
+        return Err(ChallengeError::Invalid);
+    }
+    let game_id = GameId::new();
+    let players = [PlayerId::new(), PlayerId::new()];
+    let metadata = GameMetadata::new(
+        game_id,
+        RuleProfileRef::new("classic-en", 1).map_err(|_| ChallengeError::Compatibility)?,
+        DictionaryRef::new(
+            "enable1-en",
+            1,
+            "sha256:3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89",
+        )
+        .map_err(|_| ChallengeError::Compatibility)?,
+        now,
+    );
+    let started = initialize_game(
+        metadata,
+        players,
+        players[0],
+        &initial_rule_profile(),
+        shuffle_seed,
+    )?;
+    let now_ms = timestamp_ms(now)?;
+    tx.insert("games")
+        .value("game_id", game_id.to_string())
+        .value("rules_id", "classic-en")
+        .value("rules_version", 1_i64)
+        .value("dictionary_id", "enable1-en")
+        .value("dictionary_version", 1_i64)
+        .value(
+            "dictionary_checksum",
+            "sha256:3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89",
+        )
+        .value("canonical_revision", 1_i64)
+        .value("status", "ACTIVE")
+        .value("created_at_ms", now_ms)
+        .value("updated_at_ms", now_ms)
+        .execute(tx)
+        .await?;
+    for (seat, (user_id, player_id)) in [(first_user_id, players[0]), (second_user_id, players[1])]
+        .into_iter()
+        .enumerate()
+    {
+        tx.insert("game_players")
+            .value("game_player_id", player_id.as_uuid().to_string())
+            .value("game_id", game_id.to_string())
+            .value("user_id", user_id)
+            .value(
+                "seat",
+                i64::try_from(seat).map_err(|_| ChallengeError::Invalid)?,
+            )
+            .execute(tx)
+            .await?;
+    }
+    tx.insert("game_journal")
+        .value("event_id", format!("{game_id}:1"))
+        .value("game_id", game_id.to_string())
+        .value("revision", 1_i64)
+        .value("command_id", idempotency_key)
+        .value("idempotency_key", idempotency_key)
+        .value("payload_version", 1_i64)
+        .value("payload", serde_json::to_string(&started)?)
+        .execute(tx)
+        .await?;
+    Ok(game_id)
+}
+
+/// Searches users by normalized exact username without public discovery behavior.
+///
+/// # Errors
+///
+/// * Returns [`ChallengeError::Database`] when querying fails.
+pub async fn find_user_by_username(
+    db: &dyn Database,
+    normalized_username: &str,
+) -> Result<Option<(String, String)>, ChallengeError> {
+    let rows = db
+        .select("users")
+        .where_eq("username_normalized", normalized_username)
+        .sort("username_normalized", SortDirection::Asc)
+        .limit(1)
+        .execute(db)
+        .await?;
+    rows.first()
+        .map(|row| {
+            Ok((
+                string_column(row, "user_id")?,
+                string_column(row, "username_display")?,
+            ))
+        })
+        .transpose()
+}
+
+fn string_column(row: &switchy_database::Row, name: &str) -> Result<String, ChallengeError> {
+    row.get(name)
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or(ChallengeError::Invalid)
+}
+
+fn timestamp_ms(timestamp: OffsetDateTime) -> Result<i64, ChallengeError> {
+    i64::try_from(timestamp.unix_timestamp_nanos() / 1_000_000).map_err(|_| ChallengeError::Invalid)
+}
+
+/// Challenge lifecycle failure.
+#[derive(Debug, Error)]
+pub enum ChallengeError {
+    #[error("challenge input is invalid")]
+    Invalid,
+    #[error("a pending challenge already exists")]
+    Duplicate,
+    #[error("challenge is unknown, resolved, or unauthorized")]
+    Unauthorized,
+    #[error("pinned compatibility data is invalid")]
+    Compatibility,
+    #[error(transparent)]
+    Initialization(#[from] words_with_spouses_game_domain::InitializationError),
+    #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+    #[error(transparent)]
+    Database(#[from] switchy_database::DatabaseError),
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_lite::future::block_on;
+
+    use super::*;
+    use crate::{migrate_app, register};
+
+    #[test]
+    fn challenge_lifecycle_creates_one_authorized_game() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let alice = register(
+                &*db,
+                "alice",
+                "correct horse battery staple",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Alice registers");
+            let bob = register(
+                &*db,
+                "bob",
+                "another correct horse battery",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Bob registers");
+            assert_eq!(
+                find_user_by_username(&*db, "bob")
+                    .await
+                    .expect("lookup succeeds"),
+                Some((bob.clone(), "bob".to_string()))
+            );
+            let challenge = create_challenge(&*db, &alice, &bob, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("challenge creates");
+            assert!(matches!(
+                create_challenge(&*db, &alice, &bob, OffsetDateTime::UNIX_EPOCH).await,
+                Err(ChallengeError::Duplicate)
+            ));
+            let game = accept_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH, 4)
+                .await
+                .expect("challenge accepts");
+            assert!(matches!(
+                accept_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH, 4).await,
+                Err(ChallengeError::Unauthorized)
+            ));
+            assert_eq!(
+                db.select("game_players")
+                    .where_eq("game_id", game.to_string())
+                    .execute(&*db)
+                    .await
+                    .expect("players load")
+                    .len(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_games_and_independent_tab_revisions_remain_isolated() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let alice = register(
+                &*db,
+                "alice",
+                "correct horse battery staple",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Alice registers");
+            let bob = register(
+                &*db,
+                "bob",
+                "another correct horse battery",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Bob registers");
+            let mut games = Vec::new();
+            for seed in [10_u64, 20, 30] {
+                let challenge = create_challenge(&*db, &alice, &bob, OffsetDateTime::UNIX_EPOCH)
+                    .await
+                    .expect("challenge creates");
+                let game =
+                    accept_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH, seed)
+                        .await
+                        .expect("game creates");
+                games.push(game);
+            }
+            let tab_one = crate::recover_game(&*db, games[0])
+                .await
+                .expect("first game loads");
+            let tab_two = crate::recover_game(&*db, games[1])
+                .await
+                .expect("second game loads");
+            let pass = words_with_spouses_game_domain::GameEvent::TurnPassed {
+                player_id: tab_one.active_player,
+            };
+            crate::append_events_transactionally(
+                &*db,
+                games[0],
+                "tab-one-command",
+                "tab-one-idempotency",
+                tab_one.revision,
+                std::slice::from_ref(&pass),
+            )
+            .await
+            .expect("first game advances");
+            let tab_one_updated = crate::recover_game(&*db, games[0])
+                .await
+                .expect("first game reloads");
+            let tab_two_unchanged = crate::recover_game(&*db, games[1])
+                .await
+                .expect("second game reloads");
+
+            assert_eq!(tab_one_updated.revision, tab_one.revision + 1);
+            assert_eq!(tab_two_unchanged, tab_two);
+            assert_ne!(
+                tab_one_updated.metadata.id(),
+                tab_two_unchanged.metadata.id()
+            );
+            assert_eq!(
+                db.select("games")
+                    .execute(&*db)
+                    .await
+                    .expect("games load")
+                    .len(),
+                3
+            );
+        });
+    }
+
+    #[test]
+    fn challenge_decline_cancel_and_authorization_are_enforced() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let alice = register(
+                &*db,
+                "alice",
+                "correct horse battery staple",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Alice registers");
+            let bob = register(
+                &*db,
+                "bob",
+                "another correct horse battery",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Bob registers");
+            let challenge = create_challenge(&*db, &alice, &bob, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("challenge creates");
+            assert!(matches!(
+                cancel_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH).await,
+                Err(ChallengeError::Unauthorized)
+            ));
+            decline_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("recipient declines");
+            let challenge = create_challenge(&*db, &bob, &alice, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("reverse challenge creates");
+            cancel_challenge(&*db, &challenge, &bob, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("creator cancels");
+        });
+    }
+}

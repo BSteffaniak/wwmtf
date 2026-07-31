@@ -2,8 +2,9 @@
 
 use argon2::{
     Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version,
-    password_hash::{SaltString, rand_core::OsRng},
+    password_hash::SaltString,
 };
+use rand_core::OsRng;
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use time::OffsetDateTime;

@@ -1,0 +1,490 @@
+//! Rebuildable game summary and move-history projections.
+
+use switchy_database::{Database, query::FilterableQuery as _};
+use thiserror::Error;
+use words_with_spouses_game_domain::{GameEvent, GameId, GameState, GameStatus};
+
+/// Rebuilds projection rows from canonical aggregate state and journal events.
+///
+/// The operation is idempotent: prior rows are removed and regenerated inside the caller's
+/// transaction, then the checkpoint advances to the canonical revision.
+///
+/// # Errors
+///
+/// * Returns [`ProjectionError::Database`] when a `switchy` builder operation fails.
+/// * Returns [`ProjectionError::Revision`] for unsupported revisions.
+pub async fn rebuild_game_projections(
+    tx: &dyn Database,
+    state: &GameState,
+    events: &[GameEvent],
+    updated_at_ms: i64,
+) -> Result<(), ProjectionError> {
+    let game_id = state.metadata.id();
+    let game_id_string = game_id.to_string();
+    tx.delete("move_history")
+        .where_eq("game_id", game_id_string.clone())
+        .execute(tx)
+        .await?;
+    let first_revision = state
+        .revision
+        .checked_sub(u64::try_from(events.len()).map_err(|_| ProjectionError::Revision)?)
+        .ok_or(ProjectionError::Revision)?;
+    for (index, event) in events.iter().enumerate() {
+        let revision = first_revision
+            .checked_add(u64::try_from(index).map_err(|_| ProjectionError::Revision)? + 1)
+            .ok_or(ProjectionError::Revision)?;
+        let (player, kind, score_delta) = history_fields(event);
+        tx.insert("move_history")
+            .value("move_id", format!("{game_id_string}:{revision}"))
+            .value("game_id", game_id_string.clone())
+            .value(
+                "revision",
+                i64::try_from(revision).map_err(|_| ProjectionError::Revision)?,
+            )
+            .value("player_user_id", player)
+            .value("event_kind", kind)
+            .value("score_delta", i64::from(score_delta))
+            .value("created_at_ms", updated_at_ms)
+            .execute(tx)
+            .await?;
+    }
+
+    let status = match state.status {
+        GameStatus::Active => "ACTIVE",
+        GameStatus::Completed => "COMPLETED",
+    };
+    tx.upsert("game_summaries")
+        .where_eq("game_id", game_id_string.clone())
+        .value("game_id", game_id_string.clone())
+        .value("status", status)
+        .value(
+            "active_player_user_id",
+            user_for_player(tx, &game_id_string, state.active_player).await?,
+        )
+        .value(
+            "canonical_revision",
+            i64::try_from(state.revision).map_err(|_| ProjectionError::Revision)?,
+        )
+        .value("last_score", last_score(events).map(i64::from))
+        .value(
+            "winner_user_id",
+            state.winner.map(|winner| winner.as_uuid().to_string()),
+        )
+        .value("updated_at_ms", updated_at_ms)
+        .execute(tx)
+        .await?;
+    tx.upsert("projection_checkpoints")
+        .where_eq("projection_id", format!("game-summary:{game_id_string}"))
+        .value("projection_id", format!("game-summary:{game_id_string}"))
+        .value("game_id", game_id_string)
+        .value(
+            "revision",
+            i64::try_from(state.revision).map_err(|_| ProjectionError::Revision)?,
+        )
+        .value("updated_at_ms", updated_at_ms)
+        .execute(tx)
+        .await?;
+    Ok(())
+}
+
+fn history_fields(event: &GameEvent) -> (Option<String>, &'static str, u32) {
+    match event {
+        GameEvent::GameStarted { .. } => (None, "GAME_STARTED", 0),
+        GameEvent::TilesPlayed {
+            player_id, score, ..
+        } => (
+            Some(player_id.as_uuid().to_string()),
+            "TILES_PLAYED",
+            *score,
+        ),
+        GameEvent::TilesExchanged { player_id, .. } => {
+            (Some(player_id.as_uuid().to_string()), "TILES_EXCHANGED", 0)
+        }
+        GameEvent::TurnPassed { player_id } => {
+            (Some(player_id.as_uuid().to_string()), "TURN_PASSED", 0)
+        }
+        GameEvent::GameResigned { player_id, .. } => {
+            (Some(player_id.as_uuid().to_string()), "GAME_RESIGNED", 0)
+        }
+        GameEvent::GameCompleted { .. } => (None, "GAME_COMPLETED", 0),
+    }
+}
+
+fn last_score(events: &[GameEvent]) -> Option<u32> {
+    events.iter().rev().find_map(|event| match event {
+        GameEvent::TilesPlayed { score, .. } => Some(*score),
+        _ => None,
+    })
+}
+
+async fn user_for_player(
+    db: &dyn Database,
+    game_id: &str,
+    player: words_with_spouses_game_domain::PlayerId,
+) -> Result<Option<String>, ProjectionError> {
+    let rows = db
+        .select("game_players")
+        .where_eq("game_id", game_id)
+        .where_eq("game_player_id", player.as_uuid().to_string())
+        .execute(db)
+        .await?;
+    Ok(rows.first().and_then(|row| {
+        row.get("user_id")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    }))
+}
+
+/// Pending challenge or invitation displayed on a dashboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingItem {
+    pub id: String,
+    pub kind: &'static str,
+    pub direction: &'static str,
+    pub counterparty_user_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+/// Complete renderer-neutral dashboard projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardProjection {
+    pub pending: Vec<PendingItem>,
+    pub games: Vec<GameSummary>,
+}
+
+/// Loads pending challenge/invitation state and active/completed games for one user.
+///
+/// # Errors
+///
+/// * Returns database or malformed projection errors.
+pub async fn dashboard_projection(
+    db: &dyn Database,
+    user_id: &str,
+) -> Result<DashboardProjection, ProjectionError> {
+    let mut pending = Vec::new();
+    for row in db
+        .select("challenges")
+        .where_eq("challenger_user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(db)
+        .await?
+    {
+        pending.push(PendingItem {
+            id: string_column(&row, "challenge_id")?,
+            kind: "CHALLENGE",
+            direction: "OUTGOING",
+            counterparty_user_id: Some(string_column(&row, "challenged_user_id")?),
+            created_at_ms: signed_column(&row, "created_at_ms")?,
+        });
+    }
+    for row in db
+        .select("challenges")
+        .where_eq("challenged_user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(db)
+        .await?
+    {
+        pending.push(PendingItem {
+            id: string_column(&row, "challenge_id")?,
+            kind: "CHALLENGE",
+            direction: "INCOMING",
+            counterparty_user_id: Some(string_column(&row, "challenger_user_id")?),
+            created_at_ms: signed_column(&row, "created_at_ms")?,
+        });
+    }
+    for row in db
+        .select("invitations")
+        .where_eq("creator_user_id", user_id)
+        .where_eq("status", "ACTIVE")
+        .execute(db)
+        .await?
+    {
+        pending.push(PendingItem {
+            id: string_column(&row, "invitation_id")?,
+            kind: "INVITATION",
+            direction: "OUTGOING",
+            counterparty_user_id: None,
+            created_at_ms: signed_column(&row, "created_at_ms")?,
+        });
+    }
+    pending.sort_by(|left, right| {
+        right
+            .created_at_ms
+            .cmp(&left.created_at_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(DashboardProjection {
+        pending,
+        games: user_game_summaries(db, user_id).await?,
+    })
+}
+
+/// Projected game lifecycle for a user's dashboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameSummary {
+    pub game_id: String,
+    pub status: String,
+    pub active_player_user_id: Option<String>,
+    pub canonical_revision: u64,
+    pub last_score: Option<u32>,
+    pub winner_user_id: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+/// Loads one user's active/completed games ordered by most recent activity.
+///
+/// # Errors
+///
+/// * Returns database or malformed projection errors.
+pub async fn user_game_summaries(
+    db: &dyn Database,
+    user_id: &str,
+) -> Result<Vec<GameSummary>, ProjectionError> {
+    let memberships = db
+        .select("game_players")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?;
+    let mut summaries = Vec::new();
+    for membership in memberships {
+        let game_id = string_column(&membership, "game_id")?;
+        let rows = db
+            .select("game_summaries")
+            .where_eq("game_id", game_id)
+            .execute(db)
+            .await?;
+        if let Some(row) = rows.first() {
+            summaries.push(GameSummary {
+                game_id: string_column(row, "game_id")?,
+                status: string_column(row, "status")?,
+                active_player_user_id: optional_string(row, "active_player_user_id"),
+                canonical_revision: unsigned_column(row, "canonical_revision")?,
+                last_score: optional_unsigned(row, "last_score")?,
+                winner_user_id: optional_string(row, "winner_user_id"),
+                updated_at_ms: signed_column(row, "updated_at_ms")?,
+            });
+        }
+    }
+    summaries.sort_by(|left, right| {
+        let left_actionable =
+            left.status == "ACTIVE" && left.active_player_user_id.as_deref() == Some(user_id);
+        let right_actionable =
+            right.status == "ACTIVE" && right.active_player_user_id.as_deref() == Some(user_id);
+        right_actionable
+            .cmp(&left_actionable)
+            .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
+            .then_with(|| left.game_id.cmp(&right.game_id))
+    });
+    Ok(summaries)
+}
+
+fn string_column(row: &switchy_database::Row, name: &str) -> Result<String, ProjectionError> {
+    row.get(name)
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or(ProjectionError::Malformed)
+}
+
+fn optional_string(row: &switchy_database::Row, name: &str) -> Option<String> {
+    row.get(name)
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+}
+
+fn signed_column(row: &switchy_database::Row, name: &str) -> Result<i64, ProjectionError> {
+    row.get(name)
+        .and_then(|value| value.as_i64())
+        .ok_or(ProjectionError::Malformed)
+}
+
+fn unsigned_column(row: &switchy_database::Row, name: &str) -> Result<u64, ProjectionError> {
+    signed_column(row, name)
+        .and_then(|value| u64::try_from(value).map_err(|_| ProjectionError::Malformed))
+}
+
+fn optional_unsigned(
+    row: &switchy_database::Row,
+    name: &str,
+) -> Result<Option<u32>, ProjectionError> {
+    row.get(name)
+        .and_then(|value| value.as_i64())
+        .map(|value| u32::try_from(value).map_err(|_| ProjectionError::Malformed))
+        .transpose()
+}
+
+/// Projection rebuild failure.
+#[derive(Debug, Error)]
+pub enum ProjectionError {
+    #[error("projection revision is invalid")]
+    Revision,
+    #[error("projection row is malformed")]
+    Malformed,
+    #[error(transparent)]
+    Database(#[from] switchy_database::DatabaseError),
+}
+
+/// Returns the projected revision for one game.
+///
+/// # Errors
+///
+/// * Returns [`ProjectionError::Database`] when querying fails.
+/// * Returns [`ProjectionError::Revision`] for malformed persisted revisions.
+pub async fn projected_revision(
+    db: &dyn Database,
+    game_id: GameId,
+) -> Result<Option<u64>, ProjectionError> {
+    let rows = db
+        .select("projection_checkpoints")
+        .where_eq("projection_id", format!("game-summary:{game_id}"))
+        .execute(db)
+        .await?;
+    rows.first()
+        .map(|row| {
+            row.get("revision")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or(ProjectionError::Revision)
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_lite::future::block_on;
+    use time::OffsetDateTime;
+    use words_with_spouses_game_domain::{
+        DictionaryRef, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
+        initialize_game, replay,
+    };
+
+    use super::*;
+    use crate::{create_challenge, create_invitation, migrate_app, register};
+
+    #[test]
+    fn dashboard_combines_pending_items_with_ordered_games() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let alice = register(
+                &*db,
+                "alice",
+                "correct horse battery staple",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Alice registers");
+            let bob = register(
+                &*db,
+                "bob",
+                "another correct horse battery",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("Bob registers");
+            create_challenge(&*db, &bob, &alice, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("challenge creates");
+            create_invitation(
+                &*db,
+                &alice,
+                OffsetDateTime::UNIX_EPOCH,
+                time::Duration::days(1),
+            )
+            .await
+            .expect("invitation creates");
+
+            let dashboard = dashboard_projection(&*db, &alice)
+                .await
+                .expect("dashboard loads");
+            assert_eq!(dashboard.pending.len(), 2);
+            assert!(
+                dashboard
+                    .pending
+                    .iter()
+                    .any(|item| { item.kind == "CHALLENGE" && item.direction == "INCOMING" })
+            );
+            assert!(
+                dashboard
+                    .pending
+                    .iter()
+                    .any(|item| item.kind == "INVITATION")
+            );
+        });
+    }
+
+    #[test]
+    fn projection_rebuild_is_idempotent_on_turso() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let game_id = GameId::new();
+            let players = [PlayerId::new(), PlayerId::new()];
+            let metadata = GameMetadata::new(
+                game_id,
+                RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+                DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+                OffsetDateTime::UNIX_EPOCH,
+            );
+            let started =
+                initialize_game(metadata, players, players[0], &initial_rule_profile(), 2)
+                    .expect("game starts");
+            let events = vec![
+                started,
+                GameEvent::TurnPassed {
+                    player_id: players[0],
+                },
+            ];
+            let state = replay(&events).expect("events replay");
+            for (seat, player) in players.into_iter().enumerate() {
+                db.insert("game_players")
+                    .value("game_player_id", player.as_uuid().to_string())
+                    .value("game_id", game_id.to_string())
+                    .value("user_id", format!("user-{seat}"))
+                    .value("seat", i64::try_from(seat).expect("seat fits"))
+                    .execute(&*db)
+                    .await
+                    .expect("membership inserts");
+            }
+
+            for _ in 0..2 {
+                let tx = db.begin_transaction().await.expect("transaction begins");
+                rebuild_game_projections(&*tx, &state, &events, 0)
+                    .await
+                    .expect("projection rebuilds");
+                tx.commit().await.expect("transaction commits");
+            }
+            assert_eq!(
+                projected_revision(&*db, game_id)
+                    .await
+                    .expect("revision loads"),
+                Some(2)
+            );
+            assert_eq!(
+                db.select("move_history")
+                    .where_eq("game_id", game_id.to_string())
+                    .execute(&*db)
+                    .await
+                    .expect("history loads")
+                    .len(),
+                2
+            );
+            let summaries = user_game_summaries(&*db, "user-1")
+                .await
+                .expect("summaries load");
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].game_id, game_id.to_string());
+            assert_eq!(summaries[0].canonical_revision, 2);
+            assert_eq!(
+                summaries[0].active_player_user_id.as_deref(),
+                Some("user-1")
+            );
+        });
+    }
+}

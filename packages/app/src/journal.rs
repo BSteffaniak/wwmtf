@@ -1,9 +1,12 @@
 //! Durable, idempotent game-journal persistence using `switchy` query builders.
 
 use serde::{Deserialize, Serialize};
-use switchy_database::{Database, query::FilterableQuery as _};
+use switchy_database::{
+    Database,
+    query::{FilterableQuery as _, SortDirection},
+};
 use thiserror::Error;
-use words_with_spouses_game_domain::{GameEvent, GameId};
+use words_with_spouses_game_domain::{GameEvent, GameId, GameState, apply_event, replay};
 
 /// Persisted canonical event envelope with explicit compatibility version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +124,181 @@ pub async fn append_events(
     Ok(resulting_revision)
 }
 
+/// Begins, appends, and commits one canonical command transaction.
+///
+/// # Errors
+///
+/// * Returns [`JournalError`] for revision, idempotency, serialization, or database failures.
+pub async fn append_events_transactionally(
+    db: &dyn Database,
+    game_id: GameId,
+    command_id: &str,
+    idempotency_key: &str,
+    expected_revision: u64,
+    events: &[GameEvent],
+) -> Result<u64, JournalError> {
+    let tx = db.begin_transaction().await?;
+    match append_events(
+        &*tx,
+        game_id,
+        command_id,
+        idempotency_key,
+        expected_revision,
+        events,
+    )
+    .await
+    {
+        Ok(revision) => {
+            tx.commit().await?;
+            Ok(revision)
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+/// Loads the canonical aggregate from its latest snapshot plus journal tail.
+///
+/// # Errors
+///
+/// * Returns [`JournalError::EmptyJournal`] when neither snapshot nor start event exists.
+/// * Returns [`JournalError::Replay`] for malformed canonical event order.
+/// * Returns persistence and compatibility errors from snapshot/journal loading.
+pub async fn recover_game(db: &dyn Database, game_id: GameId) -> Result<GameState, JournalError> {
+    let snapshot = load_latest_snapshot(db, game_id).await?;
+    let after_revision = snapshot.as_ref().map_or(0, |state| state.revision);
+    let tail = load_events(db, game_id, after_revision).await?;
+    match snapshot {
+        Some(state) => tail
+            .iter()
+            .try_fold(state, |state, persisted| {
+                apply_event(Some(state), &persisted.event)
+            })
+            .map_err(JournalError::Replay),
+        None if tail.is_empty() => Err(JournalError::EmptyJournal),
+        None => replay(tail.iter().map(|persisted| &persisted.event)).map_err(JournalError::Replay),
+    }
+}
+
+/// Loads a canonical journal in revision order and decodes its versioned events.
+///
+/// # Errors
+///
+/// * Returns [`JournalError::UnsupportedPayloadVersion`] for an unknown event format.
+/// * Returns [`JournalError::Serialization`] for malformed event data.
+/// * Returns [`JournalError::Database`] when a `switchy` query fails.
+pub async fn load_events(
+    db: &dyn Database,
+    game_id: GameId,
+    after_revision: u64,
+) -> Result<Vec<PersistedGameEvent>, JournalError> {
+    let rows = db
+        .select("game_journal")
+        .where_eq("game_id", game_id.to_string())
+        .where_gt(
+            "revision",
+            i64::try_from(after_revision).map_err(|_| JournalError::InvalidRevision)?,
+        )
+        .sort("revision", SortDirection::Asc)
+        .execute(db)
+        .await?;
+    rows.into_iter()
+        .map(|row| {
+            let revision = integer_column(&row, "revision")?;
+            let payload_version = integer_column(&row, "payload_version")?;
+            if payload_version != 1 {
+                return Err(JournalError::UnsupportedPayloadVersion(payload_version));
+            }
+            let payload = string_column(&row, "payload")?;
+            Ok(PersistedGameEvent {
+                game_id,
+                revision,
+                command_id: string_column(&row, "command_id")?,
+                idempotency_key: string_column(&row, "idempotency_key")?,
+                payload_version: 1,
+                event: serde_json::from_str(&payload)?,
+            })
+        })
+        .collect()
+}
+
+/// Stores an idempotently replaceable canonical snapshot.
+///
+/// # Errors
+///
+/// * Returns [`JournalError::Serialization`] when snapshot encoding fails.
+/// * Returns [`JournalError::Database`] when storage fails.
+pub async fn store_snapshot(
+    db: &dyn Database,
+    game_id: GameId,
+    state: &words_with_spouses_game_domain::GameState,
+    created_at_ms: i64,
+) -> Result<(), JournalError> {
+    let game_id = game_id.to_string();
+    db.delete("game_snapshots")
+        .where_eq("game_id", game_id.clone())
+        .where_eq(
+            "revision",
+            i64::try_from(state.revision).map_err(|_| JournalError::InvalidRevision)?,
+        )
+        .execute(db)
+        .await?;
+    db.insert("game_snapshots")
+        .value("snapshot_id", format!("{game_id}:{}", state.revision))
+        .value("game_id", game_id)
+        .value(
+            "revision",
+            i64::try_from(state.revision).map_err(|_| JournalError::InvalidRevision)?,
+        )
+        .value("payload_version", 1_i64)
+        .value("payload", serde_json::to_string(state)?)
+        .value("created_at_ms", created_at_ms)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Loads the latest compatible canonical snapshot.
+///
+/// # Errors
+///
+/// * Returns compatibility, serialization, or database errors for invalid persisted data.
+pub async fn load_latest_snapshot(
+    db: &dyn Database,
+    game_id: GameId,
+) -> Result<Option<words_with_spouses_game_domain::GameState>, JournalError> {
+    let rows = db
+        .select("game_snapshots")
+        .where_eq("game_id", game_id.to_string())
+        .sort("revision", SortDirection::Desc)
+        .execute(db)
+        .await?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let version = integer_column(row, "payload_version")?;
+    if version != 1 {
+        return Err(JournalError::UnsupportedPayloadVersion(version));
+    }
+    let payload = string_column(row, "payload")?;
+    Ok(Some(serde_json::from_str(&payload)?))
+}
+
+fn string_column(row: &switchy_database::Row, name: &str) -> Result<String, JournalError> {
+    row.get(name)
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or(JournalError::MalformedRow)
+}
+
+fn integer_column(row: &switchy_database::Row, name: &str) -> Result<u64, JournalError> {
+    row.get(name)
+        .and_then(|value| value.as_i64())
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or(JournalError::MalformedRow)
+}
+
 /// Journal persistence failure.
 #[derive(Debug, Error)]
 pub enum JournalError {
@@ -139,10 +317,183 @@ pub enum JournalError {
     /// Command retry identity has already been persisted.
     #[error("command or idempotency key has already been used")]
     DuplicateCommand,
+    /// Persisted row is missing a required field or has an invalid type.
+    #[error("persisted journal row is malformed")]
+    MalformedRow,
+    /// Persisted payload version is not understood by this application.
+    #[error("unsupported payload version {0}")]
+    UnsupportedPayloadVersion(u64),
+    /// No canonical start event or snapshot exists.
+    #[error("canonical journal is empty")]
+    EmptyJournal,
+    /// Persisted canonical event sequence is invalid.
+    #[error(transparent)]
+    Replay(#[from] words_with_spouses_game_domain::ReplayError),
     /// Domain event serialization failed.
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
     /// Portable database operation failed.
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_lite::future::block_on;
+    use time::OffsetDateTime;
+    use words_with_spouses_game_domain::{
+        DictionaryRef, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
+        initialize_game, replay,
+    };
+
+    use super::*;
+    use crate::migrate_app;
+
+    async fn initialized_database() -> (
+        Box<dyn Database>,
+        GameId,
+        words_with_spouses_game_domain::GameState,
+    ) {
+        let db = switchy_database_connection::builder()
+            .turso()
+            .with_in_memory()
+            .build()
+            .await
+            .expect("Turso opens");
+        migrate_app(&*db).await.expect("migrations run");
+        let game_id = GameId::new();
+        let players = [PlayerId::new(), PlayerId::new()];
+        let metadata = GameMetadata::new(
+            game_id,
+            RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+            DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        let started = initialize_game(metadata, players, players[0], &initial_rule_profile(), 1)
+            .expect("game starts");
+        let state = replay([&started]).expect("start replays");
+        db.insert("games")
+            .value("game_id", game_id.to_string())
+            .value("rules_id", "classic-en")
+            .value("rules_version", 1_i64)
+            .value("dictionary_id", "enable1-en")
+            .value("dictionary_version", 1_i64)
+            .value("dictionary_checksum", "sha256:test")
+            .value("canonical_revision", 0_i64)
+            .value("status", "ACTIVE")
+            .value("created_at_ms", 0_i64)
+            .value("updated_at_ms", 0_i64)
+            .execute(&*db)
+            .await
+            .expect("game inserts");
+        (db, game_id, state)
+    }
+
+    fn started_event(state: &GameState) -> GameEvent {
+        GameEvent::GameStarted {
+            metadata: state.metadata.clone(),
+            players: state.players,
+            first_player: state.players[0],
+            racks: state.racks.clone(),
+            bag: state.bag.clone(),
+        }
+    }
+
+    #[test]
+    fn transactional_append_is_idempotent_and_recoverable() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            assert_eq!(
+                append_events_transactionally(
+                    &*db,
+                    game_id,
+                    "command-1",
+                    "idem-1",
+                    0,
+                    std::slice::from_ref(&started),
+                )
+                .await
+                .expect("event appends"),
+                1
+            );
+            assert!(matches!(
+                append_events_transactionally(
+                    &*db,
+                    game_id,
+                    "command-1",
+                    "idem-1",
+                    1,
+                    std::slice::from_ref(&started),
+                )
+                .await,
+                Err(JournalError::DuplicateCommand)
+            ));
+            assert_eq!(
+                recover_game(&*db, game_id).await.expect("game recovers"),
+                state
+            );
+        });
+    }
+
+    #[test]
+    fn snapshot_plus_tail_recovery_matches_full_replay() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "command-1",
+                "idem-1",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("start appends");
+            store_snapshot(&*db, game_id, &state, 0)
+                .await
+                .expect("snapshot stores");
+            let passed = GameEvent::TurnPassed {
+                player_id: state.players[0],
+            };
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "command-2",
+                "idem-2",
+                1,
+                std::slice::from_ref(&passed),
+            )
+            .await
+            .expect("tail appends");
+            let expected = apply_event(Some(state), &passed).expect("event applies");
+            assert_eq!(
+                recover_game(&*db, game_id).await.expect("game recovers"),
+                expected
+            );
+        });
+    }
+
+    #[test]
+    fn journal_load_and_snapshot_round_trip_on_turso() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            assert!(
+                load_events(&*db, game_id, 0)
+                    .await
+                    .expect("events load")
+                    .is_empty()
+            );
+            store_snapshot(&*db, game_id, &state, 0)
+                .await
+                .expect("snapshot stores");
+            assert_eq!(
+                load_latest_snapshot(&*db, game_id)
+                    .await
+                    .expect("snapshot loads"),
+                Some(state)
+            );
+        });
+    }
 }

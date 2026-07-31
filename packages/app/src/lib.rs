@@ -5,20 +5,40 @@
 //! Renderer-neutral Words with Spouses routes and page components.
 
 mod accounts;
+mod challenges;
+mod components;
 mod invitations;
 mod journal;
 mod migrations;
+mod projections;
 mod sessions;
 mod shared_state_security;
 
 pub use accounts::{
     AccountError, authenticate, hash_password, normalize_username, register, verify_password,
 };
-pub use invitations::{
-    InvitationError, InvitationToken, create_invitation, redeem_invitation, revoke_invitation,
+pub use challenges::{
+    ChallengeError, ChallengeStatus, accept_challenge, cancel_challenge, create_challenge,
+    create_game_in_transaction, decline_challenge, find_user_by_username,
 };
-pub use journal::{JournalError, PersistedGameEvent, append_events};
+pub use components::{
+    GameView, MoveHistoryView, PendingMoveView, PremiumView, board_component, error_component,
+    game_view, move_history_component, pending_move_component, premium_square_component,
+    rack_component, status_component, tile_component,
+};
+pub use invitations::{
+    InvitationError, InvitationToken, create_invitation, redeem_invitation,
+    redeem_invitation_and_start_game, revoke_invitation,
+};
+pub use journal::{
+    JournalError, PersistedGameEvent, append_events, append_events_transactionally, load_events,
+    load_latest_snapshot, recover_game, store_snapshot,
+};
 pub use migrations::{app_migrations, migrate_app};
+pub use projections::{
+    DashboardProjection, GameSummary, PendingItem, ProjectionError, dashboard_projection,
+    projected_revision, rebuild_game_projections, user_game_summaries,
+};
 pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
 pub use shared_state_security::shared_state_dispatcher;
 
