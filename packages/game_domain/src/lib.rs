@@ -4,6 +4,28 @@
 
 //! Deterministic, server-authoritative game-domain primitives.
 
+mod dictionary;
+mod engine;
+mod gameplay;
+mod model;
+mod rules;
+
+pub use dictionary::{
+    BUNDLED_DICTIONARY_ID, BUNDLED_DICTIONARY_SHA256, BUNDLED_DICTIONARY_VERSION, Dictionary,
+    WordSetDictionary, bundled_dictionary, bundled_dictionary_ref, normalize_word,
+};
+pub use engine::{
+    InitializationError, ReplayError, apply_event, build_bag, initialize_game, replay, shuffle_bag,
+};
+pub use gameplay::decide_command;
+pub use model::{
+    BoardTile, Coordinate, GameCommand, GameError, GameEvent, GameState, GameStatus, MoveResult,
+    Placement, PlayerId, Tile, TileFace, TileId,
+};
+pub use rules::{
+    PremiumSquare, RuleProfile, RuleProfileError, TileDefinition, initial_rule_profile,
+};
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;

@@ -24,7 +24,11 @@ log = { version = "0.4.33", default-features = false, features = ["release_max_l
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+sha2 = { version = "0.11.0", default-features = false }
 switchy = { version = "0.4.0", default-features = false }
+switchy_database = { version = "0.4.0", default-features = false }
+switchy_database_connection = { version = "0.4.0", default-features = false }
+switchy_schema = { version = "0.4.0", default-features = false }
 thiserror = { version = "2.0.19", default-features = false }
 time = { version = "0.3.54", default-features = false, features = ["serde", "std"] }
 uuid = { version = "1.24.0", default-features = false, features = ["serde", "v4"] }

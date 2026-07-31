@@ -1,0 +1,348 @@
+//! Application-owned schema migrations built exclusively with `switchy` builders.
+
+use switchy_database::{
+    Database,
+    schema::{Column, DataType, create_index, create_table, drop_index, drop_table},
+};
+use switchy_schema::{
+    discovery::code::{CodeMigration, CodeMigrationSource},
+    runner::MigrationRunner,
+};
+
+/// Returns the versioned application schema migration source.
+#[allow(clippy::too_many_lines)]
+#[must_use]
+pub fn app_migrations() -> CodeMigrationSource<'static> {
+    let mut source = CodeMigrationSource::new();
+    source.add_migration(table_migration(
+        "001_users",
+        "users",
+        vec![
+            text("user_id"),
+            text("username_normalized"),
+            text("username_display"),
+            bigint("created_at_ms"),
+        ],
+        "user_id",
+    ));
+    source.add_migration(index_migration(
+        "002_users_username_unique",
+        "idx_users_username_normalized",
+        "users",
+        vec!["username_normalized"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "003_password_credentials",
+        "password_credentials",
+        vec![
+            text("user_id"),
+            text("password_hash"),
+            bigint("updated_at_ms"),
+        ],
+        "user_id",
+    ));
+    source.add_migration(table_migration(
+        "004_auth_sessions",
+        "auth_sessions",
+        vec![
+            text("session_hash"),
+            text("user_id"),
+            bigint("expires_at_ms"),
+            nullable_bigint("revoked_at_ms"),
+            bigint("created_at_ms"),
+        ],
+        "session_hash",
+    ));
+    source.add_migration(table_migration(
+        "005_games",
+        "games",
+        vec![
+            text("game_id"),
+            text("rules_id"),
+            bigint("rules_version"),
+            text("dictionary_id"),
+            bigint("dictionary_version"),
+            text("dictionary_checksum"),
+            bigint("canonical_revision"),
+            text("status"),
+            bigint("created_at_ms"),
+            bigint("updated_at_ms"),
+        ],
+        "game_id",
+    ));
+    source.add_migration(table_migration(
+        "006_game_players",
+        "game_players",
+        vec![
+            text("game_player_id"),
+            text("game_id"),
+            text("user_id"),
+            bigint("seat"),
+        ],
+        "game_player_id",
+    ));
+    source.add_migration(index_migration(
+        "007_game_players_unique",
+        "idx_game_players_game_user",
+        "game_players",
+        vec!["game_id", "user_id"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "008_challenges",
+        "challenges",
+        vec![
+            text("challenge_id"),
+            text("challenger_user_id"),
+            text("challenged_user_id"),
+            text("status"),
+            bigint("created_at_ms"),
+            bigint("updated_at_ms"),
+        ],
+        "challenge_id",
+    ));
+    source.add_migration(table_migration(
+        "009_invitations",
+        "invitations",
+        vec![
+            text("invitation_id"),
+            text("creator_user_id"),
+            text("token_hash"),
+            text("status"),
+            bigint("expires_at_ms"),
+            nullable_text("redeemed_by_user_id"),
+            bigint("created_at_ms"),
+        ],
+        "invitation_id",
+    ));
+    source.add_migration(index_migration(
+        "010_invitations_token_unique",
+        "idx_invitations_token_hash",
+        "invitations",
+        vec!["token_hash"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "011_projection_checkpoints",
+        "projection_checkpoints",
+        vec![
+            text("projection_id"),
+            text("game_id"),
+            bigint("revision"),
+            bigint("updated_at_ms"),
+        ],
+        "projection_id",
+    ));
+    source.add_migration(table_migration(
+        "012_game_summaries",
+        "game_summaries",
+        vec![
+            text("game_id"),
+            text("status"),
+            nullable_text("winner_user_id"),
+            bigint("updated_at_ms"),
+        ],
+        "game_id",
+    ));
+    source.add_migration(table_migration(
+        "013_move_history",
+        "move_history",
+        vec![
+            text("move_id"),
+            text("game_id"),
+            bigint("revision"),
+            text("player_user_id"),
+            text("event_kind"),
+            bigint("score_delta"),
+            bigint("created_at_ms"),
+        ],
+        "move_id",
+    ));
+    source.add_migration(index_migration(
+        "014_move_history_revision_unique",
+        "idx_move_history_game_revision",
+        "move_history",
+        vec!["game_id", "revision"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "015_user_score_totals",
+        "user_score_totals",
+        vec![
+            text("user_id"),
+            bigint("completed_games"),
+            bigint("wins"),
+            bigint("ties"),
+            bigint("total_score"),
+            bigint("updated_at_ms"),
+        ],
+        "user_id",
+    ));
+    source.add_migration(table_migration(
+        "020_game_journal",
+        "game_journal",
+        vec![
+            text("event_id"),
+            text("game_id"),
+            bigint("revision"),
+            text("command_id"),
+            text("idempotency_key"),
+            bigint("payload_version"),
+            text("payload"),
+        ],
+        "event_id",
+    ));
+    source.add_migration(index_migration(
+        "021_game_journal_revision_unique",
+        "idx_game_journal_game_revision",
+        "game_journal",
+        vec!["game_id", "revision"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "022_game_journal_command_unique",
+        "idx_game_journal_game_command",
+        "game_journal",
+        vec!["game_id", "command_id"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "023_game_journal_idempotency_unique",
+        "idx_game_journal_game_idempotency",
+        "game_journal",
+        vec!["game_id", "idempotency_key"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "024_game_snapshots",
+        "game_snapshots",
+        vec![
+            text("snapshot_id"),
+            text("game_id"),
+            bigint("revision"),
+            bigint("payload_version"),
+            text("payload"),
+            bigint("created_at_ms"),
+        ],
+        "snapshot_id",
+    ));
+    source
+}
+
+/// Runs all application-owned code migrations before traffic is accepted.
+///
+/// `HyperChad` shared-state migrations remain owned and executed by `HyperChad`; this runner uses a
+/// separate metadata table for application schema versions.
+///
+/// # Errors
+///
+/// * Returns a schema migration error when migration discovery or execution fails.
+pub async fn migrate_app(db: &dyn Database) -> switchy_schema::Result<()> {
+    MigrationRunner::new(Box::new(app_migrations()))
+        .with_table_name("__words_with_spouses_migrations")
+        .run(db)
+        .await
+}
+
+fn table_migration(
+    id: &str,
+    table: &'static str,
+    columns: Vec<Column>,
+    primary_key: &'static str,
+) -> CodeMigration<'static> {
+    let mut statement = create_table(table);
+    for column in columns {
+        statement = statement.column(column);
+    }
+    CodeMigration::new(
+        id.to_string(),
+        Box::new(statement.primary_key(primary_key)),
+        Some(Box::new(drop_table(table).if_exists(true))),
+    )
+}
+
+fn index_migration(
+    id: &str,
+    index: &'static str,
+    table: &'static str,
+    columns: Vec<&'static str>,
+    unique: bool,
+) -> CodeMigration<'static> {
+    let statement = create_index(index)
+        .table(table)
+        .columns(columns)
+        .unique(unique);
+    CodeMigration::new(
+        id.to_string(),
+        Box::new(statement),
+        Some(Box::new(drop_index(index, table).if_exists())),
+    )
+}
+
+fn text(name: &str) -> Column {
+    column(name, DataType::Text, false)
+}
+
+fn nullable_text(name: &str) -> Column {
+    column(name, DataType::Text, true)
+}
+
+fn bigint(name: &str) -> Column {
+    column(name, DataType::BigInt, false)
+}
+
+fn nullable_bigint(name: &str) -> Column {
+    column(name, DataType::BigInt, true)
+}
+
+fn column(name: &str, data_type: DataType, nullable: bool) -> Column {
+    Column {
+        name: name.to_string(),
+        nullable,
+        auto_increment: false,
+        data_type,
+        default: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_lite::future::block_on;
+    use switchy_schema::migration::MigrationSource as _;
+
+    use super::*;
+
+    #[test]
+    fn application_schema_has_stable_migration_count() {
+        let source = app_migrations();
+        let migrations = block_on(source.migrations()).expect("migrations are discoverable");
+        assert_eq!(migrations.len(), 20);
+        assert_eq!(migrations[0].id(), "001_users");
+        assert_eq!(migrations[19].id(), "024_game_snapshots");
+    }
+
+    #[test]
+    fn migrations_execute_on_the_turso_backend() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("in-memory Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+
+            for table in [
+                "users",
+                "auth_sessions",
+                "games",
+                "game_journal",
+                "game_snapshots",
+                "projection_checkpoints",
+            ] {
+                assert!(db.table_exists(table).await.expect("schema query succeeds"));
+            }
+        });
+    }
+}

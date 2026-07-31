@@ -4,8 +4,22 @@
 
 //! Renderer-neutral Words with Spouses routes and page components.
 
+mod accounts;
+mod invitations;
+mod journal;
+mod migrations;
+mod sessions;
 mod shared_state_security;
 
+pub use accounts::{
+    AccountError, authenticate, hash_password, normalize_username, register, verify_password,
+};
+pub use invitations::{
+    InvitationError, InvitationToken, create_invitation, redeem_invitation, revoke_invitation,
+};
+pub use journal::{JournalError, PersistedGameEvent, append_events};
+pub use migrations::{app_migrations, migrate_app};
+pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
 pub use shared_state_security::shared_state_dispatcher;
 
 use hyperchad::{

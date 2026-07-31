@@ -1,0 +1,573 @@
+RuleProfile {
+    reference: RuleProfileRef {
+        id: "classic-en",
+        version: 1,
+    },
+    board_size: 15,
+    start: Coordinate {
+        x: 7,
+        y: 7,
+    },
+    premiums: {
+        Coordinate {
+            x: 0,
+            y: 0,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 0,
+            y: 3,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 0,
+            y: 7,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 0,
+            y: 11,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 0,
+            y: 14,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 1,
+            y: 1,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 1,
+            y: 5,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 1,
+            y: 9,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 1,
+            y: 13,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 2,
+            y: 2,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 2,
+            y: 6,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 2,
+            y: 8,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 2,
+            y: 12,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 3,
+            y: 0,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 3,
+            y: 3,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 3,
+            y: 7,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 3,
+            y: 11,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 3,
+            y: 14,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 4,
+            y: 4,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 4,
+            y: 10,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 5,
+            y: 1,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 5,
+            y: 5,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 5,
+            y: 9,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 5,
+            y: 13,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 6,
+            y: 2,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 6,
+            y: 6,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 6,
+            y: 8,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 6,
+            y: 12,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 7,
+            y: 0,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 7,
+            y: 3,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 7,
+            y: 7,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 7,
+            y: 11,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 7,
+            y: 14,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 8,
+            y: 2,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 8,
+            y: 6,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 8,
+            y: 8,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 8,
+            y: 12,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 9,
+            y: 1,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 9,
+            y: 5,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 9,
+            y: 9,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 9,
+            y: 13,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 10,
+            y: 4,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 10,
+            y: 10,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 11,
+            y: 0,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 11,
+            y: 3,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 11,
+            y: 7,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 11,
+            y: 11,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 11,
+            y: 14,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 12,
+            y: 2,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 12,
+            y: 6,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 12,
+            y: 8,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 12,
+            y: 12,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 13,
+            y: 1,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 13,
+            y: 5,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 13,
+            y: 9,
+        }: Letter(
+            3,
+        ),
+        Coordinate {
+            x: 13,
+            y: 13,
+        }: Word(
+            2,
+        ),
+        Coordinate {
+            x: 14,
+            y: 0,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 14,
+            y: 3,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 14,
+            y: 7,
+        }: Word(
+            3,
+        ),
+        Coordinate {
+            x: 14,
+            y: 11,
+        }: Letter(
+            2,
+        ),
+        Coordinate {
+            x: 14,
+            y: 14,
+        }: Word(
+            3,
+        ),
+    },
+    tiles: [
+        TileDefinition {
+            face: Letter(
+                'A',
+            ),
+            quantity: 9,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'B',
+            ),
+            quantity: 2,
+            points: 3,
+        },
+        TileDefinition {
+            face: Letter(
+                'C',
+            ),
+            quantity: 2,
+            points: 3,
+        },
+        TileDefinition {
+            face: Letter(
+                'D',
+            ),
+            quantity: 4,
+            points: 2,
+        },
+        TileDefinition {
+            face: Letter(
+                'E',
+            ),
+            quantity: 12,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'F',
+            ),
+            quantity: 2,
+            points: 4,
+        },
+        TileDefinition {
+            face: Letter(
+                'G',
+            ),
+            quantity: 3,
+            points: 2,
+        },
+        TileDefinition {
+            face: Letter(
+                'H',
+            ),
+            quantity: 2,
+            points: 4,
+        },
+        TileDefinition {
+            face: Letter(
+                'I',
+            ),
+            quantity: 9,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'J',
+            ),
+            quantity: 1,
+            points: 8,
+        },
+        TileDefinition {
+            face: Letter(
+                'K',
+            ),
+            quantity: 1,
+            points: 5,
+        },
+        TileDefinition {
+            face: Letter(
+                'L',
+            ),
+            quantity: 4,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'M',
+            ),
+            quantity: 2,
+            points: 3,
+        },
+        TileDefinition {
+            face: Letter(
+                'N',
+            ),
+            quantity: 6,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'O',
+            ),
+            quantity: 8,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'P',
+            ),
+            quantity: 2,
+            points: 3,
+        },
+        TileDefinition {
+            face: Letter(
+                'Q',
+            ),
+            quantity: 1,
+            points: 10,
+        },
+        TileDefinition {
+            face: Letter(
+                'R',
+            ),
+            quantity: 6,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'S',
+            ),
+            quantity: 4,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'T',
+            ),
+            quantity: 6,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'U',
+            ),
+            quantity: 4,
+            points: 1,
+        },
+        TileDefinition {
+            face: Letter(
+                'V',
+            ),
+            quantity: 2,
+            points: 4,
+        },
+        TileDefinition {
+            face: Letter(
+                'W',
+            ),
+            quantity: 2,
+            points: 4,
+        },
+        TileDefinition {
+            face: Letter(
+                'X',
+            ),
+            quantity: 1,
+            points: 8,
+        },
+        TileDefinition {
+            face: Letter(
+                'Y',
+            ),
+            quantity: 2,
+            points: 4,
+        },
+        TileDefinition {
+            face: Letter(
+                'Z',
+            ),
+            quantity: 1,
+            points: 10,
+        },
+        TileDefinition {
+            face: Blank,
+            quantity: 2,
+            points: 0,
+        },
+    ],
+    rack_size: 7,
+    full_rack_bonus: 50,
+    minimum_tiles_for_exchange: 7,
+    scoreless_turn_limit: 6,
+    dictionary_id: "enable1-en",
+}
