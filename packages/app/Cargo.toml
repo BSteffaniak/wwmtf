@@ -1,0 +1,46 @@
+[package]
+authors = { workspace = true }
+categories = ["games", "web-programming"]
+description = "Renderer-neutral Words with Spouses application runtime"
+edition = { workspace = true }
+keywords = ["asynchronous", "game", "hyperchad", "word"]
+license = { workspace = true }
+name = "words_with_spouses_app"
+readme = { workspace = true }
+repository = { workspace = true }
+version = { workspace = true }
+
+[[bin]]
+name = "words-with-spouses"
+path = "src/main.rs"
+required-features = ["actix"]
+
+[dependencies]
+env_logger = { workspace = true }
+hyperchad = { workspace = true, features = [
+    "app",
+    "renderer",
+    "renderer-html",
+    "router",
+    "shared-state-models",
+    "shared-state-transport",
+    "template",
+    "transformer",
+    "transformer-models",
+] }
+async-trait = { workspace = true }
+flume = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+futures-lite = { workspace = true }
+
+[features]
+default = ["actix"]
+actix = [
+    "hyperchad/renderer-html-actix",
+    "hyperchad/renderer-html-sse",
+    "hyperchad/shared-state-models",
+    "hyperchad/shared-state-transport",
+]
+fail-on-warnings = ["hyperchad/fail-on-warnings"]
