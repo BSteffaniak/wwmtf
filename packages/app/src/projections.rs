@@ -80,6 +80,7 @@ pub async fn rebuild_game_projections(
         .value("updated_at_ms", updated_at_ms)
         .execute(tx)
         .await?;
+    rebuild_score_projections(tx, state, updated_at_ms).await?;
     tx.upsert("projection_checkpoints")
         .where_eq("projection_id", format!("game-summary:{game_id_string}"))
         .value("projection_id", format!("game-summary:{game_id_string}"))
@@ -91,6 +92,118 @@ pub async fn rebuild_game_projections(
         .value("updated_at_ms", updated_at_ms)
         .execute(tx)
         .await?;
+    Ok(())
+}
+
+async fn rebuild_score_projections(
+    tx: &dyn Database,
+    state: &GameState,
+    updated_at_ms: i64,
+) -> Result<(), ProjectionError> {
+    let game_id = state.metadata.id().to_string();
+    tx.delete("game_scores")
+        .where_eq("game_id", game_id.clone())
+        .execute(tx)
+        .await?;
+
+    if state.status == GameStatus::Completed {
+        for player in state.players {
+            let user_id = user_for_player(tx, &game_id, player)
+                .await?
+                .ok_or(ProjectionError::Malformed)?;
+            let outcome = match state.winner {
+                Some(winner) if winner == player => "WIN",
+                Some(_) => "LOSS",
+                None => "TIE",
+            };
+            tx.insert("game_scores")
+                .value("game_player_score_id", format!("{game_id}:{user_id}"))
+                .value("game_id", game_id.clone())
+                .value("user_id", user_id)
+                .value("score", i64::from(state.scores[&player]))
+                .value("outcome", outcome)
+                .value("updated_at_ms", updated_at_ms)
+                .execute(tx)
+                .await?;
+        }
+    }
+
+    rebuild_all_user_score_totals(tx, updated_at_ms).await
+}
+
+/// Rebuilds every user's aggregate score totals exclusively from per-game completed scores.
+///
+/// # Errors
+///
+/// * Returns [`ProjectionError::Database`] when a `switchy` builder operation fails.
+/// * Returns [`ProjectionError::Malformed`] when a score row cannot be represented safely.
+pub async fn rebuild_all_user_score_totals(
+    tx: &dyn Database,
+    updated_at_ms: i64,
+) -> Result<(), ProjectionError> {
+    let rows = tx.select("game_scores").execute(tx).await?;
+    let mut totals = std::collections::BTreeMap::<String, UserScoreTotals>::new();
+    for row in rows {
+        let user_id = string_column(&row, "user_id")?;
+        let score = unsigned_column(&row, "score")?;
+        let outcome = string_column(&row, "outcome")?;
+        let total = totals.entry(user_id.clone()).or_insert(UserScoreTotals {
+            user_id,
+            completed_games: 0,
+            wins: 0,
+            ties: 0,
+            total_score: 0,
+        });
+        total.completed_games = total
+            .completed_games
+            .checked_add(1)
+            .ok_or(ProjectionError::Malformed)?;
+        total.total_score = total
+            .total_score
+            .checked_add(score)
+            .ok_or(ProjectionError::Malformed)?;
+        match outcome.as_str() {
+            "WIN" => {
+                total.wins = total
+                    .wins
+                    .checked_add(1)
+                    .ok_or(ProjectionError::Malformed)?;
+            }
+            "TIE" => {
+                total.ties = total
+                    .ties
+                    .checked_add(1)
+                    .ok_or(ProjectionError::Malformed)?;
+            }
+            "LOSS" => {}
+            _ => return Err(ProjectionError::Malformed),
+        }
+    }
+
+    tx.delete("user_score_totals").execute(tx).await?;
+    for total in totals.into_values() {
+        tx.insert("user_score_totals")
+            .value("user_id", total.user_id)
+            .value(
+                "completed_games",
+                i64::try_from(total.completed_games).map_err(|_| ProjectionError::Malformed)?,
+            )
+            .value(
+                "wins",
+                i64::try_from(total.wins).map_err(|_| ProjectionError::Malformed)?,
+            )
+            .value(
+                "ties",
+                i64::try_from(total.ties).map_err(|_| ProjectionError::Malformed)?,
+            )
+            .value(
+                "total_score",
+                i64::try_from(total.total_score).map_err(|_| ProjectionError::Malformed)?,
+            )
+            .value("updated_at_ms", updated_at_ms)
+            .execute(tx)
+            .await?;
+    }
     Ok(())
 }
 
@@ -152,6 +265,82 @@ pub struct PendingItem {
 pub struct DashboardProjection {
     pub pending: Vec<PendingItem>,
     pub games: Vec<GameSummary>,
+}
+
+/// Aggregate completed-game statistics derived from canonical game results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserScoreTotals {
+    pub user_id: String,
+    pub completed_games: u64,
+    pub wins: u64,
+    pub ties: u64,
+    pub total_score: u64,
+}
+
+/// One chronological history row derived from a canonical game event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameHistoryEntry {
+    pub revision: u64,
+    pub player_user_id: Option<String>,
+    pub event_kind: String,
+    pub score_delta: u32,
+    pub created_at_ms: i64,
+}
+
+/// Loads aggregate score history for one user.
+///
+/// # Errors
+///
+/// * Returns database or malformed projection errors.
+pub async fn user_score_totals(
+    db: &dyn Database,
+    user_id: &str,
+) -> Result<Option<UserScoreTotals>, ProjectionError> {
+    let rows = db
+        .select("user_score_totals")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?;
+    rows.first()
+        .map(|row| {
+            Ok(UserScoreTotals {
+                user_id: string_column(row, "user_id")?,
+                completed_games: unsigned_column(row, "completed_games")?,
+                wins: unsigned_column(row, "wins")?,
+                ties: unsigned_column(row, "ties")?,
+                total_score: unsigned_column(row, "total_score")?,
+            })
+        })
+        .transpose()
+}
+
+/// Loads chronological move and score history for one game.
+///
+/// # Errors
+///
+/// * Returns database or malformed projection errors.
+pub async fn game_history(
+    db: &dyn Database,
+    game_id: GameId,
+) -> Result<Vec<GameHistoryEntry>, ProjectionError> {
+    let rows = db
+        .select("move_history")
+        .where_eq("game_id", game_id.to_string())
+        .sort("revision", switchy_database::query::SortDirection::Asc)
+        .execute(db)
+        .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(GameHistoryEntry {
+                revision: unsigned_column(row, "revision")?,
+                player_user_id: optional_string(row, "player_user_id"),
+                event_kind: string_column(row, "event_kind")?,
+                score_delta: u32::try_from(unsigned_column(row, "score_delta")?)
+                    .map_err(|_| ProjectionError::Malformed)?,
+                created_at_ms: signed_column(row, "created_at_ms")?,
+            })
+        })
+        .collect()
 }
 
 /// Loads pending challenge/invitation state and active/completed games for one user.
@@ -353,7 +542,7 @@ mod tests {
     use futures_lite::future::block_on;
     use time::OffsetDateTime;
     use words_with_spouses_game_domain::{
-        DictionaryRef, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
+        DictionaryRef, GameMetadata, GameStatus, PlayerId, RuleProfileRef, initial_rule_profile,
         initialize_game, replay,
     };
 
@@ -413,6 +602,83 @@ mod tests {
                     .pending
                     .iter()
                     .any(|item| item.kind == "INVITATION")
+            );
+        });
+    }
+
+    #[test]
+    fn completed_game_score_totals_rebuild_idempotently() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let game_id = GameId::new();
+            let players = [PlayerId::new(), PlayerId::new()];
+            let metadata = GameMetadata::new(
+                game_id,
+                RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+                DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+                OffsetDateTime::UNIX_EPOCH,
+            );
+            let started =
+                initialize_game(metadata, players, players[0], &initial_rule_profile(), 2)
+                    .expect("game starts");
+            let mut state = replay([&started]).expect("start replays");
+            state.status = GameStatus::Completed;
+            state.winner = Some(players[0]);
+            state.scores.insert(players[0], 120);
+            state.scores.insert(players[1], 85);
+            for (seat, player) in players.into_iter().enumerate() {
+                db.insert("game_players")
+                    .value("game_player_id", player.as_uuid().to_string())
+                    .value("game_id", game_id.to_string())
+                    .value("user_id", format!("user-{seat}"))
+                    .value("seat", i64::try_from(seat).expect("seat fits"))
+                    .execute(&*db)
+                    .await
+                    .expect("membership inserts");
+            }
+
+            for _ in 0..2 {
+                let tx = db.begin_transaction().await.expect("transaction begins");
+                rebuild_game_projections(&*tx, &state, std::slice::from_ref(&started), 0)
+                    .await
+                    .expect("projection rebuilds");
+                tx.commit().await.expect("transaction commits");
+            }
+
+            assert_eq!(
+                user_score_totals(&*db, "user-0")
+                    .await
+                    .expect("totals load"),
+                Some(UserScoreTotals {
+                    user_id: "user-0".to_string(),
+                    completed_games: 1,
+                    wins: 1,
+                    ties: 0,
+                    total_score: 120,
+                })
+            );
+            assert_eq!(
+                user_score_totals(&*db, "user-1")
+                    .await
+                    .expect("totals load")
+                    .expect("loser totals exist")
+                    .total_score,
+                85
+            );
+            assert_eq!(
+                db.select("game_scores")
+                    .where_eq("game_id", game_id.to_string())
+                    .execute(&*db)
+                    .await
+                    .expect("scores load")
+                    .len(),
+                2
             );
         });
     }

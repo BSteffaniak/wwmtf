@@ -5,7 +5,9 @@
 mod durable_web_session;
 
 use hyperchad::app::AppBuilder;
-use words_with_spouses_app::create_router;
+use words_with_spouses_app::{
+    CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -19,6 +21,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(8343);
 
     log::info!("starting Words with Spouses on {address}:{port}");
+
+    if let Ok(public_base_url) = std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL") {
+        if !public_base_url.starts_with("https://") {
+            return Err("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https in deployment".into());
+        }
+        log::info!("public HTTPS origin configured");
+    }
 
     let database_path = std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH")
         .unwrap_or_else(|_| "words-with-spouses.db".to_string());
@@ -38,24 +47,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use hyperchad::renderer_html_actix::{CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig};
 
         let dispatcher = words_with_spouses_app::shared_state_dispatcher(database.clone());
+        let csrf_token = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let web_security = Arc::new(CookieCsrfWebSecurity::new(
             CookieCsrfWebSecurityConfig::new(
-                "words-with-spouses-session",
-                "words-with-spouses-csrf",
-                "x-csrf-token",
+                SESSION_COOKIE_NAME,
+                CSRF_COOKIE_NAME,
+                CSRF_HEADER_NAME,
             ),
             Arc::new(durable_web_session::DurableWebSessionIdentityResolver::new(
-                database,
+                database.clone(),
             )),
         ));
 
         let mut app = AppBuilder::new()
-            .with_router(create_router())
+            .with_router(create_product_router(database.clone()))
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
             .with_actix_bind_address(address)
             .with_actix_port(port)
             .build_default_html_actix()?;
+        app.renderer.app.set_shared_state_csrf_token(csrf_token);
         app.renderer
             .app
             .set_shared_state_transport_dispatcher(dispatcher, web_security);

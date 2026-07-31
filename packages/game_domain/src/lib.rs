@@ -12,7 +12,7 @@ mod rules;
 
 pub use dictionary::{
     BUNDLED_DICTIONARY_ID, BUNDLED_DICTIONARY_SHA256, BUNDLED_DICTIONARY_VERSION, Dictionary,
-    WordSetDictionary, bundled_dictionary, bundled_dictionary_ref, normalize_word,
+    WordSetDictionary, bundled_dictionary, bundled_dictionary_ref, dictionary, normalize_word,
 };
 pub use engine::{
     InitializationError, ReplayError, apply_event, build_bag, initialize_game, replay, shuffle_bag,
@@ -23,7 +23,8 @@ pub use model::{
     Placement, PlayerId, Tile, TileFace, TileId,
 };
 pub use rules::{
-    PremiumSquare, RuleProfile, RuleProfileError, TileDefinition, initial_rule_profile,
+    INITIAL_RULE_PROFILE_ID, INITIAL_RULE_PROFILE_VERSION, PremiumSquare, RuleProfile,
+    RuleProfileError, TileDefinition, initial_rule_profile, rule_profile,
 };
 
 use serde::{Deserialize, Serialize};

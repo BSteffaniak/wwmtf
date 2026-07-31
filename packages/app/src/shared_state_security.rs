@@ -15,30 +15,35 @@ use hyperchad::{
         SharedStateTransportDispatcher,
     },
 };
-use serde::{Deserialize, Serialize};
 use switchy_database::{Database, query::FilterableQuery as _};
-use words_with_spouses_game_domain::{GameCommand, GameId, GameState, PlayerId};
+use words_with_spouses_game_domain::{GameCommand, GameId, PlayerId};
 
-use crate::{game_view, player_for_user, recover_game, submit_game_command};
+use crate::{GameView, game_view, player_for_user, recover_game, submit_game_command};
 
 const GAME_CHANNEL_PREFIX: &str = "game:";
-const GAME_STATE_EVENT: &str = "GAME_STATE_V1";
 const GAME_VIEW_EVENT: &str = "GAME_VIEW_UPDATED_V1";
+const PRIVATE_PARTICIPANT_METADATA: &str = "private-participant-id";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct ServerGameUpdate {
-    state: GameState,
-    players_by_user: BTreeMap<String, PlayerId>,
+    views_by_user: BTreeMap<String, GameView>,
+}
+
+#[derive(Debug)]
+struct GameSubscriber {
+    user_id: String,
+    sender: flume::Sender<EventEnvelope>,
 }
 
 /// Membership-authorized renderer-neutral gameplay dispatcher.
 ///
-/// Canonical state remains server-internal. [`Self::project_event`] converts each update to the
-/// requesting member's public board and private rack before it crosses the transport boundary.
+/// Canonical state remains server-internal. Before an update enters the in-process subscriber bus,
+/// it is reduced to the exact authorized [`GameView`] for each subscriber. Every queued event is
+/// tagged to one participant, and [`Self::project_event`] verifies that tag before transport.
 #[derive(Debug)]
 pub struct GameSharedStateDispatcher {
     database: Arc<dyn Database>,
-    subscribers: Mutex<BTreeMap<ChannelId, Vec<flume::Sender<EventEnvelope>>>>,
+    subscribers: Mutex<BTreeMap<ChannelId, Vec<GameSubscriber>>>,
 }
 
 impl GameSharedStateDispatcher {
@@ -66,7 +71,7 @@ impl GameSharedStateDispatcher {
     async fn server_update(
         &self,
         game_id: GameId,
-        state: GameState,
+        state: &words_with_spouses_game_domain::GameState,
     ) -> SharedStateTransportDispatchResult<ServerGameUpdate> {
         let rows = self
             .database
@@ -74,7 +79,7 @@ impl GameSharedStateDispatcher {
             .where_eq("game_id", game_id.to_string())
             .execute(&*self.database)
             .await?;
-        let mut players_by_user = BTreeMap::new();
+        let mut views_by_user = BTreeMap::new();
         for row in rows {
             let user_id = row
                 .get("user_id")
@@ -84,47 +89,66 @@ impl GameSharedStateDispatcher {
                 .get("game_player_id")
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .ok_or("game membership player is malformed")?;
-            players_by_user.insert(
-                user_id,
-                PlayerId::from_str(&player_id)
-                    .map_err(|_| "game membership player is malformed")?,
-            );
+            let player = PlayerId::from_str(&player_id)
+                .map_err(|_| "game membership player is malformed")?;
+            let view = game_view(state, player).ok_or("game membership player is not seated")?;
+            views_by_user.insert(user_id, view);
         }
-        if players_by_user.len() != 2 {
+        if views_by_user.len() != 2 {
             return Err("game must have exactly two members".into());
         }
-        Ok(ServerGameUpdate {
-            state,
-            players_by_user,
-        })
+        Ok(ServerGameUpdate { views_by_user })
     }
 
-    fn canonical_event(
-        update: &ServerGameUpdate,
-        command_id: Option<hyperchad::shared_state_models::CommandId>,
+    fn projected_event(
+        game_id: GameId,
+        view: &GameView,
+        participant_id: &str,
+        command_id: Option<&hyperchad::shared_state_models::CommandId>,
         created_at_ms: i64,
     ) -> SharedStateTransportDispatchResult<EventEnvelope> {
-        let game_id = update.state.metadata.id();
-        let revision = Revision::new(update.state.revision);
+        let revision = Revision::new(view.revision);
         Ok(EventEnvelope {
-            event_id: EventId::new(format!("{game_id}:{}", revision.value())),
+            event_id: EventId::new(format!("{game_id}:{}:{participant_id}", revision.value())),
             channel_id: game_channel(game_id),
             revision,
-            command_id,
-            event_name: GAME_STATE_EVENT.to_string(),
-            payload: PayloadBlob::from_serializable(update)?,
-            metadata: BTreeMap::new(),
+            command_id: command_id.cloned(),
+            event_name: GAME_VIEW_EVENT.to_string(),
+            payload: PayloadBlob::from_serializable(view)?,
+            metadata: BTreeMap::from([(
+                PRIVATE_PARTICIPANT_METADATA.to_string(),
+                participant_id.to_string(),
+            )]),
             created_at_ms,
         })
     }
 
-    fn publish(&self, event: &EventEnvelope) -> SharedStateTransportDispatchResult<()> {
+    fn publish(
+        &self,
+        game_id: GameId,
+        update: &ServerGameUpdate,
+        command_id: Option<&hyperchad::shared_state_models::CommandId>,
+        created_at_ms: i64,
+    ) -> SharedStateTransportDispatchResult<()> {
+        let channel_id = game_channel(game_id);
         let mut subscribers = self
             .subscribers
             .lock()
             .map_err(|_| "game subscriber registry is unavailable")?;
-        if let Some(channel_subscribers) = subscribers.get_mut(&event.channel_id) {
-            channel_subscribers.retain(|subscriber| subscriber.send(event.clone()).is_ok());
+        if let Some(channel_subscribers) = subscribers.get_mut(&channel_id) {
+            channel_subscribers.retain(|subscriber| {
+                let Some(view) = update.views_by_user.get(&subscriber.user_id) else {
+                    return false;
+                };
+                Self::projected_event(
+                    game_id,
+                    view,
+                    &subscriber.user_id,
+                    command_id,
+                    created_at_ms,
+                )
+                .is_ok_and(|event| subscriber.sender.send(event).is_ok())
+            });
         }
         drop(subscribers);
         Ok(())
@@ -183,13 +207,13 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                     }
                 };
                 let resulting_revision = Revision::new(state.revision);
-                let update = self.server_update(game_id, state).await?;
-                let event = Self::canonical_event(
+                let update = self.server_update(game_id, &state).await?;
+                self.publish(
+                    game_id,
                     &update,
-                    Some(command.command_id.clone()),
+                    Some(&command.command_id),
                     command.created_at_ms,
                 )?;
-                self.publish(&event)?;
                 Ok(vec![TransportInbound::CommandAccepted {
                     command_id: command.command_id,
                     resulting_revision,
@@ -220,20 +244,29 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         channel_id: &ChannelId,
     ) -> SharedStateTransportDispatchResult<flume::Receiver<EventEnvelope>> {
-        let (game_id, _) = self.authorize(context, channel_id).await?;
+        let (game_id, player) = self.authorize(context, channel_id).await?;
         let (sender, receiver) = flume::unbounded();
         self.subscribers
             .lock()
             .map_err(|_| "game subscriber registry is unavailable")?
             .entry(channel_id.clone())
             .or_default()
-            .push(sender.clone());
+            .push(GameSubscriber {
+                user_id: context.participant_id.as_str().to_string(),
+                sender: sender.clone(),
+            });
 
         // Register before loading so a command racing subscription is duplicated at worst, never
         // lost. Revision-aware clients converge on the newest update.
         let state = recover_game(&*self.database, game_id).await?;
-        let update = self.server_update(game_id, state).await?;
-        sender.send(Self::canonical_event(&update, None, 0)?)?;
+        let view = game_view(&state, player).ok_or("authorized game view is unavailable")?;
+        sender.send(Self::projected_event(
+            game_id,
+            &view,
+            context.participant_id.as_str(),
+            None,
+            0,
+        )?)?;
         Ok(receiver)
     }
 
@@ -242,15 +275,16 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         event: &EventEnvelope,
     ) -> Option<EventEnvelope> {
-        if event.event_name != GAME_STATE_EVENT {
+        if event.event_name != GAME_VIEW_EVENT
+            || event
+                .metadata
+                .get(PRIVATE_PARTICIPANT_METADATA)
+                .map(String::as_str)
+                != Some(context.participant_id.as_str())
+        {
             return None;
         }
-        let update: ServerGameUpdate = event.payload.deserialize().ok()?;
-        let player = update
-            .players_by_user
-            .get(context.participant_id.as_str())
-            .copied()?;
-        let view = game_view(&update.state, player)?;
+        let view: GameView = event.payload.deserialize().ok()?;
         Some(EventEnvelope {
             event_id: event.event_id.clone(),
             channel_id: event.channel_id.clone(),
@@ -418,10 +452,34 @@ mod tests {
                 .expect("Bob live subscription opens");
             let alice_initial = alice_events.recv_async().await.expect("initial update");
             let bob_initial = bob_events.recv_async().await.expect("initial update");
+            let alice_payload = serde_json::to_string(&alice_initial)
+                .expect("private transport envelope serializes");
+            assert!(!alice_payload.contains("\"state\""));
+            assert!(!alice_payload.contains("\"bag\""));
+            let state_for_privacy = recover_game(&*dispatcher.database, game_id)
+                .await
+                .expect("state loads for privacy assertion");
+            let bob_player = dispatcher
+                .authorize(&context(&bob), &game_channel(game_id))
+                .await
+                .expect("Bob is authorized")
+                .1;
+            for tile in &state_for_privacy.racks[&bob_player] {
+                let forbidden = format!("[{},", tile.id.get());
+                assert!(
+                    !alice_payload.contains(&forbidden),
+                    "Alice transport payload must not contain Bob's rack tile IDs"
+                );
+            }
             assert!(
                 dispatcher
                     .project_event(&context(&alice), &alice_initial)
                     .is_some()
+            );
+            assert!(
+                dispatcher
+                    .project_event(&context(&bob), &alice_initial)
+                    .is_none()
             );
             assert!(
                 dispatcher

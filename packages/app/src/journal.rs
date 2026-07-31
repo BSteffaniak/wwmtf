@@ -8,6 +8,29 @@ use switchy_database::{
 use thiserror::Error;
 use words_with_spouses_game_domain::{GameEvent, GameId, GameState, apply_event, replay};
 
+const GAME_EVENT_PAYLOAD_VERSION: u32 = 1;
+const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 1;
+
+/// Compatibility policy for canonical persisted payloads.
+///
+/// Existing payload versions are immutable. A schema change must introduce a new decoder and
+/// explicit migration/upgrade test before writers advance either current version. Readers reject
+/// unknown versions instead of attempting best-effort deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedPayloadCompatibility {
+    pub event_version: u32,
+    pub snapshot_version: u32,
+}
+
+/// Returns the exact payload versions written by this application release.
+#[must_use]
+pub const fn persisted_payload_compatibility() -> PersistedPayloadCompatibility {
+    PersistedPayloadCompatibility {
+        event_version: GAME_EVENT_PAYLOAD_VERSION,
+        snapshot_version: GAME_SNAPSHOT_PAYLOAD_VERSION,
+    }
+}
+
 /// Persisted canonical event envelope with explicit compatibility version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedGameEvent {
@@ -96,7 +119,7 @@ pub async fn append_events(
             )
             .value("command_id", command_id)
             .value("idempotency_key", idempotency_key)
-            .value("payload_version", 1_i64)
+            .value("payload_version", i64::from(GAME_EVENT_PAYLOAD_VERSION))
             .value("payload", serde_json::to_string(event)?)
             .execute(tx)
             .await?;
@@ -223,7 +246,7 @@ pub async fn load_events(
         .map(|row| {
             let revision = integer_column(&row, "revision")?;
             let payload_version = integer_column(&row, "payload_version")?;
-            if payload_version != 1 {
+            if payload_version != u64::from(GAME_EVENT_PAYLOAD_VERSION) {
                 return Err(JournalError::UnsupportedPayloadVersion(payload_version));
             }
             let payload = string_column(&row, "payload")?;
@@ -232,7 +255,7 @@ pub async fn load_events(
                 revision,
                 command_id: string_column(&row, "command_id")?,
                 idempotency_key: string_column(&row, "idempotency_key")?,
-                payload_version: 1,
+                payload_version: GAME_EVENT_PAYLOAD_VERSION,
                 event: serde_json::from_str(&payload)?,
             })
         })
@@ -267,7 +290,7 @@ pub async fn store_snapshot(
             "revision",
             i64::try_from(state.revision).map_err(|_| JournalError::InvalidRevision)?,
         )
-        .value("payload_version", 1_i64)
+        .value("payload_version", i64::from(GAME_SNAPSHOT_PAYLOAD_VERSION))
         .value("payload", serde_json::to_string(state)?)
         .value("created_at_ms", created_at_ms)
         .execute(db)
@@ -294,7 +317,7 @@ pub async fn load_latest_snapshot(
         return Ok(None);
     };
     let version = integer_column(row, "payload_version")?;
-    if version != 1 {
+    if version != u64::from(GAME_SNAPSHOT_PAYLOAD_VERSION) {
         return Err(JournalError::UnsupportedPayloadVersion(version));
     }
     let payload = string_column(row, "payload")?;
@@ -357,7 +380,7 @@ mod tests {
     use futures_lite::future::block_on;
     use time::OffsetDateTime;
     use words_with_spouses_game_domain::{
-        DictionaryRef, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
+        GameMetadata, PlayerId, RuleProfileRef, bundled_dictionary_ref, initial_rule_profile,
         initialize_game, replay,
     };
 
@@ -381,7 +404,7 @@ mod tests {
         let metadata = GameMetadata::new(
             game_id,
             RuleProfileRef::new("classic-en", 1).expect("rules reference"),
-            DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+            bundled_dictionary_ref().expect("dictionary reference"),
             OffsetDateTime::UNIX_EPOCH,
         );
         let started = initialize_game(metadata, players, players[0], &initial_rule_profile(), 1)
@@ -534,6 +557,98 @@ mod tests {
                 recover_game(&*db, game_id).await.expect("game recovers"),
                 state
             );
+        });
+    }
+
+    #[test]
+    fn persisted_rule_dictionary_event_and_snapshot_fixtures_remain_replayable() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            assert_eq!(state.metadata.rules(), &initial_rule_profile().reference);
+            assert_eq!(
+                state.metadata.dictionary().id(),
+                bundled_dictionary_ref()
+                    .expect("bundled dictionary reference")
+                    .id()
+            );
+            let started = started_event(&state);
+            let fixture = serde_json::to_string(&started).expect("event fixture serializes");
+            let decoded: GameEvent = serde_json::from_str(&fixture).expect("event fixture decodes");
+            assert_eq!(replay([&decoded]).expect("event fixture replays"), state);
+
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "fixture-command",
+                "fixture-idempotency",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("fixture event persists");
+            store_snapshot(&*db, game_id, &state, 0)
+                .await
+                .expect("fixture snapshot persists");
+            assert_eq!(
+                load_events(&*db, game_id, 0)
+                    .await
+                    .expect("fixture events load")[0]
+                    .event,
+                started
+            );
+            assert_eq!(
+                load_latest_snapshot(&*db, game_id)
+                    .await
+                    .expect("fixture snapshot loads"),
+                Some(state)
+            );
+        });
+    }
+
+    #[test]
+    fn payload_versions_are_explicit_and_unknown_versions_fail_closed() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "command-1",
+                "idem-1",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("event appends");
+            store_snapshot(&*db, game_id, &state, 0)
+                .await
+                .expect("snapshot stores");
+
+            let compatibility = persisted_payload_compatibility();
+            assert_eq!(compatibility.event_version, 1);
+            assert_eq!(compatibility.snapshot_version, 1);
+
+            db.update("game_journal")
+                .value("payload_version", 2_i64)
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("event version changes");
+            assert!(matches!(
+                load_events(&*db, game_id, 0).await,
+                Err(JournalError::UnsupportedPayloadVersion(2))
+            ));
+
+            db.update("game_snapshots")
+                .value("payload_version", 2_i64)
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("snapshot version changes");
+            assert!(matches!(
+                load_latest_snapshot(&*db, game_id).await,
+                Err(JournalError::UnsupportedPayloadVersion(2))
+            ));
         });
     }
 

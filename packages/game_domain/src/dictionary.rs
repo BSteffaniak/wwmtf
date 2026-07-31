@@ -57,6 +57,18 @@ impl Dictionary for WordSetDictionary {
     }
 }
 
+/// Immutable dictionary bytes for an exact compatibility reference.
+///
+/// Unknown references fail closed so an application upgrade cannot silently replay a persisted
+/// game against different word data.
+#[must_use]
+pub fn dictionary(reference: &DictionaryRef) -> Option<WordSetDictionary> {
+    (reference.id() == BUNDLED_DICTIONARY_ID
+        && reference.version() == BUNDLED_DICTIONARY_VERSION
+        && reference.checksum() == format!("sha256:{BUNDLED_DICTIONARY_SHA256}"))
+    .then(bundled_dictionary)
+}
+
 /// Loads the immutable dictionary bundled with this crate.
 #[must_use]
 pub fn bundled_dictionary() -> WordSetDictionary {
@@ -105,16 +117,24 @@ mod tests {
     #[test]
     fn bundled_dictionary_has_stable_identity_and_content() {
         let reference = bundled_dictionary_ref().expect("bundled reference is valid");
-        let dictionary = bundled_dictionary();
+        let bundled = bundled_dictionary();
 
+        assert!(dictionary(&reference).is_some());
+        let unsupported = DictionaryRef::new(
+            BUNDLED_DICTIONARY_ID,
+            BUNDLED_DICTIONARY_VERSION + 1,
+            format!("sha256:{BUNDLED_DICTIONARY_SHA256}"),
+        )
+        .expect("future reference is structurally valid");
+        assert!(dictionary(&unsupported).is_none());
         assert_eq!(reference.id(), BUNDLED_DICTIONARY_ID);
         assert_eq!(reference.version(), BUNDLED_DICTIONARY_VERSION);
         assert_eq!(
             reference.checksum(),
             format!("sha256:{BUNDLED_DICTIONARY_SHA256}")
         );
-        assert_eq!(dictionary.len(), 172_823);
-        assert!(dictionary.contains("WORD"));
-        assert!(dictionary.contains("ZYZZYVAS"));
+        assert_eq!(bundled.len(), 172_823);
+        assert!(bundled.contains("WORD"));
+        assert!(bundled.contains("ZYZZYVAS"));
     }
 }

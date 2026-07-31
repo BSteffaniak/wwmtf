@@ -2,7 +2,9 @@
 
 use hyperchad::{router::Container, template::container};
 use serde::{Deserialize, Serialize};
-use words_with_spouses_game_domain::{Coordinate, GameState, PlayerId};
+use words_with_spouses_game_domain::{
+    Coordinate, GameEvent, GameState, GameStatus, PlayerId, apply_event,
+};
 
 /// Premium kind rendered on one board square.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub struct GameView {
     pub rack: Vec<(u16, char, u8)>,
     pub scores: Vec<(PlayerId, u32)>,
     pub active_player: PlayerId,
+    pub status: GameStatus,
+    pub winner: Option<PlayerId>,
     pub revision: u64,
 }
 
@@ -58,6 +62,8 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
             .map(|(&player, &score)| (player, score))
             .collect(),
         active_player: state.active_player,
+        status: state.status,
+        winner: state.winner,
         revision: state.revision,
     })
 }
@@ -68,6 +74,68 @@ pub struct MoveHistoryView {
     pub revision: u64,
     pub kind: String,
     pub score_delta: u32,
+}
+
+/// Derives chronological renderer-neutral history directly from canonical events.
+///
+/// # Errors
+///
+/// * Returns replay errors when the event sequence is not a valid canonical journal.
+pub fn move_history_view(
+    events: &[GameEvent],
+) -> Result<Vec<MoveHistoryView>, words_with_spouses_game_domain::ReplayError> {
+    let mut state = None;
+    let mut history = Vec::with_capacity(events.len());
+    for event in events {
+        let next_state = apply_event(state, event)?;
+        let revision = next_state.revision;
+        state = Some(next_state);
+        let (kind, score_delta) = match event {
+            GameEvent::GameStarted { .. } => ("GAME_STARTED", 0),
+            GameEvent::TilesPlayed { score, .. } => ("TILES_PLAYED", *score),
+            GameEvent::TilesExchanged { .. } => ("TILES_EXCHANGED", 0),
+            GameEvent::TurnPassed { .. } => ("TURN_PASSED", 0),
+            GameEvent::GameResigned { .. } => ("GAME_RESIGNED", 0),
+            GameEvent::GameCompleted { .. } => ("GAME_COMPLETED", 0),
+        };
+        history.push(MoveHistoryView {
+            revision,
+            kind: kind.to_string(),
+            score_delta,
+        });
+    }
+    Ok(history)
+}
+
+/// Returns per-player final score adjustments from the last pre-completion state.
+///
+/// Positive values are bonuses and negative values are deductions. An empty map means the game
+/// has no final-score event (for example, resignation).
+///
+/// # Errors
+///
+/// * Returns replay errors when the canonical event sequence is invalid.
+pub fn final_score_adjustments(
+    events: &[GameEvent],
+) -> Result<std::collections::BTreeMap<PlayerId, i64>, words_with_spouses_game_domain::ReplayError>
+{
+    let mut state: Option<GameState> = None;
+    for event in events {
+        if let GameEvent::GameCompleted { scores, .. } = event {
+            let before = state
+                .as_ref()
+                .ok_or(words_with_spouses_game_domain::ReplayError::EmptyJournal)?;
+            return Ok(scores
+                .iter()
+                .map(|(&player, &score)| {
+                    let prior = before.scores[&player];
+                    (player, i64::from(score) - i64::from(prior))
+                })
+                .collect());
+        }
+        state = Some(apply_event(state, event)?);
+    }
+    Ok(std::collections::BTreeMap::new())
 }
 
 /// Renders chronological move/score history.
@@ -186,12 +254,18 @@ pub fn status_component(view: &GameView) -> Container {
         .map(|(player, score)| format!("{player:?}:{score}"))
         .collect::<Vec<_>>()
         .join(" ");
-    let turn = format!("{:?}", view.active_player);
+    let status = match view.status {
+        GameStatus::Active => format!("Current turn: {:?}", view.active_player),
+        GameStatus::Completed => view.winner.map_or_else(
+            || "Completed: tie".to_string(),
+            |winner| format!("Completed: winner {winner:?}"),
+        ),
+    };
     container! {
         section id="game-status" gap=8 {
             h2 { "Scores" }
             span { (scores) }
-            span { "Current turn: " (turn) }
+            span { (status) }
         }
     }
     .into()

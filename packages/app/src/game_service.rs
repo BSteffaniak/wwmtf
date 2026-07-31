@@ -5,8 +5,7 @@ use std::str::FromStr as _;
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use words_with_spouses_game_domain::{
-    GameCommand, GameId, GameState, PlayerId, apply_event, bundled_dictionary, decide_command,
-    initial_rule_profile,
+    GameCommand, GameId, GameState, PlayerId, apply_event, decide_command, dictionary, rule_profile,
 };
 
 /// Resolves one authenticated user to their stable player identity in a game.
@@ -97,20 +96,15 @@ async fn submit_in_transaction(
             actual: current.revision,
         });
     }
-    if current.metadata.rules() != &initial_rule_profile().reference
-        || current.metadata.dictionary()
-            != &words_with_spouses_game_domain::bundled_dictionary_ref()?
-    {
+    let profile =
+        rule_profile(current.metadata.rules()).ok_or(GameServiceError::UnsupportedCompatibility)?;
+    let dictionary = dictionary(current.metadata.dictionary())
+        .ok_or(GameServiceError::UnsupportedCompatibility)?;
+    if profile.dictionary_id != current.metadata.dictionary().id() {
         return Err(GameServiceError::UnsupportedCompatibility);
     }
 
-    let result = decide_command(
-        &current,
-        actor,
-        command,
-        &initial_rule_profile(),
-        &bundled_dictionary(),
-    )?;
+    let result = decide_command(&current, actor, command, &profile, &dictionary)?;
     crate::append_events(
         tx,
         game_id,
@@ -145,8 +139,6 @@ pub enum GameServiceError {
     UnsupportedCompatibility,
     #[error("stale command revision: expected {expected}, actual {actual}")]
     Conflict { expected: u64, actual: u64 },
-    #[error(transparent)]
-    ProfileReference(#[from] words_with_spouses_game_domain::ProfileReferenceError),
     #[error(transparent)]
     Domain(#[from] words_with_spouses_game_domain::GameError),
     #[error(transparent)]

@@ -172,6 +172,19 @@ pub enum RuleProfileError {
     EmptyDictionaryId,
 }
 
+/// Stable identity of the reviewed initial rules profile.
+pub const INITIAL_RULE_PROFILE_ID: &str = "classic-en";
+/// Immutable fixture version of the reviewed initial rules profile.
+pub const INITIAL_RULE_PROFILE_VERSION: u32 = 1;
+
+/// Returns the exact immutable rules profile supported by this application release.
+#[must_use]
+pub fn rule_profile(reference: &RuleProfileRef) -> Option<RuleProfile> {
+    (reference.id() == INITIAL_RULE_PROFILE_ID
+        && reference.version() == INITIAL_RULE_PROFILE_VERSION)
+        .then(initial_rule_profile)
+}
+
 /// Reviewed initial neutral profile fixture.
 ///
 /// This data is deliberately separate from move algorithms so persisted games pin behavior to a
@@ -183,7 +196,8 @@ pub enum RuleProfileError {
 #[must_use]
 pub fn initial_rule_profile() -> RuleProfile {
     let profile = RuleProfile {
-        reference: RuleProfileRef::new("classic-en", 1).expect("fixture reference is valid"),
+        reference: RuleProfileRef::new(INITIAL_RULE_PROFILE_ID, INITIAL_RULE_PROFILE_VERSION)
+            .expect("fixture reference is valid"),
         board_size: 15,
         start: Coordinate::new(7, 7),
         premiums: initial_premiums(),
@@ -332,6 +346,13 @@ mod tests {
     fn initial_profile_fixture_is_stable_and_valid() {
         let profile = initial_rule_profile();
 
+        assert!(rule_profile(&profile.reference).is_some());
+        assert!(
+            rule_profile(
+                &RuleProfileRef::new(INITIAL_RULE_PROFILE_ID, 2).expect("valid future reference")
+            )
+            .is_none()
+        );
         assert_eq!(profile.reference.id(), "classic-en");
         assert_eq!(profile.reference.version(), 1);
         assert_eq!(profile.board_size, 15);

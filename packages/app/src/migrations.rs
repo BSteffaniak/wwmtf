@@ -280,6 +280,26 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["game_id", "idempotency_key"],
         true,
     ));
+    source.add_migration(table_migration(
+        "030_game_scores",
+        "game_scores",
+        vec![
+            text("game_player_score_id"),
+            text("game_id"),
+            text("user_id"),
+            bigint("score"),
+            text("outcome"),
+            bigint("updated_at_ms"),
+        ],
+        "game_player_score_id",
+    ));
+    source.add_migration(index_migration(
+        "031_game_scores_user",
+        "idx_game_scores_user",
+        "game_scores",
+        vec!["user_id"],
+        false,
+    ));
     source
 }
 
@@ -373,9 +393,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 25);
+        assert_eq!(migrations.len(), 27);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[24].id(), "029_game_commands_idempotency_unique");
+        assert_eq!(migrations[26].id(), "031_game_scores_user");
     }
 
     #[test]
@@ -417,6 +437,7 @@ mod tests {
                     "game_journal",
                     "game_commands",
                     "game_snapshots",
+                    "game_scores",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -447,6 +468,7 @@ mod tests {
                 "game_commands",
                 "game_snapshots",
                 "projection_checkpoints",
+                "game_scores",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }
