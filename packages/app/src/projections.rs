@@ -34,6 +34,10 @@ pub async fn rebuild_game_projections(
             .checked_add(u64::try_from(index).map_err(|_| ProjectionError::Revision)? + 1)
             .ok_or(ProjectionError::Revision)?;
         let (player, kind, score_delta) = history_fields(event);
+        let player_user_id = match player {
+            Some(player) => user_for_player(tx, &game_id_string, player).await?,
+            None => None,
+        };
         tx.insert("move_history")
             .value("move_id", format!("{game_id_string}:{revision}"))
             .value("game_id", game_id_string.clone())
@@ -41,7 +45,7 @@ pub async fn rebuild_game_projections(
                 "revision",
                 i64::try_from(revision).map_err(|_| ProjectionError::Revision)?,
             )
-            .value("player_user_id", player)
+            .value("player_user_id", player_user_id)
             .value("event_kind", kind)
             .value("score_delta", i64::from(score_delta))
             .value("created_at_ms", updated_at_ms)
@@ -68,7 +72,10 @@ pub async fn rebuild_game_projections(
         .value("last_score", last_score(events).map(i64::from))
         .value(
             "winner_user_id",
-            state.winner.map(|winner| winner.as_uuid().to_string()),
+            match state.winner {
+                Some(winner) => user_for_player(tx, &game_id_string, winner).await?,
+                None => None,
+            },
         )
         .value("updated_at_ms", updated_at_ms)
         .execute(tx)
@@ -87,25 +94,21 @@ pub async fn rebuild_game_projections(
     Ok(())
 }
 
-fn history_fields(event: &GameEvent) -> (Option<String>, &'static str, u32) {
+const fn history_fields(
+    event: &GameEvent,
+) -> (
+    Option<words_with_spouses_game_domain::PlayerId>,
+    &'static str,
+    u32,
+) {
     match event {
         GameEvent::GameStarted { .. } => (None, "GAME_STARTED", 0),
         GameEvent::TilesPlayed {
             player_id, score, ..
-        } => (
-            Some(player_id.as_uuid().to_string()),
-            "TILES_PLAYED",
-            *score,
-        ),
-        GameEvent::TilesExchanged { player_id, .. } => {
-            (Some(player_id.as_uuid().to_string()), "TILES_EXCHANGED", 0)
-        }
-        GameEvent::TurnPassed { player_id } => {
-            (Some(player_id.as_uuid().to_string()), "TURN_PASSED", 0)
-        }
-        GameEvent::GameResigned { player_id, .. } => {
-            (Some(player_id.as_uuid().to_string()), "GAME_RESIGNED", 0)
-        }
+        } => (Some(*player_id), "TILES_PLAYED", *score),
+        GameEvent::TilesExchanged { player_id, .. } => (Some(*player_id), "TILES_EXCHANGED", 0),
+        GameEvent::TurnPassed { player_id } => (Some(*player_id), "TURN_PASSED", 0),
+        GameEvent::GameResigned { player_id, .. } => (Some(*player_id), "GAME_RESIGNED", 0),
         GameEvent::GameCompleted { .. } => (None, "GAME_COMPLETED", 0),
     }
 }

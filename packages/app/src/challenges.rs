@@ -271,6 +271,35 @@ pub async fn create_game_in_transaction(
         .value("payload", serde_json::to_string(&started)?)
         .execute(tx)
         .await?;
+    tx.insert("game_commands")
+        .value("game_command_id", format!("{game_id}:{idempotency_key}"))
+        .value("game_id", game_id.to_string())
+        .value("command_id", idempotency_key)
+        .value("idempotency_key", idempotency_key)
+        .value("expected_revision", 0_i64)
+        .value("resulting_revision", 1_i64)
+        .execute(tx)
+        .await?;
+    let state =
+        words_with_spouses_game_domain::replay([&started]).map_err(ChallengeError::Replay)?;
+    let player_count = tx
+        .select("game_players")
+        .where_eq("game_id", game_id.to_string())
+        .execute(tx)
+        .await?
+        .len();
+    if player_count != 2 {
+        return Err(ChallengeError::Invalid);
+    }
+    let canonical_events = crate::load_events(tx, game_id, 0)
+        .await
+        .map_err(ChallengeError::Journal)?
+        .into_iter()
+        .map(|event| event.event)
+        .collect::<Vec<_>>();
+    crate::rebuild_game_projections(tx, &state, &canonical_events, now_ms)
+        .await
+        .map_err(ChallengeError::Projection)?;
     Ok(game_id)
 }
 
@@ -325,6 +354,12 @@ pub enum ChallengeError {
     Initialization(#[from] words_with_spouses_game_domain::InitializationError),
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
+    #[error(transparent)]
+    Replay(words_with_spouses_game_domain::ReplayError),
+    #[error(transparent)]
+    Journal(crate::JournalError),
+    #[error(transparent)]
+    Projection(crate::ProjectionError),
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
 }

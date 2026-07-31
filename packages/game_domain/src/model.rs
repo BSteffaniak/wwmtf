@@ -27,6 +27,14 @@ impl PlayerId {
     }
 }
 
+impl std::str::FromStr for PlayerId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
+
 impl Default for PlayerId {
     fn default() -> Self {
         Self::new()

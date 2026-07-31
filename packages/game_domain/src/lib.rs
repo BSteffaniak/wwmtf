@@ -51,6 +51,14 @@ impl GameId {
     }
 }
 
+impl std::str::FromStr for GameId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
+
 impl Default for GameId {
     fn default() -> Self {
         Self::new()

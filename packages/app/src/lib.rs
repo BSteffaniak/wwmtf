@@ -7,6 +7,7 @@
 mod accounts;
 mod challenges;
 mod components;
+mod game_service;
 mod invitations;
 mod journal;
 mod migrations;
@@ -26,6 +27,7 @@ pub use components::{
     game_view, move_history_component, pending_move_component, premium_square_component,
     rack_component, status_component, tile_component,
 };
+pub use game_service::{GameServiceError, player_for_user, submit_game_command};
 pub use invitations::{
     InvitationError, InvitationToken, create_invitation, redeem_invitation,
     redeem_invitation_and_start_game, revoke_invitation,
@@ -40,7 +42,7 @@ pub use projections::{
     projected_revision, rebuild_game_projections, user_game_summaries,
 };
 pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
-pub use shared_state_security::shared_state_dispatcher;
+pub use shared_state_security::{game_channel, shared_state_dispatcher};
 
 use hyperchad::{
     router::{Container, RoutePath, RouteRequest, Router},

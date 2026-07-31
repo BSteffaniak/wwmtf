@@ -65,7 +65,7 @@ pub async fn append_events(
     }
 
     let duplicate = tx
-        .select("game_journal")
+        .select("game_commands")
         .where_eq("game_id", game_id.clone())
         .where_eq("command_id", command_id)
         .execute(tx)
@@ -74,7 +74,7 @@ pub async fn append_events(
         return Err(JournalError::DuplicateCommand);
     }
     let duplicate = tx
-        .select("game_journal")
+        .select("game_commands")
         .where_eq("game_id", game_id.clone())
         .where_eq("idempotency_key", idempotency_key)
         .execute(tx)
@@ -105,6 +105,21 @@ pub async fn append_events(
     let resulting_revision = expected_revision
         .checked_add(u64::try_from(events.len()).map_err(|_| JournalError::InvalidRevision)?)
         .ok_or(JournalError::InvalidRevision)?;
+    tx.insert("game_commands")
+        .value("game_command_id", format!("{game_id}:{command_id}"))
+        .value("game_id", game_id.clone())
+        .value("command_id", command_id)
+        .value("idempotency_key", idempotency_key)
+        .value(
+            "expected_revision",
+            i64::try_from(expected_revision).map_err(|_| JournalError::InvalidRevision)?,
+        )
+        .value(
+            "resulting_revision",
+            i64::try_from(resulting_revision).map_err(|_| JournalError::InvalidRevision)?,
+        )
+        .execute(tx)
+        .await?;
     let updated = tx
         .update("games")
         .value(
@@ -397,6 +412,92 @@ mod tests {
             racks: state.racks.clone(),
             bag: state.bag.clone(),
         }
+    }
+
+    #[test]
+    fn one_command_can_append_multiple_events_with_one_idempotency_record() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            let passed = GameEvent::TurnPassed {
+                player_id: state.players[0],
+            };
+            assert_eq!(
+                append_events_transactionally(
+                    &*db,
+                    game_id,
+                    "multi-event-command",
+                    "multi-event-idempotency",
+                    0,
+                    &[started, passed],
+                )
+                .await
+                .expect("multi-event command appends atomically"),
+                2
+            );
+            let events = load_events(&*db, game_id, 0)
+                .await
+                .expect("both events load");
+            assert_eq!(events.len(), 2);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.command_id == "multi-event-command")
+            );
+            assert!(matches!(
+                append_events_transactionally(
+                    &*db,
+                    game_id,
+                    "multi-event-command",
+                    "different-idempotency",
+                    2,
+                    &[],
+                )
+                .await,
+                Err(JournalError::DuplicateCommand)
+            ));
+        });
+    }
+
+    #[test]
+    fn stale_revision_and_rolled_back_appends_leave_no_partial_events() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            assert!(matches!(
+                append_events_transactionally(
+                    &*db,
+                    game_id,
+                    "stale-command",
+                    "stale-idempotency",
+                    1,
+                    std::slice::from_ref(&started),
+                )
+                .await,
+                Err(JournalError::Conflict {
+                    expected: 1,
+                    actual: 0
+                })
+            ));
+            assert!(
+                load_events(&*db, game_id, 0)
+                    .await
+                    .expect("journal remains queryable")
+                    .is_empty()
+            );
+            let rows = db
+                .select("games")
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("game revision loads");
+            assert_eq!(
+                rows[0]
+                    .get("canonical_revision")
+                    .and_then(|value| value.as_i64()),
+                Some(0)
+            );
+        });
     }
 
     #[test]

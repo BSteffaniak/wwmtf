@@ -2,6 +2,8 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 #![allow(clippy::multiple_crate_versions)]
 
+mod durable_web_session;
+
 use hyperchad::app::AppBuilder;
 use words_with_spouses_app::create_router;
 
@@ -18,21 +20,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("starting Words with Spouses on {address}:{port}");
 
+    let database_path = std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH")
+        .unwrap_or_else(|_| "words-with-spouses.db".to_string());
+    let database: std::sync::Arc<dyn switchy_database::Database> =
+        std::sync::Arc::from(futures_lite::future::block_on(
+            switchy_database_connection::builder()
+                .turso()
+                .with_path(database_path)
+                .with_busy_timeout(std::time::Duration::from_secs(5))
+                .build(),
+        )?);
+    futures_lite::future::block_on(words_with_spouses_app::migrate_app(&*database))?;
+
     let app = {
         use std::sync::Arc;
 
-        use hyperchad::renderer_html_actix::{
-            CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig, RejectWebSessionIdentityResolver,
-        };
+        use hyperchad::renderer_html_actix::{CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig};
 
-        let dispatcher = words_with_spouses_app::shared_state_dispatcher();
+        let dispatcher = words_with_spouses_app::shared_state_dispatcher(database.clone());
         let web_security = Arc::new(CookieCsrfWebSecurity::new(
             CookieCsrfWebSecurityConfig::new(
                 "words-with-spouses-session",
                 "words-with-spouses-csrf",
                 "x-csrf-token",
             ),
-            Arc::new(RejectWebSessionIdentityResolver),
+            Arc::new(durable_web_session::DurableWebSessionIdentityResolver::new(
+                database,
+            )),
         ));
 
         let mut app = AppBuilder::new()

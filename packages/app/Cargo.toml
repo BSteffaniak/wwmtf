@@ -19,6 +19,7 @@ required-features = ["actix"]
 argon2 = { workspace = true }
 async-trait = { workspace = true }
 env_logger = { workspace = true }
+futures-lite = { workspace = true }
 hyperchad = { workspace = true, features = [
     "app",
     "renderer",
@@ -37,6 +38,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 switchy_database = { workspace = true, features = ["schema"] }
+switchy_database_connection = { workspace = true, features = ["turso"] }
 switchy_schema = { workspace = true, features = ["code"] }
 thiserror = { workspace = true }
 time = { workspace = true }
@@ -45,7 +47,6 @@ words_with_spouses_game_domain = { workspace = true }
 
 [dev-dependencies]
 futures-lite = { workspace = true }
-switchy_database_connection = { workspace = true, features = ["turso"] }
 
 [features]
 default = ["actix"]

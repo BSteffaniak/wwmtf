@@ -230,6 +230,56 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         ],
         "snapshot_id",
     ));
+    source.add_migration(CodeMigration::new(
+        "025_drop_journal_command_unique".to_string(),
+        Box::new(drop_index("idx_game_journal_game_command", "game_journal")),
+        Some(Box::new(
+            create_index("idx_game_journal_game_command")
+                .table("game_journal")
+                .columns(vec!["game_id", "command_id"])
+                .unique(true),
+        )),
+    ));
+    source.add_migration(CodeMigration::new(
+        "026_drop_journal_idempotency_unique".to_string(),
+        Box::new(drop_index(
+            "idx_game_journal_game_idempotency",
+            "game_journal",
+        )),
+        Some(Box::new(
+            create_index("idx_game_journal_game_idempotency")
+                .table("game_journal")
+                .columns(vec!["game_id", "idempotency_key"])
+                .unique(true),
+        )),
+    ));
+    source.add_migration(table_migration(
+        "027_game_commands",
+        "game_commands",
+        vec![
+            text("game_command_id"),
+            text("game_id"),
+            text("command_id"),
+            text("idempotency_key"),
+            bigint("expected_revision"),
+            bigint("resulting_revision"),
+        ],
+        "game_command_id",
+    ));
+    source.add_migration(index_migration(
+        "028_game_commands_command_unique",
+        "idx_game_commands_game_command",
+        "game_commands",
+        vec!["game_id", "command_id"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "029_game_commands_idempotency_unique",
+        "idx_game_commands_game_idempotency",
+        "game_commands",
+        vec!["game_id", "idempotency_key"],
+        true,
+    ));
     source
 }
 
@@ -312,7 +362,10 @@ fn column(name: &str, data_type: DataType, nullable: bool) -> Column {
 #[cfg(test)]
 mod tests {
     use futures_lite::future::block_on;
-    use switchy_schema::migration::MigrationSource as _;
+    use switchy_schema::{
+        migration::MigrationSource as _,
+        runner::{ExecutionStrategy, MigrationRunner},
+    };
 
     use super::*;
 
@@ -320,9 +373,59 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 20);
+        assert_eq!(migrations.len(), 25);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[19].id(), "024_game_snapshots");
+        assert_eq!(migrations[24].id(), "029_game_commands_idempotency_unique");
+    }
+
+    #[test]
+    fn every_retained_migration_version_upgrades_to_the_current_schema() {
+        block_on(async {
+            let migrations = app_migrations()
+                .migrations()
+                .await
+                .expect("migrations are discoverable");
+            for retained in migrations.iter().take(migrations.len() - 1) {
+                let db = switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("in-memory Turso opens");
+                MigrationRunner::new(Box::new(app_migrations()))
+                    .with_table_name("__words_with_spouses_migrations")
+                    .with_strategy(ExecutionStrategy::UpTo(retained.id().to_string()))
+                    .run(&*db)
+                    .await
+                    .expect("retained schema version installs");
+                migrate_app(&*db)
+                    .await
+                    .expect("retained schema upgrades to current");
+
+                for table in [
+                    "users",
+                    "password_credentials",
+                    "auth_sessions",
+                    "games",
+                    "game_players",
+                    "challenges",
+                    "invitations",
+                    "projection_checkpoints",
+                    "game_summaries",
+                    "move_history",
+                    "user_score_totals",
+                    "game_journal",
+                    "game_commands",
+                    "game_snapshots",
+                ] {
+                    assert!(
+                        db.table_exists(table).await.expect("schema query succeeds"),
+                        "{table} must exist after upgrading from {}",
+                        retained.id()
+                    );
+                }
+            }
+        });
     }
 
     #[test]
@@ -341,6 +444,7 @@ mod tests {
                 "auth_sessions",
                 "games",
                 "game_journal",
+                "game_commands",
                 "game_snapshots",
                 "projection_checkpoints",
             ] {

@@ -1,6 +1,7 @@
 //! Renderer-neutral reusable gameplay view components.
 
 use hyperchad::{router::Container, template::container};
+use serde::{Deserialize, Serialize};
 use words_with_spouses_game_domain::{Coordinate, GameState, PlayerId};
 
 /// Premium kind rendered on one board square.
@@ -20,7 +21,7 @@ pub struct PendingMoveView {
 }
 
 /// Public/private game view projection supplied to rendering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
     pub board: Vec<(Coordinate, char)>,
     pub rack: Vec<(u16, char, u8)>,
