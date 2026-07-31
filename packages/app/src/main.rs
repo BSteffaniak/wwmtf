@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
         let mut app = AppBuilder::new()
-            .with_router(create_product_router(database.clone()))
+            .with_router(create_product_router(database.clone(), csrf_token.clone()))
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
             .with_actix_bind_address(address)

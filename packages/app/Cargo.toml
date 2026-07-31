@@ -23,8 +23,12 @@ futures-lite = { workspace = true }
 hyperchad = { workspace = true, features = [
     "app",
     "renderer",
+    "renderer-serde",
     "renderer-html",
     "router",
+    "router-form",
+    "router-serde",
+    "serde",
     "shared-state-models",
     "shared-state-transport",
     "template",

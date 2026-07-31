@@ -81,6 +81,7 @@ pub async fn rebuild_game_projections(
         .execute(tx)
         .await?;
     rebuild_score_projections(tx, state, updated_at_ms).await?;
+    crate::observability::record_projection_rebuild(state.revision);
     tx.upsert("projection_checkpoints")
         .where_eq("projection_id", format!("game-summary:{game_id_string}"))
         .value("projection_id", format!("game-summary:{game_id_string}"))

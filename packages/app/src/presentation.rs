@@ -51,16 +51,21 @@ pub async fn authenticated_user(
     cookies: &std::collections::BTreeMap<String, String>,
     now: OffsetDateTime,
 ) -> Result<String, PresentationError> {
-    let session = cookies
-        .get(SESSION_COOKIE_NAME)
-        .ok_or(PresentationError::Unauthenticated)?;
+    let session = cookies.get(SESSION_COOKIE_NAME).ok_or_else(|| {
+        crate::observability::record_authentication_failure("missing_session");
+        PresentationError::Unauthenticated
+    })?;
     resolve_session(db, session, now)
         .await
         .map_err(|error| match error {
             crate::SessionError::Invalid | crate::SessionError::Timestamp => {
+                crate::observability::record_authentication_failure("invalid_session");
                 PresentationError::Unauthenticated
             }
-            crate::SessionError::Database(error) => PresentationError::Database(error),
+            crate::SessionError::Database(error) => {
+                crate::observability::record_database_failure("resolve_session");
+                PresentationError::Database(error)
+            }
         })
 }
 

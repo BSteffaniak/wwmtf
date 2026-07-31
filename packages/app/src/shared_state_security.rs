@@ -150,6 +150,8 @@ impl GameSharedStateDispatcher {
                 .is_ok_and(|event| subscriber.sender.send(event).is_ok())
             });
         }
+        let live_subscribers = subscribers.values().map(Vec::len).sum();
+        crate::observability::set_live_subscribers(live_subscribers);
         drop(subscribers);
         Ok(())
     }
@@ -255,6 +257,14 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 user_id: context.participant_id.as_str().to_string(),
                 sender: sender.clone(),
             });
+        let live_subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| "game subscriber registry is unavailable")?
+            .values()
+            .map(Vec::len)
+            .sum();
+        crate::observability::set_live_subscribers(live_subscribers);
 
         // Register before loading so a command racing subscription is duplicated at worst, never
         // lost. Revision-aware clients converge on the newest update.
