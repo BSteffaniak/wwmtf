@@ -797,7 +797,8 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
                         input type=checkbox name=(tile_name) value=(tile_id)
                             fx-click=(ActionType::toggle_display_str_class(editor_class.as_str()));
                         span { "Select / unplace " (label) }
-                        div class=(editor_class.as_str()) gap=4 {
+                        div class=(editor_class.as_str()) gap=4
+                            fx-immediate=(ActionType::no_display_class(editor_class.as_str())) {
                             span { "Place by entering board coordinates; edit them to move the pending tile." }
                             input type=text name=(x_name) placeholder="x";
                             input type=text name=(y_name) placeholder="y";
