@@ -7,7 +7,7 @@ use words_with_spouses_game_domain::{
 };
 
 /// Premium kind rendered on one board square.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PremiumView {
     DoubleLetter,
     TripleLetter,
@@ -121,6 +121,9 @@ pub enum PendingMoveError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
     pub board: Vec<(Coordinate, char)>,
+    pub premiums: Vec<(Coordinate, PremiumView)>,
+    pub board_size: u8,
+    pub start: Coordinate,
     pub rack: Vec<(u16, char, u8)>,
     pub scores: Vec<(PlayerId, u32)>,
     pub active_player: PlayerId,
@@ -135,12 +138,36 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
     if !state.players.contains(&viewer) {
         return None;
     }
+    let profile = words_with_spouses_game_domain::rule_profile(state.metadata.rules())?;
     Some(GameView {
         board: state
             .board
             .iter()
             .map(|(&coordinate, tile)| (coordinate, tile.letter))
             .collect(),
+        premiums: profile
+            .premiums
+            .iter()
+            .map(|(&coordinate, premium)| {
+                let premium = match premium {
+                    words_with_spouses_game_domain::PremiumSquare::Letter(2) => {
+                        PremiumView::DoubleLetter
+                    }
+                    words_with_spouses_game_domain::PremiumSquare::Letter(_) => {
+                        PremiumView::TripleLetter
+                    }
+                    words_with_spouses_game_domain::PremiumSquare::Word(2) => {
+                        PremiumView::DoubleWord
+                    }
+                    words_with_spouses_game_domain::PremiumSquare::Word(_) => {
+                        PremiumView::TripleWord
+                    }
+                };
+                (coordinate, premium)
+            })
+            .collect(),
+        board_size: profile.board_size,
+        start: profile.start,
         rack: state.racks[&viewer]
             .iter()
             .map(|tile| {
@@ -304,16 +331,50 @@ pub fn pending_move_component(pending: &PendingMoveView) -> Container {
 /// Renders a reusable board component.
 #[must_use]
 pub fn board_component(view: &GameView) -> Container {
-    let tiles = view
+    let occupied = view
         .board
         .iter()
-        .map(|(coordinate, letter)| format!("{}:{}={letter}", coordinate.x, coordinate.y))
-        .collect::<Vec<_>>()
-        .join(" ");
+        .copied()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let premiums = view
+        .premiums
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeMap<_, _>>();
     container! {
-        section id="game-board" data-revision=(view.revision) gap=8 {
+        section id="game-board" data-revision=(view.revision) gap="10px" {
             h2 { "Board" }
-            span { (tiles) }
+            div overflow-x="auto" padding="4px" {
+                div width="690px" background=#7c6547 border="5px solid #7c6547" gap="2px" {
+                    @for y in 0..view.board_size {
+                        div direction="row" gap="2px" {
+                            @for x in 0..view.board_size {
+                                @let coordinate = Coordinate::new(x, y);
+                                @let letter = occupied.get(&coordinate).copied();
+                                @let premium = premiums.get(&coordinate).copied();
+                                @let (background, label, color) = if let Some(letter) = letter {
+                                    ("#f2d79b", letter.to_string(), "#2e291f")
+                                } else if coordinate == view.start {
+                                    ("#e79b9b", "★".to_string(), "#6b3535")
+                                } else {
+                                    match premium {
+                                        Some(PremiumView::DoubleLetter) => ("#b9dbe8", "DL".to_string(), "#31596a"),
+                                        Some(PremiumView::TripleLetter) => ("#77b6d1", "TL".to_string(), "#173f52"),
+                                        Some(PremiumView::DoubleWord) => ("#e9b2b2", "DW".to_string(), "#743d3d"),
+                                        Some(PremiumView::TripleWord) => ("#d87f7f", "TW".to_string(), "#ffffff"),
+                                        None => ("#ede6d4", String::new(), "#756f64"),
+                                    }
+                                };
+                                div class="board-square" data-x=(x) data-y=(y) width="44px" height="44px"
+                                    background=(background) color=(color) align-items="center" justify-content="center"
+                                    border="1px solid #aa9e85" font-weight=bold {
+                                    span { (label) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     .into()
@@ -322,42 +383,48 @@ pub fn board_component(view: &GameView) -> Container {
 /// Renders the private rack component.
 #[must_use]
 pub fn rack_component(view: &GameView) -> Container {
-    let rack = view
-        .rack
-        .iter()
-        .map(|(id, letter, points)| format!("{id}:{letter}:{points}"))
-        .collect::<Vec<_>>()
-        .join(" ");
     container! {
-        section id="player-rack" gap=8 {
+        section id="player-rack" gap="10px" {
             h2 { "Your rack" }
-            span { (rack) }
+            div direction="row" gap="8px" background=#7c6547 border-radius="8px" padding="10px" {
+                @for (id, letter, points) in &view.rack {
+                    @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
+                    div class="rack-tile" data-tile-id=(id) width="58px" height="64px"
+                        background=#f2d79b color=#2e291f border="2px solid #d1b36f" border-radius="6px"
+                        align-items="center" justify-content="center" position="relative" font-weight=bold {
+                        span font-size="28px" { (face) }
+                        span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
+                    }
+                }
+            }
         }
     }
     .into()
 }
 
-/// Renders score and turn status.
+/// Renders public score status with the viewer first.
 #[must_use]
-pub fn status_component(view: &GameView) -> Container {
-    let scores = view
+pub fn status_component(view: &GameView, viewer: PlayerId) -> Container {
+    let viewer_score = view
         .scores
         .iter()
-        .map(|(player, score)| format!("{player:?}:{score}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let status = match view.status {
-        GameStatus::Active => format!("Current turn: {:?}", view.active_player),
-        GameStatus::Completed => view.winner.map_or_else(
-            || "Completed: tie".to_string(),
-            |winner| format!("Completed: winner {winner:?}"),
-        ),
-    };
+        .find(|(player, _)| *player == viewer)
+        .map_or(0, |(_, score)| *score);
+    let opponent_score = view
+        .scores
+        .iter()
+        .find(|(player, _)| *player != viewer)
+        .map_or(0, |(_, score)| *score);
     container! {
-        section id="game-status" gap=8 {
-            h2 { "Scores" }
-            span { (scores) }
-            span { (status) }
+        section id="game-status" direction="row" gap="12px" {
+            div background=#ffffff border="1px solid #ded8c9" border-radius="12px" padding="14px 18px" gap="4px" {
+                span color=#777b73 { "You" }
+                span font-size="26px" font-weight=bold { (viewer_score) }
+            }
+            div background=#ffffff border="1px solid #ded8c9" border-radius="12px" padding="14px 18px" gap="4px" {
+                span color=#777b73 { "Opponent" }
+                span font-size="26px" font-weight=bold { (opponent_score) }
+            }
         }
     }
     .into()
@@ -374,7 +441,8 @@ pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
         "Waiting for opponent"
     };
     container! {
-        span id="viewer-turn-status" { (status) }
+        span id="viewer-turn-status" background=(if status == "Your turn" { "#e8f1e3" } else { "#f0ede5" })
+            color=#3f5735 border-radius="999px" padding="8px 13px" font-weight=bold { (status) }
     }
     .into()
 }

@@ -36,6 +36,7 @@ pub struct AuthorizedGamePage {
     pub viewer_player: words_with_spouses_game_domain::PlayerId,
     pub game_id: GameId,
     pub view: GameView,
+    pub rules: words_with_spouses_game_domain::RuleProfile,
     pub history: Vec<MoveHistoryView>,
     pub final_score_adjustments:
         std::collections::BTreeMap<words_with_spouses_game_domain::PlayerId, i64>,
@@ -126,6 +127,8 @@ pub async fn load_authorized_game_page(
             _ => PresentationError::Game(error),
         })?;
     let state = recover_game(db, game_id).await?;
+    let rules = words_with_spouses_game_domain::rule_profile(state.metadata.rules())
+        .ok_or(PresentationError::UnsupportedRules)?;
     let view = game_view(&state, player).ok_or(PresentationError::Forbidden)?;
     let events = load_events(db, game_id, 0)
         .await?
@@ -139,6 +142,7 @@ pub async fn load_authorized_game_page(
         viewer_player: player,
         game_id,
         view,
+        rules,
         history,
         final_score_adjustments,
         completed: state.status == GameStatus::Completed,
@@ -152,6 +156,8 @@ pub enum PresentationError {
     Unauthenticated,
     #[error("stored presentation data is malformed")]
     Malformed,
+    #[error("this game uses an unsupported rules profile")]
+    UnsupportedRules,
     #[error("this game is unavailable")]
     UnknownGame,
     #[error("you are not authorized to view this game")]
