@@ -14,7 +14,7 @@ Every game start event and game row pins:
 
 ## Canonical payload versions
 
-Game events and snapshots each have an explicit payload version. Version 1 is immutable.
+Version 1 remains immutable and readable. Version 2 is the current writer format for events and snapshots; it represents coordinate-keyed maps as deterministically ordered entry arrays so canonical board state is valid JSON. Readers retain explicit decoders for both versions and reject unknown versions.
 
 Before advancing either writer version:
 

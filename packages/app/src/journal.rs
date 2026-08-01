@@ -1,15 +1,20 @@
 //! Durable, idempotent game-journal persistence using `switchy` query builders.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use switchy_database::{
     Database,
     query::{FilterableQuery as _, SortDirection},
 };
 use thiserror::Error;
-use words_with_spouses_game_domain::{GameEvent, GameId, GameState, apply_event, replay};
+use words_with_spouses_game_domain::{
+    BoardTile, Coordinate, GameEvent, GameId, GameMetadata, GameState, GameStatus, PlayerId, Tile,
+    apply_event, replay,
+};
 
-const GAME_EVENT_PAYLOAD_VERSION: u32 = 1;
-const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 1;
+const GAME_EVENT_PAYLOAD_VERSION: u32 = 2;
+const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 2;
 
 /// Compatibility policy for canonical persisted payloads.
 ///
@@ -46,6 +51,237 @@ pub struct PersistedGameEvent {
     pub payload_version: u32,
     /// Canonical domain event.
     pub event: GameEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CoordinateEntry<T> {
+    coordinate: Coordinate,
+    value: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum GameEventV2 {
+    GameStarted {
+        metadata: GameMetadata,
+        players: [PlayerId; 2],
+        first_player: PlayerId,
+        racks: BTreeMap<PlayerId, Vec<Tile>>,
+        bag: Vec<Tile>,
+    },
+    TilesPlayed {
+        player_id: PlayerId,
+        placements: Vec<CoordinateEntry<BoardTile>>,
+        score: u32,
+        drawn: Vec<Tile>,
+    },
+    TilesExchanged {
+        player_id: PlayerId,
+        returned: Vec<Tile>,
+        drawn: Vec<Tile>,
+    },
+    TurnPassed {
+        player_id: PlayerId,
+    },
+    GameResigned {
+        player_id: PlayerId,
+        winner: PlayerId,
+    },
+    GameCompleted {
+        scores: BTreeMap<PlayerId, u32>,
+        winner: Option<PlayerId>,
+    },
+}
+
+impl From<&GameEvent> for GameEventV2 {
+    fn from(event: &GameEvent) -> Self {
+        match event {
+            GameEvent::GameStarted {
+                metadata,
+                players,
+                first_player,
+                racks,
+                bag,
+            } => Self::GameStarted {
+                metadata: metadata.clone(),
+                players: *players,
+                first_player: *first_player,
+                racks: racks.clone(),
+                bag: bag.clone(),
+            },
+            GameEvent::TilesPlayed {
+                player_id,
+                placements,
+                score,
+                drawn,
+            } => Self::TilesPlayed {
+                player_id: *player_id,
+                placements: coordinate_entries(placements),
+                score: *score,
+                drawn: drawn.clone(),
+            },
+            GameEvent::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            } => Self::TilesExchanged {
+                player_id: *player_id,
+                returned: returned.clone(),
+                drawn: drawn.clone(),
+            },
+            GameEvent::TurnPassed { player_id } => Self::TurnPassed {
+                player_id: *player_id,
+            },
+            GameEvent::GameResigned { player_id, winner } => Self::GameResigned {
+                player_id: *player_id,
+                winner: *winner,
+            },
+            GameEvent::GameCompleted { scores, winner } => Self::GameCompleted {
+                scores: scores.clone(),
+                winner: *winner,
+            },
+        }
+    }
+}
+
+impl From<GameEventV2> for GameEvent {
+    fn from(event: GameEventV2) -> Self {
+        match event {
+            GameEventV2::GameStarted {
+                metadata,
+                players,
+                first_player,
+                racks,
+                bag,
+            } => Self::GameStarted {
+                metadata,
+                players,
+                first_player,
+                racks,
+                bag,
+            },
+            GameEventV2::TilesPlayed {
+                player_id,
+                placements,
+                score,
+                drawn,
+            } => Self::TilesPlayed {
+                player_id,
+                placements: coordinate_map(placements),
+                score,
+                drawn,
+            },
+            GameEventV2::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            } => Self::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            },
+            GameEventV2::TurnPassed { player_id } => Self::TurnPassed { player_id },
+            GameEventV2::GameResigned { player_id, winner } => {
+                Self::GameResigned { player_id, winner }
+            }
+            GameEventV2::GameCompleted { scores, winner } => Self::GameCompleted { scores, winner },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct GameStateV2 {
+    metadata: GameMetadata,
+    players: [PlayerId; 2],
+    active_player: PlayerId,
+    board: Vec<CoordinateEntry<BoardTile>>,
+    racks: BTreeMap<PlayerId, Vec<Tile>>,
+    bag: Vec<Tile>,
+    scores: BTreeMap<PlayerId, u32>,
+    scoreless_turns: u8,
+    winner: Option<PlayerId>,
+    status: GameStatus,
+    revision: u64,
+}
+
+impl From<&GameState> for GameStateV2 {
+    fn from(state: &GameState) -> Self {
+        Self {
+            metadata: state.metadata.clone(),
+            players: state.players,
+            active_player: state.active_player,
+            board: coordinate_entries(&state.board),
+            racks: state.racks.clone(),
+            bag: state.bag.clone(),
+            scores: state.scores.clone(),
+            scoreless_turns: state.scoreless_turns,
+            winner: state.winner,
+            status: state.status,
+            revision: state.revision,
+        }
+    }
+}
+
+impl From<GameStateV2> for GameState {
+    fn from(state: GameStateV2) -> Self {
+        Self {
+            metadata: state.metadata,
+            players: state.players,
+            active_player: state.active_player,
+            board: coordinate_map(state.board),
+            racks: state.racks,
+            bag: state.bag,
+            scores: state.scores,
+            scoreless_turns: state.scoreless_turns,
+            winner: state.winner,
+            status: state.status,
+            revision: state.revision,
+        }
+    }
+}
+
+fn coordinate_entries<T: Clone>(map: &BTreeMap<Coordinate, T>) -> Vec<CoordinateEntry<T>> {
+    map.iter()
+        .map(|(&coordinate, value)| CoordinateEntry {
+            coordinate,
+            value: value.clone(),
+        })
+        .collect()
+}
+
+fn coordinate_map<T>(entries: Vec<CoordinateEntry<T>>) -> BTreeMap<Coordinate, T> {
+    entries
+        .into_iter()
+        .map(|entry| (entry.coordinate, entry.value))
+        .collect()
+}
+
+/// Encodes one canonical event using the current persisted payload version.
+///
+/// # Errors
+///
+/// Returns a serialization error if the versioned payload cannot be encoded.
+pub fn encode_game_event(event: &GameEvent) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&GameEventV2::from(event))
+}
+
+fn decode_game_event(version: u64, payload: &str) -> Result<GameEvent, JournalError> {
+    match version {
+        1 => Ok(serde_json::from_str(payload)?),
+        2 => Ok(serde_json::from_str::<GameEventV2>(payload)?.into()),
+        _ => Err(JournalError::UnsupportedPayloadVersion(version)),
+    }
+}
+
+fn encode_game_state(state: &GameState) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&GameStateV2::from(state))
+}
+
+fn decode_game_state(version: u64, payload: &str) -> Result<GameState, JournalError> {
+    match version {
+        1 => Ok(serde_json::from_str(payload)?),
+        2 => Ok(serde_json::from_str::<GameStateV2>(payload)?.into()),
+        _ => Err(JournalError::UnsupportedPayloadVersion(version)),
+    }
 }
 
 /// Appends canonical events only when the expected aggregate revision still matches.
@@ -120,7 +356,7 @@ pub async fn append_events(
             .value("command_id", command_id)
             .value("idempotency_key", idempotency_key)
             .value("payload_version", i64::from(GAME_EVENT_PAYLOAD_VERSION))
-            .value("payload", serde_json::to_string(event)?)
+            .value("payload", encode_game_event(event)?)
             .execute(tx)
             .await?;
     }
@@ -246,17 +482,16 @@ pub async fn load_events(
         .map(|row| {
             let revision = integer_column(&row, "revision")?;
             let payload_version = integer_column(&row, "payload_version")?;
-            if payload_version != u64::from(GAME_EVENT_PAYLOAD_VERSION) {
-                return Err(JournalError::UnsupportedPayloadVersion(payload_version));
-            }
             let payload = string_column(&row, "payload")?;
+            let payload_version_u32 = u32::try_from(payload_version)
+                .map_err(|_| JournalError::UnsupportedPayloadVersion(payload_version))?;
             Ok(PersistedGameEvent {
                 game_id,
                 revision,
                 command_id: string_column(&row, "command_id")?,
                 idempotency_key: string_column(&row, "idempotency_key")?,
-                payload_version: GAME_EVENT_PAYLOAD_VERSION,
-                event: serde_json::from_str(&payload)?,
+                payload_version: payload_version_u32,
+                event: decode_game_event(payload_version, &payload)?,
             })
         })
         .collect()
@@ -291,7 +526,7 @@ pub async fn store_snapshot(
             i64::try_from(state.revision).map_err(|_| JournalError::InvalidRevision)?,
         )
         .value("payload_version", i64::from(GAME_SNAPSHOT_PAYLOAD_VERSION))
-        .value("payload", serde_json::to_string(state)?)
+        .value("payload", encode_game_state(state)?)
         .value("created_at_ms", created_at_ms)
         .execute(db)
         .await?;
@@ -317,11 +552,8 @@ pub async fn load_latest_snapshot(
         return Ok(None);
     };
     let version = integer_column(row, "payload_version")?;
-    if version != u64::from(GAME_SNAPSHOT_PAYLOAD_VERSION) {
-        return Err(JournalError::UnsupportedPayloadVersion(version));
-    }
     let payload = string_column(row, "payload")?;
-    Ok(Some(serde_json::from_str(&payload)?))
+    Ok(Some(decode_game_state(version, &payload)?))
 }
 
 fn string_column(row: &switchy_database::Row, name: &str) -> Result<String, JournalError> {
@@ -625,30 +857,120 @@ mod tests {
                 .expect("snapshot stores");
 
             let compatibility = persisted_payload_compatibility();
-            assert_eq!(compatibility.event_version, 1);
-            assert_eq!(compatibility.snapshot_version, 1);
+            assert_eq!(compatibility.event_version, 2);
+            assert_eq!(compatibility.snapshot_version, 2);
 
             db.update("game_journal")
-                .value("payload_version", 2_i64)
+                .value("payload_version", 3_i64)
                 .where_eq("game_id", game_id.to_string())
                 .execute(&*db)
                 .await
                 .expect("event version changes");
             assert!(matches!(
                 load_events(&*db, game_id, 0).await,
-                Err(JournalError::UnsupportedPayloadVersion(2))
+                Err(JournalError::UnsupportedPayloadVersion(3))
             ));
 
             db.update("game_snapshots")
-                .value("payload_version", 2_i64)
+                .value("payload_version", 3_i64)
                 .where_eq("game_id", game_id.to_string())
                 .execute(&*db)
                 .await
                 .expect("snapshot version changes");
             assert!(matches!(
                 load_latest_snapshot(&*db, game_id).await,
-                Err(JournalError::UnsupportedPayloadVersion(2))
+                Err(JournalError::UnsupportedPayloadVersion(3))
             ));
+        });
+    }
+
+    #[test]
+    fn version_one_payloads_remain_readable_after_version_two_writers() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            let payload = serde_json::to_string(&started).expect("version one start serializes");
+            db.insert("game_journal")
+                .value("event_id", format!("{game_id}:1"))
+                .value("game_id", game_id.to_string())
+                .value("revision", 1_i64)
+                .value("command_id", "legacy-command")
+                .value("idempotency_key", "legacy-idempotency")
+                .value("payload_version", 1_i64)
+                .value("payload", payload)
+                .execute(&*db)
+                .await
+                .expect("legacy event inserts");
+
+            let loaded = load_events(&*db, game_id, 0)
+                .await
+                .expect("legacy event loads");
+            assert_eq!(loaded[0].payload_version, 1);
+            assert_eq!(loaded[0].event, started);
+        });
+    }
+
+    #[test]
+    fn tile_play_event_and_non_empty_snapshot_persist_as_version_two() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "start-command",
+                "start-idempotency",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("start persists");
+
+            let tile = state.racks[&state.players[0]][0];
+            let coordinate = Coordinate::new(7, 7);
+            let board_tile = BoardTile {
+                tile,
+                letter: match tile.face {
+                    words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
+                    words_with_spouses_game_domain::TileFace::Blank => 'A',
+                },
+            };
+            let played = GameEvent::TilesPlayed {
+                player_id: state.players[0],
+                placements: BTreeMap::from([(coordinate, board_tile)]),
+                score: u32::from(tile.points),
+                drawn: vec![],
+            };
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "play-command",
+                "play-idempotency",
+                1,
+                std::slice::from_ref(&played),
+            )
+            .await
+            .expect("tile play persists without JSON map-key failure");
+
+            let played_state = apply_event(Some(state), &played).expect("tile play applies");
+            store_snapshot(&*db, game_id, &played_state, 0)
+                .await
+                .expect("non-empty board snapshot persists");
+            let loaded = load_events(&*db, game_id, 1)
+                .await
+                .expect("tile play reloads");
+            assert_eq!(loaded[0].payload_version, 2);
+            assert_eq!(loaded[0].event, played);
+            assert_eq!(
+                load_latest_snapshot(&*db, game_id)
+                    .await
+                    .expect("snapshot reloads"),
+                Some(played_state.clone())
+            );
+            assert_eq!(
+                recover_game(&*db, game_id).await.expect("game recovers"),
+                played_state
+            );
         });
     }
 

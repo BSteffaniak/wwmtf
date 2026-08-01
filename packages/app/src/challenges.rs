@@ -267,8 +267,8 @@ pub async fn create_game_in_transaction(
         .value("revision", 1_i64)
         .value("command_id", idempotency_key)
         .value("idempotency_key", idempotency_key)
-        .value("payload_version", 1_i64)
-        .value("payload", serde_json::to_string(&started)?)
+        .value("payload_version", 2_i64)
+        .value("payload", crate::journal::encode_game_event(&started)?)
         .execute(tx)
         .await?;
     tx.insert("game_commands")
