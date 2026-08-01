@@ -23,10 +23,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log::info!("starting Words with Spouses on {address}:{port}");
 
-    if let Ok(public_base_url) = std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL") {
-        if !public_base_url.starts_with("https://") {
-            return Err("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https in deployment".into());
-        }
+    let public_base_url =
+        std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").unwrap_or_else(|_| {
+            let host = if address == "0.0.0.0" {
+                "127.0.0.1"
+            } else {
+                address.as_str()
+            };
+            format!("http://{host}:{port}")
+        });
+    if std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").is_ok()
+        && !public_base_url.starts_with("https://")
+    {
+        return Err("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https in deployment".into());
+    }
+    if public_base_url.starts_with("https://") {
         log::info!("public HTTPS origin configured");
     }
 
@@ -71,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 database.clone(),
                 dispatcher.clone(),
                 csrf_token.clone(),
+                public_base_url,
             ))
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())

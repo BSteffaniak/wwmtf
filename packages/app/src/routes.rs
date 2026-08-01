@@ -41,6 +41,15 @@ struct DashboardActionForm {
     invitation_token: String,
 }
 
+#[derive(Debug)]
+enum DashboardActionSuccess {
+    Updated,
+    InvitationCreated {
+        invitation_id: String,
+        token: String,
+    },
+}
+
 const fn product_error_message(error: &ProductWorkflowError) -> &'static str {
     match error {
         ProductWorkflowError::UnknownUser => "That username is not registered.",
@@ -60,6 +69,7 @@ const fn product_error_message(error: &ProductWorkflowError) -> &'static str {
 async fn dashboard_action_route(
     database: &dyn Database,
     dispatcher: &crate::GameSharedStateDispatcher,
+    public_base_url: &str,
     request: &RouteRequest,
     now: OffsetDateTime,
 ) -> Container {
@@ -70,47 +80,71 @@ async fn dashboard_action_route(
         Ok(form) => form,
         Err(_) => return error_component("The dashboard action was incomplete."),
     };
-    let result = match form.action.as_str() {
+    let result: Result<DashboardActionSuccess, ProductWorkflowError> = match form.action.as_str() {
         "CHALLENGE" => challenge_username(database, &user_id, &form.username, now)
             .await
-            .map(|_| ()),
+            .map(|_| DashboardActionSuccess::Updated),
         "ACCEPT_CHALLENGE" => accept_pending_challenge(database, &form.challenge_id, &user_id, now)
             .await
-            .map(|_| ()),
+            .map(|_| DashboardActionSuccess::Updated),
         "DECLINE_CHALLENGE" => {
-            decline_pending_challenge(database, &form.challenge_id, &user_id, now).await
+            decline_pending_challenge(database, &form.challenge_id, &user_id, now)
+                .await
+                .map(|()| DashboardActionSuccess::Updated)
         }
-        "CANCEL_CHALLENGE" => {
-            cancel_pending_challenge(database, &form.challenge_id, &user_id, now).await
-        }
+        "CANCEL_CHALLENGE" => cancel_pending_challenge(database, &form.challenge_id, &user_id, now)
+            .await
+            .map(|()| DashboardActionSuccess::Updated),
         "CREATE_INVITATION" => {
             create_shareable_invitation(database, &user_id, now, Duration::days(30))
                 .await
-                .map(|_| ())
+                .map(
+                    |(invitation_id, token)| DashboardActionSuccess::InvitationCreated {
+                        invitation_id,
+                        token: token.expose().to_string(),
+                    },
+                )
         }
         "REDEEM_INVITATION" => {
             redeem_shareable_invitation(database, &form.invitation_token, &user_id, now)
                 .await
-                .map(|_| ())
+                .map(|_| DashboardActionSuccess::Updated)
         }
         "REVOKE_INVITATION" => {
-            revoke_shareable_invitation(database, &form.invitation_id, &user_id, now).await
+            revoke_shareable_invitation(database, &form.invitation_id, &user_id, now)
+                .await
+                .map(|()| DashboardActionSuccess::Updated)
         }
         _ => return error_component("The dashboard action is unknown."),
     };
-    if let Err(error) = result {
-        return error_component(product_error_message(&error));
-    }
+    let success = match result {
+        Ok(success) => success,
+        Err(error) => return error_component(product_error_message(&error)),
+    };
+    let publish_dashboard_refresh = matches!(success, DashboardActionSuccess::Updated);
     let dashboard = load_authenticated_dashboard(database, &request.cookies, now).await;
-    if dispatcher
-        .refresh_dashboard_subscribers(now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX))
-        .await
-        .is_err()
+    // A newly generated invitation secret exists only in this response. Broadcasting an immediate
+    // generic dashboard refresh to the creating tab could replace it before the user can share it.
+    if publish_dashboard_refresh
+        && dispatcher
+            .refresh_dashboard_subscribers(
+                now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX),
+            )
+            .await
+            .is_err()
     {
         crate::observability::record_database_failure("refresh_dashboard_subscribers");
     }
     match dashboard {
-        Ok(dashboard) => dashboard_page(&dashboard),
+        Ok(dashboard) => match success {
+            DashboardActionSuccess::Updated => dashboard_page(&dashboard),
+            DashboardActionSuccess::InvitationCreated {
+                invitation_id,
+                token,
+            } => {
+                dashboard_page_with_invitation(&dashboard, &invitation_id, &token, public_base_url)
+            }
+        },
         Err(PresentationError::Unauthenticated) => {
             error_component("Your session expired. Sign in and review your dashboard.")
         }
@@ -251,6 +285,8 @@ impl PendingMoveForm {
 struct AccountForm {
     username: String,
     password: String,
+    #[serde(default)]
+    invitation_token: String,
 }
 
 const fn account_error_message(error: &AccountWorkflowError) -> &'static str {
@@ -277,12 +313,18 @@ async fn login_route(
     now: OffsetDateTime,
     csrf_token: &str,
 ) -> View {
+    let invitation_token = request.query.get("invite").map_or("", String::as_str);
     if request.method.as_ref() != "POST" {
-        return View::from(login_page(None));
+        return View::from(login_page_with_invitation(None, invitation_token));
     }
     let form: AccountForm = match request.parse_form() {
         Ok(form) => form,
-        Err(_) => return View::from(login_page(Some("Enter a username and password."))),
+        Err(_) => {
+            return View::from(login_page_with_invitation(
+                Some("Enter a username and password."),
+                invitation_token,
+            ));
+        }
     };
     match login_and_create_session(
         database,
@@ -294,13 +336,22 @@ async fn login_route(
     .await
     {
         Ok((_, session)) => {
-            let dashboard = dashboard_refresh_page(database, session.expose(), now).await;
+            let dashboard = dashboard_after_authentication(
+                database,
+                session.expose(),
+                &form.invitation_token,
+                now,
+            )
+            .await;
             View::builder()
                 .with_primary(dashboard)
                 .with_response(authenticated_session_response(session.expose(), csrf_token))
                 .build()
         }
-        Err(error) => View::from(login_page(Some(account_error_message(&error)))),
+        Err(error) => View::from(login_page_with_invitation(
+            Some(account_error_message(&error)),
+            &form.invitation_token,
+        )),
     }
 }
 
@@ -310,12 +361,18 @@ async fn register_route(
     now: OffsetDateTime,
     csrf_token: &str,
 ) -> View {
+    let invitation_token = request.query.get("invite").map_or("", String::as_str);
     if request.method.as_ref() != "POST" {
-        return View::from(register_page(None));
+        return View::from(register_page_with_invitation(None, invitation_token));
     }
     let form: AccountForm = match request.parse_form() {
         Ok(form) => form,
-        Err(_) => return View::from(register_page(Some("Enter a username and password."))),
+        Err(_) => {
+            return View::from(register_page_with_invitation(
+                Some("Enter a username and password."),
+                invitation_token,
+            ));
+        }
     };
     match register_and_create_session(
         database,
@@ -327,13 +384,22 @@ async fn register_route(
     .await
     {
         Ok((_, session)) => {
-            let dashboard = dashboard_refresh_page(database, session.expose(), now).await;
+            let dashboard = dashboard_after_authentication(
+                database,
+                session.expose(),
+                &form.invitation_token,
+                now,
+            )
+            .await;
             View::builder()
                 .with_primary(dashboard)
                 .with_response(authenticated_session_response(session.expose(), csrf_token))
                 .build()
         }
-        Err(error) => View::from(register_page(Some(account_error_message(&error)))),
+        Err(error) => View::from(register_page_with_invitation(
+            Some(account_error_message(&error)),
+            &form.invitation_token,
+        )),
     }
 }
 
@@ -358,6 +424,31 @@ async fn logout_route(
         .with_primary(signed_out_page())
         .with_response(logged_out_response())
         .build()
+}
+
+async fn dashboard_after_authentication(
+    database: &dyn Database,
+    session: &str,
+    invitation_token: &str,
+    now: OffsetDateTime,
+) -> Container {
+    if invitation_token.is_empty() {
+        return dashboard_refresh_page(database, session, now).await;
+    }
+    let cookies = std::collections::BTreeMap::from([(
+        crate::SESSION_COOKIE_NAME.to_string(),
+        session.to_string(),
+    )]);
+    let Ok(user_id) = crate::authenticated_user(database, &cookies, now).await else {
+        return product_error_page(
+            "Unable to join game",
+            "Your new session could not be verified. Sign in and open the invitation again.",
+        );
+    };
+    match redeem_shareable_invitation(database, invitation_token, &user_id, now).await {
+        Ok(game_id) => invitation_joined_page(game_id),
+        Err(error) => product_error_page("Invitation unavailable", product_error_message(&error)),
+    }
 }
 
 async fn dashboard_refresh_page(
@@ -485,12 +576,98 @@ fn turn_rejection(reason: &str) -> Container {
     error_component(message)
 }
 
+fn invitation_joined_page(game_id: words_with_spouses_game_domain::GameId) -> Container {
+    let game_href = format!("/games/{game_id}");
+    container! {
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
+            main width="100%" max-width="560px" margin-left="auto" margin-right="auto"
+                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="16px" {
+                span color=#3f5735 font-weight=bold { "INVITATION ACCEPTED" }
+                h1 { "Your game is ready" }
+                span color=#5d6258 { "The invitation was redeemed and the game was created." }
+                anchor href=(game_href) color=#ffffff background=#526243 border="1px solid #526243"
+                    border-radius="10px" padding="13px 18px" { "Open game" }
+            }
+        }
+    }
+    .into()
+}
+
+fn invitation_page(invitation_token: &str, signed_in: bool) -> Container {
+    let login_href = format!("/login?invite={invitation_token}");
+    let register_href = format!("/register?invite={invitation_token}");
+    container! {
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
+            main width="100%" max-width="560px" margin-left="auto" margin-right="auto"
+                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="18px" {
+                span color=#7b6240 font-weight=bold { "PRIVATE GAME INVITATION" }
+                h1 { "You’ve been invited to play" }
+                span color=#5d6258 { "This invitation creates a private two-player game. It can be used once." }
+                @if signed_in {
+                    form hx-post="/join" hx-target="#app-page" gap="10px" {
+                        input type=hidden name="action" value="REDEEM_INVITATION";
+                        input type=hidden name="invitation_token" value=(invitation_token);
+                        button type=submit padding="13px 18px" background=#526243 color=#ffffff
+                            border="1px solid #526243" border-radius="10px" cursor=pointer { "Accept invitation" }
+                    }
+                    anchor href="/" color=#526243 { "Back to dashboard" }
+                } @else {
+                    span { "Sign in or create an account to accept." }
+                    div direction="row" gap="10px" {
+                        anchor href=(login_href) color=#ffffff background=#526243 border="1px solid #526243"
+                            border-radius="10px" padding="13px 18px" { "Sign in" }
+                        anchor href=(register_href) color=#526243 border="1px solid #839276"
+                            border-radius="10px" padding="13px 18px" { "Create account" }
+                    }
+                }
+            }
+        }
+    }
+    .into()
+}
+
+async fn invitation_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+) -> Container {
+    let token = request
+        .query
+        .get("invite")
+        .cloned()
+        .or_else(|| {
+            request
+                .parse_form::<DashboardActionForm>()
+                .ok()
+                .map(|form| form.invitation_token)
+        })
+        .unwrap_or_default();
+    if token.is_empty() {
+        return product_error_page(
+            "Invitation unavailable",
+            "This invitation link is incomplete.",
+        );
+    }
+    let user_id = crate::authenticated_user(database, &request.cookies, now).await;
+    if request.method.as_ref() != "POST" {
+        return invitation_page(&token, user_id.is_ok());
+    }
+    let Ok(user_id) = user_id else {
+        return invitation_page(&token, false);
+    };
+    match redeem_shareable_invitation(database, &token, &user_id, now).await {
+        Ok(game_id) => invitation_joined_page(game_id),
+        Err(error) => product_error_page("Invitation unavailable", product_error_message(&error)),
+    }
+}
+
 /// Builds the database-backed renderer-neutral application router.
 #[must_use]
 pub fn create_product_router(
     database: Arc<dyn Database>,
     dispatcher: Arc<crate::GameSharedStateDispatcher>,
     csrf_token: String,
+    public_base_url: String,
 ) -> Router {
     let router = Router::new();
     let dashboard_database = database.clone();
@@ -503,19 +680,28 @@ pub fn create_product_router(
     });
     let dashboard_action_database = database.clone();
     let dashboard_action_dispatcher = dispatcher.clone();
+    let dashboard_public_base_url = Arc::new(public_base_url);
     router.add_route_result("/dashboard/action", move |request: RouteRequest| {
         let database = dashboard_action_database.clone();
         let dispatcher = dashboard_action_dispatcher.clone();
+        let public_base_url = dashboard_public_base_url.clone();
         async move {
-            Ok(
-                dashboard_action_route(
-                    &*database,
-                    &dispatcher,
-                    &request,
-                    OffsetDateTime::now_utc(),
-                )
-                .await,
-            ) as Result<Container, Box<dyn std::error::Error>>
+            Ok(dashboard_action_route(
+                &*database,
+                &dispatcher,
+                public_base_url.as_str(),
+                &request,
+                OffsetDateTime::now_utc(),
+            )
+            .await) as Result<Container, Box<dyn std::error::Error>>
+        }
+    });
+    let join_database = database.clone();
+    router.add_route_result("/join", move |request: RouteRequest| {
+        let database = join_database.clone();
+        async move {
+            Ok(invitation_route(&*database, &request, OffsetDateTime::now_utc()).await)
+                as Result<Container, Box<dyn std::error::Error>>
         }
     });
     let csrf_token = Arc::new(csrf_token);
@@ -617,18 +803,41 @@ pub async fn game_route(
 /// Renders the renderer-neutral login form.
 #[must_use]
 pub fn login_page(error: Option<&str>) -> Container {
+    login_page_with_invitation(error, "")
+}
+
+fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Container {
     let message = error.unwrap_or_default();
+    let register_href = if invitation_token.is_empty() {
+        "/register".to_string()
+    } else {
+        format!("/register?invite={invitation_token}")
+    };
     container! {
-        div id="app-page" padding=32 gap=16 {
-            anchor href="/" { "Home" }
-            h1 { "Sign in" }
-            form hx-post="/login" hx-target="#app-page" gap=8 {
-                input type=text name="username" placeholder="Username";
-                input type=password name="password" placeholder="Password";
-                button type=submit { "Sign in" }
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
+            main width="100%" max-width="480px" margin-left="auto" margin-right="auto"
+                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="20px" {
+                anchor href="/" color=#526243 { "← Home" }
+                div gap="6px" {
+                    span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                    h1 { "Welcome back" }
+                    span color=#5d6258 { "Sign in to continue your private games." }
+                }
+                form hx-post="/login" hx-target="#app-page" gap="12px" {
+                    input type=hidden name="invitation_token" value=(invitation_token);
+                    input type=text name="username" placeholder="Username" padding="13px 14px"
+                        border="1px solid #cfc8b8" border-radius="10px";
+                    input type=password name="password" placeholder="Password" padding="13px 14px"
+                        border="1px solid #cfc8b8" border-radius="10px";
+                    button type=submit padding="13px 18px" background=#526243 color=#ffffff
+                        border="1px solid #526243" border-radius="10px" cursor=pointer { "Sign in" }
+                }
+                @if !message.is_empty() {
+                    section id="account-result" background=#fff3e8 border="1px solid #e2b98f"
+                        border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
+                }
+                span { "New here? " anchor href=(register_href) color=#526243 { "Create an account" } }
             }
-            section id="account-result" { span { (message) } }
-            anchor href="/register" { "Create account" }
         }
     }
     .into()
@@ -637,18 +846,41 @@ pub fn login_page(error: Option<&str>) -> Container {
 /// Renders the renderer-neutral registration form.
 #[must_use]
 pub fn register_page(error: Option<&str>) -> Container {
+    register_page_with_invitation(error, "")
+}
+
+fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Container {
     let message = error.unwrap_or_default();
+    let login_href = if invitation_token.is_empty() {
+        "/login".to_string()
+    } else {
+        format!("/login?invite={invitation_token}")
+    };
     container! {
-        div id="app-page" padding=32 gap=16 {
-            anchor href="/" { "Home" }
-            h1 { "Create account" }
-            form hx-post="/register" hx-target="#app-page" gap=8 {
-                input type=text name="username" placeholder="Username";
-                input type=password name="password" placeholder="Password (12+ characters)";
-                button type=submit { "Create account" }
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
+            main width="100%" max-width="480px" margin-left="auto" margin-right="auto"
+                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="20px" {
+                anchor href="/" color=#526243 { "← Home" }
+                div gap="6px" {
+                    span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                    h1 { "Create your account" }
+                    span color=#5d6258 { "Choose a username your opponent will recognize." }
+                }
+                form hx-post="/register" hx-target="#app-page" gap="12px" {
+                    input type=hidden name="invitation_token" value=(invitation_token);
+                    input type=text name="username" placeholder="Username" padding="13px 14px"
+                        border="1px solid #cfc8b8" border-radius="10px";
+                    input type=password name="password" placeholder="Password (12+ characters)" padding="13px 14px"
+                        border="1px solid #cfc8b8" border-radius="10px";
+                    button type=submit padding="13px 18px" background=#526243 color=#ffffff
+                        border="1px solid #526243" border-radius="10px" cursor=pointer { "Create account" }
+                }
+                @if !message.is_empty() {
+                    section id="account-result" background=#fff3e8 border="1px solid #e2b98f"
+                        border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
+                }
+                span { "Already have an account? " anchor href=(login_href) color=#526243 { "Sign in" } }
             }
-            section id="account-result" { span { (message) } }
-            anchor href="/login" { "Sign in" }
         }
     }
     .into()
@@ -696,75 +928,158 @@ pub fn signed_out_page() -> Container {
 /// Renders the complete signed-in dashboard projection.
 #[must_use]
 pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
+    dashboard_page_content(dashboard, None)
+}
+
+fn dashboard_page_with_invitation(
+    dashboard: &AuthenticatedDashboard,
+    invitation_id: &str,
+    token: &str,
+    public_base_url: &str,
+) -> Container {
+    dashboard_page_content(dashboard, Some((invitation_id, token, public_base_url)))
+}
+
+#[allow(clippy::too_many_lines)]
+fn dashboard_page_content(
+    dashboard: &AuthenticatedDashboard,
+    created_invitation: Option<(&str, &str, &str)>,
+) -> Container {
     let user_id = dashboard.user_id.as_str();
+    let username = dashboard.username.as_str();
     let totals = score_totals_label(dashboard.score_totals.as_ref());
     let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
+    let created_invitation_id = created_invitation.map(|(id, _, _)| id).unwrap_or_default();
+    let created_invitation_path = created_invitation
+        .map(|(_, token, base_url)| format!("{base_url}/join?invite={token}"))
+        .unwrap_or_default();
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
             data-shared-state-refresh-path="/" data-shared-state-refresh-target="#app-page"
-            padding=32 gap=24 {
-            header gap=8 {
-                h1 { "Words with Spouses" }
-                span { "Signed in as " (user_id) }
-                anchor href="/logout" { "Sign out" }
-            }
-            main gap=24 {
-                section id="new-game-actions" gap=8 {
-                    h2 { "Start a game" }
-                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
-                        input type=hidden name="action" value="CHALLENGE";
-                        input type=text name="username" placeholder="Opponent username";
-                        button type=submit { "Challenge" }
+            min-height="100vh" background=#f4f1e8 color=#293126 padding="40px 24px" {
+            div width="100%" max-width="1080px" margin-left="auto" margin-right="auto" gap="28px" {
+                header direction="row" justify-content="space-between" align-items="center"
+                    background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="22px 26px" gap="16px" {
+                    div gap="4px" {
+                        span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                        h1 { "Your games" }
+                        span color=#5d6258 { "Signed in as " (username) }
                     }
-                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
-                        input type=hidden name="action" value="CREATE_INVITATION";
-                        button type=submit { "Create shareable invitation" }
-                    }
-                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
-                        input type=hidden name="action" value="REDEEM_INVITATION";
-                        input type=text name="invitation_token" placeholder="Invitation token";
-                        button type=submit { "Join from invitation" }
+                    anchor href="/logout" color=#526243 { "Sign out" }
+                }
+                @if let Some((_, token, _)) = created_invitation {
+                    section id="created-invitation" background=#e8f1e3 border="1px solid #a9bf9c"
+                        border-radius="16px" padding="22px" gap="10px" {
+                        span color=#3f5735 font-weight=bold { "Invitation ready" }
+                        h2 { "Send this private link to your opponent" }
+                        span color=#4f594a { "This is the only time the secret link can be shown. It expires in 30 days and can be used once." }
+                        anchor href=(created_invitation_path.as_str()) color="#36512e" overflow-wrap="anywhere" {
+                            (created_invitation_path.as_str())
+                        }
+                        span color=#6b7267 { "Invite token (for manual entry):" }
+                        span overflow-wrap="anywhere" font-weight=bold { (token) }
                     }
                 }
-                section id="score-totals" gap=8 {
-                    h2 { "Score history" }
-                    span { (totals) }
+                main direction="row" gap="24px" align-items="start" {
+                    section id="new-game-actions" width="100%" background=#ffffff
+                        border="1px solid #ded8c9" border-radius="18px" padding="24px" gap="18px" {
+                        div gap="5px" {
+                            h2 { "Start a game" }
+                            span color=#5d6258 { "Challenge a username or make a one-time private invite." }
+                        }
+                        form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
+                            input type=hidden name="action" value="CHALLENGE";
+                            input type=text name="username" placeholder="Opponent username" padding="13px 14px"
+                                border="1px solid #cfc8b8" border-radius="10px";
+                            button type=submit padding="12px 16px" background=#526243 color=#ffffff
+                                border="1px solid #526243" border-radius="10px" cursor=pointer { "Send challenge" }
+                        }
+                        form hx-post="/dashboard/action" hx-target="#app-page" gap="8px" {
+                            input type=hidden name="action" value="CREATE_INVITATION";
+                            button type=submit padding="12px 16px" background=#f4ead7 color=#664f2e
+                                border="1px solid #cfb98e" border-radius="10px" cursor=pointer { "Create private invite link" }
+                        }
+                        form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
+                            input type=hidden name="action" value="REDEEM_INVITATION";
+                            input type=text name="invitation_token" placeholder="Paste an invite token" padding="13px 14px"
+                                border="1px solid #cfc8b8" border-radius="10px";
+                            button type=submit padding="12px 16px" background=#ffffff color=#526243
+                                border="1px solid #839276" border-radius="10px" cursor=pointer { "Join game" }
+                        }
+                    }
+                    section id="score-totals" width="100%" background=#ffffff
+                        border="1px solid #ded8c9" border-radius="18px" padding="24px" gap="10px" {
+                        h2 { "Score history" }
+                        span color=#5d6258 { (totals) }
+                    }
                 }
-                section id="pending-games" gap=8 {
-                    h2 { "Challenges and invitations" }
+                section id="pending-games" background=#ffffff border="1px solid #ded8c9"
+                    border-radius="18px" padding="24px" gap="14px" {
+                    div gap="5px" {
+                        h2 { "Challenges & invitations" }
+                        span color=#5d6258 { "Invitations are private and single-use. Old invite secrets cannot be displayed again." }
+                    }
+                    @if dashboard.projection.pending.is_empty() {
+                        span color=#777b73 { "Nothing waiting right now." }
+                    }
                     @for item in &dashboard.projection.pending {
-                        div class="pending-item" {
-                            span { (item.kind) " " (item.direction) }
-                            span { (item.counterparty_user_id.as_deref().unwrap_or("Shareable invitation")) }
-                            @if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
-                                form hx-post="/dashboard/action" hx-target="#app-page" {
-                                    input type=hidden name="action" value="ACCEPT_CHALLENGE";
-                                    input type=hidden name="challenge_id" value=(item.id.as_str());
-                                    button type=submit { "Accept" }
+                        @let counterparty = item.counterparty_username.as_deref().unwrap_or("Private invite");
+                        @let heading = if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
+                            format!("Challenge from {counterparty}")
+                        } else if item.kind == "CHALLENGE" {
+                            format!("Challenge sent to {counterparty}")
+                        } else if item.id == created_invitation_id {
+                            "New private invitation".to_string()
+                        } else {
+                            "Active private invitation".to_string()
+                        };
+                        div class="pending-item" data-direction=(item.direction.as_str()) direction="row" justify-content="space-between" align-items="center"
+                            border="1px solid #e3ded2" border-radius="12px" padding="14px 16px" gap="12px" {
+                            div gap="3px" {
+                                span font-weight=bold { (heading) }
+                                @if item.kind == "INVITATION" && item.id != created_invitation_id {
+                                    span color=#777b73 { "Link hidden after creation for security." }
                                 }
-                                form hx-post="/dashboard/action" hx-target="#app-page" {
-                                    input type=hidden name="action" value="DECLINE_CHALLENGE";
-                                    input type=hidden name="challenge_id" value=(item.id.as_str());
-                                    button type=submit { "Decline" }
-                                }
-                            } @else if item.kind == "CHALLENGE" {
-                                form hx-post="/dashboard/action" hx-target="#app-page" {
-                                    input type=hidden name="action" value="CANCEL_CHALLENGE";
-                                    input type=hidden name="challenge_id" value=(item.id.as_str());
-                                    button type=submit { "Cancel" }
-                                }
-                            } @else {
-                                form hx-post="/dashboard/action" hx-target="#app-page" {
-                                    input type=hidden name="action" value="REVOKE_INVITATION";
-                                    input type=hidden name="invitation_id" value=(item.id.as_str());
-                                    button type=submit { "Revoke" }
+                            }
+                            div direction="row" gap="8px" {
+                                @if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
+                                    form hx-post="/dashboard/action" hx-target="#app-page" {
+                                        input type=hidden name="action" value="ACCEPT_CHALLENGE";
+                                        input type=hidden name="challenge_id" value=(item.id.as_str());
+                                        button type=submit padding="9px 13px" background=#526243 color=#ffffff
+                                            border="1px solid #526243" border-radius="8px" cursor=pointer { "Accept" }
+                                    }
+                                    form hx-post="/dashboard/action" hx-target="#app-page" {
+                                        input type=hidden name="action" value="DECLINE_CHALLENGE";
+                                        input type=hidden name="challenge_id" value=(item.id.as_str());
+                                        button type=submit padding="9px 13px" border="1px solid #c9c2b4"
+                                            border-radius="8px" cursor=pointer { "Decline" }
+                                    }
+                                } @else if item.kind == "CHALLENGE" {
+                                    form hx-post="/dashboard/action" hx-target="#app-page" {
+                                        input type=hidden name="action" value="CANCEL_CHALLENGE";
+                                        input type=hidden name="challenge_id" value=(item.id.as_str());
+                                        button type=submit padding="9px 13px" border="1px solid #c9c2b4"
+                                            border-radius="8px" cursor=pointer { "Cancel" }
+                                    }
+                                } @else {
+                                    form hx-post="/dashboard/action" hx-target="#app-page" {
+                                        input type=hidden name="action" value="REVOKE_INVITATION";
+                                        input type=hidden name="invitation_id" value=(item.id.as_str());
+                                        button type=submit padding="9px 13px" color=#814434 border="1px solid #d3a99d"
+                                            border-radius="8px" cursor=pointer { "Revoke" }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                section id="active-games" gap=8 {
+                section id="active-games" background=#ffffff border="1px solid #ded8c9"
+                    border-radius="18px" padding="24px" gap="14px" {
                     h2 { "Games" }
+                    @if dashboard.projection.games.is_empty() {
+                        span color=#777b73 { "No games yet. Start one above." }
+                    }
                     @for game in &dashboard.projection.games {
                         @let href = format!("/games/{}", game.game_id);
                         @let turn = if game.active_player_user_id.as_deref() == Some(user_id) {
@@ -772,10 +1087,11 @@ pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
                         } else {
                             game.status.as_str()
                         };
-                        div class="game-summary" {
-                            anchor href=(href) { (game.game_id.as_str()) }
+                        div class="game-summary" direction="row" justify-content="space-between"
+                            border="1px solid #e3ded2" border-radius="12px" padding="14px 16px" gap="12px" {
+                            anchor href=(href) color=#526243 font-weight=bold { "Open game" }
                             span { (turn) }
-                            span { "Revision " (game.canonical_revision) }
+                            span color=#777b73 { "Revision " (game.canonical_revision) }
                         }
                     }
                 }
@@ -1008,6 +1324,75 @@ mod tests {
     };
 
     #[test]
+    fn invitation_creation_returns_the_only_shareable_link_and_uses_display_name() {
+        block_on(async {
+            let database: Arc<dyn Database> = Arc::from(
+                switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("Turso opens"),
+            );
+            migrate_app(&*database).await.expect("migrations run");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let session = create_session(&*database, &alice, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let dispatcher = crate::GameSharedStateDispatcher::new(database.clone());
+            let mut request = RouteRequest::from_path("/dashboard/action", RequestInfo::default());
+            request.method = "POST".parse().expect("POST parses");
+            request.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            request.body = Some(std::sync::Arc::new("action=CREATE_INVITATION".into()));
+
+            let rendered = dashboard_action_route(
+                &*database,
+                &dispatcher,
+                "https://games.example.test",
+                &request,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("dashboard renders");
+
+            assert!(rendered.contains("Invitation ready"));
+            assert!(rendered.contains("https://games.example.test/join?invite="));
+            assert!(rendered.contains("Signed in as alice"));
+            assert!(!rendered.contains(&format!("Signed in as {alice}")));
+        });
+    }
+
+    #[test]
+    fn invitation_link_preserves_token_through_account_entry() {
+        let token = "private-invitation-token";
+        let request =
+            RouteRequest::from_path(&format!("/join?invite={token}"), RequestInfo::default());
+        let page = invitation_page(token, false)
+            .display_to_string(false, false)
+            .expect("invitation renders");
+        assert_eq!(request.query.get("invite").map(String::as_str), Some(token));
+        assert!(page.contains(&format!("/login?invite={token}")));
+        assert!(page.contains(&format!("/register?invite={token}")));
+
+        let login = login_page_with_invitation(None, token)
+            .display_to_string(false, false)
+            .expect("login renders");
+        assert!(login.contains("name=\"invitation_token\""));
+        assert!(login.contains(token));
+    }
+
+    #[test]
     fn turn_rejections_render_recoverable_product_guidance() {
         for (reason, expected) in [
             (
@@ -1163,10 +1548,16 @@ mod tests {
                 alice_session.expose().to_string(),
             );
             challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
-            let rendered = dashboard_action_route(&*database, &dispatcher, &challenge, now)
-                .await
-                .display_to_string(false, false)
-                .expect("dashboard renders");
+            let rendered = dashboard_action_route(
+                &*database,
+                &dispatcher,
+                "http://localhost:8343",
+                &challenge,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("dashboard renders");
             assert!(rendered.contains("OUTGOING"));
 
             let refresh = bob_events.recv_async().await.expect("Bob refresh arrives");
@@ -1383,10 +1774,16 @@ mod tests {
                 alice_session.expose().to_string(),
             );
             challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
-            let alice_dashboard = dashboard_action_route(&*database, &dispatcher, &challenge, now)
-                .await
-                .display_to_string(false, false)
-                .expect("dashboard renders");
+            let alice_dashboard = dashboard_action_route(
+                &*database,
+                &dispatcher,
+                "http://localhost:8343",
+                &challenge,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("dashboard renders");
             assert!(alice_dashboard.contains("OUTGOING"));
 
             let bob_dashboard = load_authenticated_dashboard(
@@ -1408,10 +1805,16 @@ mod tests {
             accept.body = Some(std::sync::Arc::new(
                 format!("action=ACCEPT_CHALLENGE&challenge_id={challenge_id}").into(),
             ));
-            let accepted = dashboard_action_route(&*database, &dispatcher, &accept, now)
-                .await
-                .display_to_string(false, false)
-                .expect("dashboard renders");
+            let accepted = dashboard_action_route(
+                &*database,
+                &dispatcher,
+                "http://localhost:8343",
+                &accept,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("dashboard renders");
             assert!(accepted.contains("class=\"game-summary\""));
             assert!(accepted.contains("Your turn") || accepted.contains("ACTIVE"));
         });

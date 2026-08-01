@@ -259,6 +259,7 @@ pub struct PendingItem {
     pub kind: String,
     pub direction: String,
     pub counterparty_user_id: Option<String>,
+    pub counterparty_username: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -367,6 +368,11 @@ pub async fn dashboard_projection(
             kind: "CHALLENGE".to_string(),
             direction: "OUTGOING".to_string(),
             counterparty_user_id: Some(string_column(&row, "challenged_user_id")?),
+            counterparty_username: username_for_user(
+                db,
+                &string_column(&row, "challenged_user_id")?,
+            )
+            .await?,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -382,6 +388,11 @@ pub async fn dashboard_projection(
             kind: "CHALLENGE".to_string(),
             direction: "INCOMING".to_string(),
             counterparty_user_id: Some(string_column(&row, "challenger_user_id")?),
+            counterparty_username: username_for_user(
+                db,
+                &string_column(&row, "challenger_user_id")?,
+            )
+            .await?,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -397,6 +408,7 @@ pub async fn dashboard_projection(
             kind: "INVITATION".to_string(),
             direction: "OUTGOING".to_string(),
             counterparty_user_id: None,
+            counterparty_username: None,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -469,6 +481,19 @@ pub async fn user_game_summaries(
             .then_with(|| left.game_id.cmp(&right.game_id))
     });
     Ok(summaries)
+}
+
+async fn username_for_user(
+    db: &dyn Database,
+    user_id: &str,
+) -> Result<Option<String>, ProjectionError> {
+    Ok(db
+        .select("users")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?
+        .first()
+        .and_then(|row| optional_string(row, "username_display")))
 }
 
 fn string_column(row: &switchy_database::Row, name: &str) -> Result<String, ProjectionError> {

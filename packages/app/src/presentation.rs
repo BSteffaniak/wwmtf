@@ -2,7 +2,7 @@
 
 use std::str::FromStr as _;
 
-use switchy_database::Database;
+use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use time::OffsetDateTime;
 use words_with_spouses_game_domain::{GameId, GameStatus};
@@ -24,6 +24,7 @@ pub const CSRF_HEADER_NAME: &str = "x-hyperchad-csrf-token";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedDashboard {
     pub user_id: String,
+    pub username: String,
     pub projection: DashboardProjection,
     pub score_totals: Option<UserScoreTotals>,
 }
@@ -85,10 +86,20 @@ pub async fn load_authenticated_dashboard(
     now: OffsetDateTime,
 ) -> Result<AuthenticatedDashboard, PresentationError> {
     let user_id = authenticated_user(db, cookies, now).await?;
+    let username = db
+        .select("users")
+        .where_eq("user_id", user_id.clone())
+        .execute(db)
+        .await?
+        .first()
+        .and_then(|row| row.get("username_display"))
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or(PresentationError::Malformed)?;
     Ok(AuthenticatedDashboard {
         projection: dashboard_projection(db, &user_id).await?,
         score_totals: user_score_totals(db, &user_id).await?,
         user_id,
+        username,
     })
 }
 
@@ -139,6 +150,8 @@ pub async fn load_authorized_game_page(
 pub enum PresentationError {
     #[error("sign in to continue")]
     Unauthenticated,
+    #[error("stored presentation data is malformed")]
+    Malformed,
     #[error("this game is unavailable")]
     UnknownGame,
     #[error("you are not authorized to view this game")]
