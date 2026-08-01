@@ -771,10 +771,38 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
         .map_or_else(Vec::new, |(tile_id, _, _)| {
             PendingMoveView::reorder_rack(&game.view.rack, *tile_id)
         });
+    let reversed_rack = rack.iter().rev().copied().collect::<Vec<_>>();
+    let rack_forward = rack
+        .iter()
+        .map(|(tile_id, letter, points)| format!("{tile_id}:{letter}:{points}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rack_reverse = reversed_rack
+        .iter()
+        .map(|(tile_id, letter, points)| format!("{tile_id}:{letter}:{points}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let show_reverse = ActionType::Multi(vec![
+        ActionType::no_display_by_id("rack-order-forward"),
+        ActionType::display_by_id("rack-order-reverse"),
+    ]);
+    let show_forward = ActionType::Multi(vec![
+        ActionType::no_display_by_id("rack-order-reverse"),
+        ActionType::display_by_id("rack-order-forward"),
+    ]);
     container! {
         section id="turn-composer" gap=12 {
             h2 { "Compose turn" }
             span { "Select one or more rack tile IDs and provide matching board coordinates. Blank letters are optional and normalized server-side." }
+            section id="local-rack-order" gap=4 {
+                span id="rack-order-forward" { (rack_forward) }
+                span id="rack-order-reverse"
+                    fx-immediate=(ActionType::no_display_by_id("rack-order-reverse")) {
+                    (rack_reverse)
+                }
+                button type=button fx-click=(show_reverse) { "Reverse rack order" }
+                button type=button fx-click=(show_forward) { "Restore rack order" }
+            }
             form hx-post=(action.as_str()) hx-target="#turn-result" gap=8 {
                 input type=hidden name="command_id" value=(command_id);
                 input type=hidden name="idempotency_key" value=(idempotency_key);
@@ -1097,6 +1125,8 @@ mod tests {
             assert!(page.contains("name=\"idempotency_key\""));
             assert!(page.contains("pending-editor-0"));
             assert!(page.contains("blank-letter-0"));
+            assert!(page.contains("rack-order-forward"));
+            assert!(page.contains("rack-order-reverse"));
             assert!(page.contains("fx-click"));
             assert!(page.contains("Select"));
             assert!(page.contains("SetDisplay"));
