@@ -22,6 +22,101 @@ pub struct PendingMoveView {
     pub selected_tile: Option<u16>,
 }
 
+impl PendingMoveView {
+    /// Selects one rack tile as the next local placement operand.
+    pub const fn select_tile(&mut self, tile_id: u16) {
+        self.selected_tile = Some(tile_id);
+    }
+
+    /// Places the selected tile on an unoccupied local square.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no tile is selected or the local coordinate is already occupied.
+    pub fn place_selected(
+        &mut self,
+        coordinate: Coordinate,
+        blank_letter: Option<char>,
+    ) -> Result<(), PendingMoveError> {
+        let tile_id = self.selected_tile.ok_or(PendingMoveError::NoTileSelected)?;
+        if self
+            .placements
+            .iter()
+            .any(|(_, placed, _)| *placed == coordinate)
+        {
+            return Err(PendingMoveError::OccupiedCoordinate);
+        }
+        if let Some(placement) = self
+            .placements
+            .iter_mut()
+            .find(|(placed_tile, _, _)| *placed_tile == tile_id)
+        {
+            placement.1 = coordinate;
+            placement.2 = blank_letter;
+        } else {
+            self.placements.push((tile_id, coordinate, blank_letter));
+        }
+        self.selected_tile = None;
+        Ok(())
+    }
+
+    /// Removes one local placement and selects its tile again.
+    pub fn unplace(&mut self, tile_id: u16) -> bool {
+        let original_len = self.placements.len();
+        self.placements.retain(|(placed, _, _)| *placed != tile_id);
+        let removed = self.placements.len() != original_len;
+        if removed {
+            self.selected_tile = Some(tile_id);
+        }
+        removed
+    }
+
+    /// Assigns an uppercase letter to one locally placed blank.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-letter assignment or a tile that is not locally placed.
+    pub fn select_blank_letter(
+        &mut self,
+        tile_id: u16,
+        letter: char,
+    ) -> Result<(), PendingMoveError> {
+        if !letter.is_ascii_alphabetic() {
+            return Err(PendingMoveError::InvalidBlankLetter);
+        }
+        let placement = self
+            .placements
+            .iter_mut()
+            .find(|(placed, _, _)| *placed == tile_id)
+            .ok_or(PendingMoveError::TileNotPlaced)?;
+        placement.2 = Some(letter.to_ascii_uppercase());
+        Ok(())
+    }
+
+    /// Returns a deterministic local rack order with the requested tile moved to the front.
+    #[must_use]
+    pub fn reorder_rack(rack: &[(u16, char, u8)], tile_id: u16) -> Vec<(u16, char, u8)> {
+        let mut reordered = rack.to_vec();
+        if let Some(index) = reordered.iter().position(|(id, _, _)| *id == tile_id) {
+            reordered.rotate_left(index);
+        }
+        reordered
+    }
+}
+
+/// Invalid local pending-move interaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PendingMoveError {
+    #[error("select a rack tile first")]
+    NoTileSelected,
+    #[error("the local board square is already occupied")]
+    OccupiedCoordinate,
+    #[error("the tile is not locally placed")]
+    TileNotPlaced,
+    #[error("blank letters must be ASCII letters")]
+    InvalidBlankLetter,
+}
+
 /// Public/private game view projection supplied to rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
@@ -181,7 +276,7 @@ pub fn tile_component(id: u16, letter: char, points: u8) -> Container {
     .into()
 }
 
-/// Renders local pending-move presentation state and declarative actions.
+/// Renders local pending-move presentation state.
 #[must_use]
 pub fn pending_move_component(pending: &PendingMoveView) -> Container {
     let placements = pending
@@ -201,9 +296,6 @@ pub fn pending_move_component(pending: &PendingMoveView) -> Container {
         section id="pending-move" gap=8 {
             h2 { "Pending move" }
             span { (placements) }
-            button fx-click="unplace-selected" { "Unplace selected" }
-            button fx-click="reorder-rack" { "Reorder rack" }
-            button fx-click="select-blank-letter" { "Choose blank letter" }
         }
     }
     .into()
@@ -291,6 +383,37 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn pending_move_interactions_are_local_deterministic_and_reversible() {
+        let mut pending = PendingMoveView::default();
+        pending.select_tile(4);
+        pending
+            .place_selected(Coordinate::new(7, 7), None)
+            .expect("selected tile places");
+        pending
+            .select_blank_letter(4, 'q')
+            .expect("blank assignment normalizes");
+        assert_eq!(
+            pending.placements,
+            vec![(4, Coordinate::new(7, 7), Some('Q'))]
+        );
+
+        pending.select_tile(5);
+        assert_eq!(
+            pending.place_selected(Coordinate::new(7, 7), None),
+            Err(PendingMoveError::OccupiedCoordinate)
+        );
+        assert!(pending.unplace(4));
+        assert_eq!(pending.selected_tile, Some(4));
+        assert!(pending.placements.is_empty());
+
+        let rack = vec![(3, 'A', 1), (4, 'B', 3), (5, 'C', 3)];
+        assert_eq!(
+            PendingMoveView::reorder_rack(&rack, 4),
+            vec![(4, 'B', 3), (5, 'C', 3), (3, 'A', 1)]
+        );
+    }
 
     #[test]
     fn viewer_projection_contains_only_their_private_rack() {

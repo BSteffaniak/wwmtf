@@ -1,13 +1,22 @@
 use futures_lite::future::block_on;
+use hyperchad::{
+    shared_state_models::{
+        CommandEnvelope, CommandId, IdempotencyKey, ParticipantId, PayloadBlob, Revision,
+        TransportInbound, TransportOutbound,
+    },
+    shared_state_transport::{AuthenticatedTransportContext, SharedStateTransportDispatcher as _},
+};
+use std::{collections::BTreeMap, sync::Arc};
 use switchy_database::query::FilterableQuery as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use words_with_spouses_app::{
-    accept_challenge, create_challenge, create_session, dashboard_projection, load_events,
-    migrate_app, rebuild_game_projections, recover_game, register, resolve_session, store_snapshot,
+    GameSharedStateDispatcher, accept_challenge, create_challenge, create_session,
+    dashboard_channel, dashboard_projection, game_channel, load_events, migrate_app,
+    rebuild_game_projections, recover_game, register, resolve_session, store_snapshot,
     user_game_summaries,
 };
-use words_with_spouses_game_domain::{GameId, GameState};
+use words_with_spouses_game_domain::{GameCommand, GameId, GameState};
 
 fn database_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("words-with-spouses-restart-{}.db", Uuid::new_v4()))
@@ -23,6 +32,36 @@ async fn open_database(path: &std::path::Path) -> Box<dyn switchy_database::Data
         .expect("file-backed Turso opens")
 }
 
+async fn open_database_arc(path: &std::path::Path) -> Arc<dyn switchy_database::Database> {
+    Arc::from(open_database(path).await)
+}
+
+fn context(user_id: &str, binding: &str) -> AuthenticatedTransportContext {
+    AuthenticatedTransportContext {
+        participant_id: ParticipantId::new(user_id),
+        identity_binding: binding.to_string(),
+    }
+}
+
+fn pass_command(
+    game_id: GameId,
+    user_id: &str,
+    revision: u64,
+    command_id: &str,
+) -> CommandEnvelope {
+    CommandEnvelope {
+        command_id: CommandId::new(command_id),
+        channel_id: game_channel(game_id),
+        participant_id: ParticipantId::new(user_id),
+        idempotency_key: IdempotencyKey::new(format!("{command_id}-idempotency")),
+        expected_revision: Revision::new(revision),
+        command_name: "PASS".to_string(),
+        payload: PayloadBlob::from_serializable(&GameCommand::Pass).expect("pass encodes"),
+        metadata: BTreeMap::new(),
+        created_at_ms: 1,
+    }
+}
+
 async fn rebuild(db: &dyn switchy_database::Database, game_id: GameId, state: &GameState) {
     let events = load_events(db, game_id, 0)
         .await
@@ -35,6 +74,21 @@ async fn rebuild(db: &dyn switchy_database::Database, game_id: GameId, state: &G
         .await
         .expect("projections rebuild");
     tx.commit().await.expect("projection transaction commits");
+}
+
+fn copy_database_files(source: &std::path::Path, restored: &std::path::Path) {
+    std::fs::copy(source, restored).expect("main database copies");
+    for suffix in ["-shm", "-wal"] {
+        let mut source_sidecar = source.as_os_str().to_owned();
+        source_sidecar.push(suffix);
+        let source_sidecar = std::path::PathBuf::from(source_sidecar);
+        if source_sidecar.exists() {
+            let mut restored_sidecar = restored.as_os_str().to_owned();
+            restored_sidecar.push(suffix);
+            std::fs::copy(source_sidecar, std::path::PathBuf::from(restored_sidecar))
+                .expect("database sidecar copies");
+        }
+    }
 }
 
 fn remove_database_files(path: &std::path::Path) {
@@ -197,5 +251,144 @@ fn accounts_concurrent_games_and_projections_survive_restart() {
 
         drop(db);
         remove_database_files(&path);
+    });
+}
+
+#[test]
+fn restored_database_preserves_sessions_history_and_live_reconnect() {
+    block_on(async {
+        let source = database_path();
+        let restored = database_path();
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let (game_id, alice, bob, alice_session, expected_revision) = {
+            let db = open_database_arc(&source).await;
+            migrate_app(&*db).await.expect("migrations run");
+            let alice = register(&*db, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*db, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let alice_session = create_session(&*db, &alice, now, Duration::days(30))
+                .await
+                .expect("session creates")
+                .expose()
+                .to_string();
+            let challenge = create_challenge(&*db, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*db, &challenge, &bob, now, 73)
+                .await
+                .expect("game starts");
+            let dispatcher = GameSharedStateDispatcher::new(db.clone());
+            let state = recover_game(&*db, game_id).await.expect("game loads");
+            let response = dispatcher
+                .ingest_outbound(
+                    &context(&alice, "source-alice"),
+                    TransportOutbound::Command(pass_command(
+                        game_id,
+                        &alice,
+                        state.revision,
+                        "restore-drill-before-backup",
+                    )),
+                )
+                .await
+                .expect("turn dispatches");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ));
+            drop(dispatcher);
+            drop(db);
+            (game_id, alice, bob, alice_session, state.revision + 1)
+        };
+
+        copy_database_files(&source, &restored);
+        let db = open_database_arc(&restored).await;
+        migrate_app(&*db)
+            .await
+            .expect("restored migrations remain idempotent");
+        assert_eq!(
+            resolve_session(&*db, &alice_session, now)
+                .await
+                .expect("intended session survives restore"),
+            alice
+        );
+        let restored_state = recover_game(&*db, game_id)
+            .await
+            .expect("active game survives restore");
+        assert_eq!(restored_state.revision, expected_revision);
+        assert_eq!(
+            load_events(&*db, game_id, 0)
+                .await
+                .expect("history survives restore")
+                .len(),
+            usize::try_from(expected_revision).expect("revision fits")
+        );
+
+        let dispatcher = GameSharedStateDispatcher::new(db.clone());
+        let alice_context = context(&alice, "restored-alice");
+        let bob_context = context(&bob, "restored-bob");
+        let alice_game = dispatcher
+            .subscribe_channel(&alice_context, &game_channel(game_id))
+            .await
+            .expect("Alice live game reconnects");
+        let bob_game = dispatcher
+            .subscribe_channel(&bob_context, &game_channel(game_id))
+            .await
+            .expect("Bob live game reconnects");
+        let alice_dashboard = dispatcher
+            .subscribe_channel(&alice_context, &dashboard_channel(&alice))
+            .await
+            .expect("Alice dashboard reconnects");
+        for receiver in [&alice_game, &bob_game, &alice_dashboard] {
+            let event = receiver
+                .recv_async()
+                .await
+                .expect("restored state rehydrates");
+            assert_eq!(event.revision.value(), expected_revision);
+        }
+
+        let active_user = if restored_state.active_player == restored_state.players[0] {
+            &alice
+        } else {
+            &bob
+        };
+        let active_context = if active_user == &alice {
+            &alice_context
+        } else {
+            &bob_context
+        };
+        let response = dispatcher
+            .ingest_outbound(
+                active_context,
+                TransportOutbound::Command(pass_command(
+                    game_id,
+                    active_user,
+                    expected_revision,
+                    "restore-drill-after-restore",
+                )),
+            )
+            .await
+            .expect("normal turn works after restore");
+        assert!(
+            matches!(
+                response.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ),
+            "{response:?}"
+        );
+        assert_eq!(
+            recover_game(&*db, game_id)
+                .await
+                .expect("post-restore turn persists")
+                .revision,
+            expected_revision + 1
+        );
+
+        drop(dispatcher);
+        drop(db);
+        remove_database_files(&source);
+        remove_database_files(&restored);
     });
 }

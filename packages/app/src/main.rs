@@ -41,12 +41,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?);
     futures_lite::future::block_on(words_with_spouses_app::migrate_app(&*database))?;
 
+    let dispatcher = std::sync::Arc::new(words_with_spouses_app::GameSharedStateDispatcher::new(
+        database.clone(),
+    ));
     let app = {
         use std::sync::Arc;
 
         use hyperchad::renderer_html_actix::{CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig};
 
-        let dispatcher = words_with_spouses_app::shared_state_dispatcher(database.clone());
         let csrf_token = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
         let web_security = Arc::new(CookieCsrfWebSecurity::new(
             CookieCsrfWebSecurityConfig::new(
@@ -60,7 +62,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
 
         let mut app = AppBuilder::new()
-            .with_router(create_product_router(database.clone(), csrf_token.clone()))
+            .with_router(create_product_router(
+                database.clone(),
+                dispatcher.clone(),
+                csrf_token.clone(),
+            ))
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
             .with_actix_bind_address(address)

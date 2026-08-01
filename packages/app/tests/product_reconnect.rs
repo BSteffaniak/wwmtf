@@ -38,6 +38,32 @@ fn context(user_id: &str, binding: &str) -> AuthenticatedTransportContext {
     }
 }
 
+fn command(
+    game_id: words_with_spouses_game_domain::GameId,
+    user_id: &str,
+    sequence: u64,
+    revision: u64,
+    command: &GameCommand,
+) -> CommandEnvelope {
+    let command_name = match command {
+        GameCommand::Play { .. } => "PLAY",
+        GameCommand::Exchange { .. } => "EXCHANGE",
+        GameCommand::Pass => "PASS",
+        GameCommand::Resign => "RESIGN",
+    };
+    CommandEnvelope {
+        command_id: CommandId::new(format!("e2e-command-{sequence}")),
+        channel_id: game_channel(game_id),
+        participant_id: ParticipantId::new(user_id),
+        idempotency_key: IdempotencyKey::new(format!("e2e-idempotency-{sequence}")),
+        expected_revision: Revision::new(revision),
+        command_name: command_name.to_string(),
+        payload: PayloadBlob::from_serializable(command).expect("command encodes"),
+        metadata: BTreeMap::new(),
+        created_at_ms: i64::try_from(sequence).expect("sequence fits"),
+    }
+}
+
 fn remove_database_files(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
     for suffix in ["-shm", "-wal"] {
@@ -45,6 +71,135 @@ fn remove_database_files(path: &std::path::Path) {
         sidecar.push(suffix);
         let _ = std::fs::remove_file(std::path::PathBuf::from(sidecar));
     }
+}
+
+#[test]
+fn two_authenticated_clients_play_to_completion_with_private_live_views() {
+    block_on(async {
+        let database: Arc<dyn switchy_database::Database> = Arc::from(
+            switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens"),
+        );
+        migrate_app(&*database).await.expect("migrations run");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let alice = register(&*database, "alice", "correct horse battery staple", now)
+            .await
+            .expect("Alice registers");
+        let bob = register(&*database, "bob", "another correct horse battery", now)
+            .await
+            .expect("Bob registers");
+        let alice_session = create_session(&*database, &alice, now, Duration::days(30))
+            .await
+            .expect("Alice session creates")
+            .expose()
+            .to_string();
+        let bob_session = create_session(&*database, &bob, now, Duration::days(30))
+            .await
+            .expect("Bob session creates")
+            .expose()
+            .to_string();
+        let challenge = create_challenge(&*database, &alice, &bob, now)
+            .await
+            .expect("challenge creates");
+        let game_id = accept_challenge(&*database, &challenge, &bob, now, 41)
+            .await
+            .expect("game starts");
+        let dispatcher = GameSharedStateDispatcher::new(database.clone());
+        let alice_context = context(&alice, "alice-browser");
+        let bob_context = context(&bob, "bob-browser");
+        let alice_events = dispatcher
+            .subscribe_channel(&alice_context, &game_channel(game_id))
+            .await
+            .expect("Alice subscribes");
+        let bob_events = dispatcher
+            .subscribe_channel(&bob_context, &game_channel(game_id))
+            .await
+            .expect("Bob subscribes");
+        let _ = alice_events.recv_async().await.expect("Alice initial view");
+        let _ = bob_events.recv_async().await.expect("Bob initial view");
+
+        let mut sequence = 1;
+        loop {
+            let state = recover_game(&*database, game_id)
+                .await
+                .expect("game replays");
+            if state.status == words_with_spouses_game_domain::GameStatus::Completed {
+                break;
+            }
+            let actor = if state.active_player == state.players[0] {
+                (&alice, &alice_context)
+            } else {
+                (&bob, &bob_context)
+            };
+            let result = dispatcher
+                .ingest_outbound(
+                    actor.1,
+                    TransportOutbound::Command(command(
+                        game_id,
+                        actor.0,
+                        sequence,
+                        state.revision,
+                        &GameCommand::Pass,
+                    )),
+                )
+                .await
+                .expect("pass dispatches");
+            assert!(matches!(
+                result.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ));
+            let alice_event = alice_events.recv_async().await.expect("Alice live update");
+            let bob_event = bob_events.recv_async().await.expect("Bob live update");
+            let alice_view: words_with_spouses_app::GameView = dispatcher
+                .project_event(&alice_context, &alice_event)
+                .expect("Alice projection")
+                .payload
+                .deserialize()
+                .expect("Alice view decodes");
+            let bob_view: words_with_spouses_app::GameView = dispatcher
+                .project_event(&bob_context, &bob_event)
+                .expect("Bob projection")
+                .payload
+                .deserialize()
+                .expect("Bob view decodes");
+            assert_eq!(alice_view.revision, bob_view.revision);
+            assert_eq!(alice_view.board, bob_view.board);
+            assert_ne!(alice_view.rack, bob_view.rack);
+            sequence += 1;
+        }
+
+        let completed = recover_game(&*database, game_id)
+            .await
+            .expect("completed game replays");
+        assert_eq!(
+            completed.status,
+            words_with_spouses_game_domain::GameStatus::Completed
+        );
+        for (session, expected_user) in [(&alice_session, &alice), (&bob_session, &bob)] {
+            let cookies = BTreeMap::from([(
+                words_with_spouses_app::SESSION_COOKIE_NAME.to_string(),
+                session.clone(),
+            )]);
+            let page = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
+                .await
+                .expect("completed game page loads");
+            assert!(page.completed);
+            assert_eq!(page.user_id, *expected_user);
+            assert!(
+                page.history
+                    .iter()
+                    .any(|entry| entry.kind == "GAME_COMPLETED")
+            );
+            assert_eq!(
+                page.view.status,
+                words_with_spouses_game_domain::GameStatus::Completed
+            );
+        }
+    });
 }
 
 #[test]
@@ -91,18 +246,7 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
             let _ = alice_events.recv_async().await.expect("Alice initial view");
             let _ = bob_events.recv_async().await.expect("Bob initial view");
             let state = recover_game(&*database, game_id).await.expect("game loads");
-            let command = CommandEnvelope {
-                command_id: CommandId::new("e2e-pass"),
-                channel_id: game_channel(game_id),
-                participant_id: ParticipantId::new(&alice),
-                idempotency_key: IdempotencyKey::new("e2e-pass-idempotency"),
-                expected_revision: Revision::new(state.revision),
-                command_name: "PASS".to_string(),
-                payload: PayloadBlob::from_serializable(&GameCommand::Pass)
-                    .expect("command encodes"),
-                metadata: BTreeMap::new(),
-                created_at_ms: 1,
-            };
+            let command = command(game_id, &alice, 1, state.revision, &GameCommand::Pass);
             let result = dispatcher
                 .ingest_outbound(&alice_context, TransportOutbound::Command(command))
                 .await

@@ -27,8 +27,8 @@ pub use challenges::{
     create_game_in_transaction, decline_challenge, find_user_by_username,
 };
 pub use components::{
-    GameView, MoveHistoryView, PendingMoveView, PremiumView, board_component, error_component,
-    final_score_adjustments, game_view, move_history_component, move_history_view,
+    GameView, MoveHistoryView, PendingMoveError, PendingMoveView, PremiumView, board_component,
+    error_component, final_score_adjustments, game_view, move_history_component, move_history_view,
     pending_move_component, premium_square_component, rack_component, status_component,
     tile_component,
 };
@@ -61,7 +61,10 @@ pub use routes::{
     register_page, signed_out_page, turn_composer,
 };
 pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
-pub use shared_state_security::{GameSharedStateDispatcher, game_channel, shared_state_dispatcher};
+pub use shared_state_security::{
+    DashboardLiveView, GameSharedStateDispatcher, dashboard_channel, game_channel,
+    shared_state_dispatcher,
+};
 pub use workflows::{
     AccountWorkflowError, ProductWorkflowError, accept_pending_challenge, cancel_pending_challenge,
     challenge_username, create_shareable_invitation, decline_pending_challenge,

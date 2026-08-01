@@ -83,6 +83,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn observability_api_accepts_only_safe_static_labels_and_numeric_aggregates() {
+        fn assert_static(_: &'static str) {}
+        assert_static("invalid_session");
+        assert_static("resolve_session");
+
+        let source = include_str!("observability.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source exists");
+        for forbidden in [
+            "password",
+            "session_token",
+            "invitation_token",
+            "rack",
+            "bag",
+            "canonical_event",
+        ] {
+            assert!(!source.contains(forbidden), "unsafe log field: {forbidden}");
+        }
+        assert!(!source.contains(&['{', ':', '?', '}'].iter().collect::<String>()));
+        assert!(!source.contains("payload"));
+    }
+
+    #[test]
     fn snapshots_expose_only_aggregate_counters() {
         let before = app_metrics_snapshot();
         record_authentication_failure("invalid_session");

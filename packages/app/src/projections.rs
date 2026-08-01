@@ -1,5 +1,6 @@
 //! Rebuildable game summary and move-history projections.
 
+use serde::{Deserialize, Serialize};
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use words_with_spouses_game_domain::{GameEvent, GameId, GameState, GameStatus};
@@ -252,24 +253,24 @@ async fn user_for_player(
 }
 
 /// Pending challenge or invitation displayed on a dashboard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingItem {
     pub id: String,
-    pub kind: &'static str,
-    pub direction: &'static str,
+    pub kind: String,
+    pub direction: String,
     pub counterparty_user_id: Option<String>,
     pub created_at_ms: i64,
 }
 
 /// Complete renderer-neutral dashboard projection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DashboardProjection {
     pub pending: Vec<PendingItem>,
     pub games: Vec<GameSummary>,
 }
 
 /// Aggregate completed-game statistics derived from canonical game results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserScoreTotals {
     pub user_id: String,
     pub completed_games: u64,
@@ -363,8 +364,8 @@ pub async fn dashboard_projection(
     {
         pending.push(PendingItem {
             id: string_column(&row, "challenge_id")?,
-            kind: "CHALLENGE",
-            direction: "OUTGOING",
+            kind: "CHALLENGE".to_string(),
+            direction: "OUTGOING".to_string(),
             counterparty_user_id: Some(string_column(&row, "challenged_user_id")?),
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
@@ -378,8 +379,8 @@ pub async fn dashboard_projection(
     {
         pending.push(PendingItem {
             id: string_column(&row, "challenge_id")?,
-            kind: "CHALLENGE",
-            direction: "INCOMING",
+            kind: "CHALLENGE".to_string(),
+            direction: "INCOMING".to_string(),
             counterparty_user_id: Some(string_column(&row, "challenger_user_id")?),
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
@@ -393,8 +394,8 @@ pub async fn dashboard_projection(
     {
         pending.push(PendingItem {
             id: string_column(&row, "invitation_id")?,
-            kind: "INVITATION",
-            direction: "OUTGOING",
+            kind: "INVITATION".to_string(),
+            direction: "OUTGOING".to_string(),
             counterparty_user_id: None,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
@@ -412,7 +413,7 @@ pub async fn dashboard_projection(
 }
 
 /// Projected game lifecycle for a user's dashboard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameSummary {
     pub game_id: String,
     pub status: String,

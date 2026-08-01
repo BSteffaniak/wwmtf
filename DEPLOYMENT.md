@@ -54,7 +54,7 @@ Restore drill:
 8. open two authenticated clients, confirm private live subscriptions reconnect, and complete a normal turn; and
 9. retain the drill date, backup identity, release revision, and results outside source control.
 
-The file-backed automated recovery test covers migration restart, durable sessions, multiple stable game IDs, snapshot-plus-journal recovery, and projection rebuild. A production restore is not complete until the live browser/reconnect checks above have also passed.
+The file-backed automated recovery tests now cover a stopped database-plus-sidecar backup restored to a new path, idempotent migration startup, intended durable sessions, canonical active-game/history recovery, private game and dashboard live rehydration for both players, and a successful persisted turn after restore. Repeat the same drill against the actual production backup mechanism for every deployment before relying on that backup operationally.
 
 ## Local development
 

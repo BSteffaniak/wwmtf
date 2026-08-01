@@ -21,6 +21,7 @@ async-trait = { workspace = true }
 env_logger = { workspace = true }
 futures-lite = { workspace = true }
 hyperchad = { workspace = true, features = [
+    "actions",
     "app",
     "renderer",
     "renderer-serde",

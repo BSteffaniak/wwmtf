@@ -15,18 +15,31 @@ use hyperchad::{
         SharedStateTransportDispatcher,
     },
 };
+use serde::{Deserialize, Serialize};
 use switchy_database::{Database, query::FilterableQuery as _};
 use words_with_spouses_game_domain::{GameCommand, GameId, PlayerId};
 
-use crate::{GameView, game_view, player_for_user, recover_game, submit_game_command};
+use crate::{
+    DashboardProjection, GameView, UserScoreTotals, dashboard_projection, game_view,
+    player_for_user, recover_game, submit_game_command, user_score_totals,
+};
 
 const GAME_CHANNEL_PREFIX: &str = "game:";
+const DASHBOARD_CHANNEL_PREFIX: &str = "dashboard:";
 const GAME_VIEW_EVENT: &str = "GAME_VIEW_UPDATED_V1";
+const DASHBOARD_EVENT: &str = "DASHBOARD_UPDATED_V1";
 const PRIVATE_PARTICIPANT_METADATA: &str = "private-participant-id";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DashboardLiveView {
+    pub projection: DashboardProjection,
+    pub score_totals: Option<UserScoreTotals>,
+}
 
 #[derive(Debug, Clone)]
 struct ServerGameUpdate {
     views_by_user: BTreeMap<String, GameView>,
+    dashboards_by_user: BTreeMap<String, DashboardLiveView>,
 }
 
 #[derive(Debug)]
@@ -54,6 +67,16 @@ impl GameSharedStateDispatcher {
             database,
             subscribers: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    async fn dashboard_view(
+        &self,
+        user_id: &str,
+    ) -> SharedStateTransportDispatchResult<DashboardLiveView> {
+        Ok(DashboardLiveView {
+            projection: dashboard_projection(&*self.database, user_id).await?,
+            score_totals: user_score_totals(&*self.database, user_id).await?,
+        })
     }
 
     async fn authorize(
@@ -97,7 +120,20 @@ impl GameSharedStateDispatcher {
         if views_by_user.len() != 2 {
             return Err("game must have exactly two members".into());
         }
-        Ok(ServerGameUpdate { views_by_user })
+        let mut dashboards_by_user = BTreeMap::new();
+        for user_id in views_by_user.keys() {
+            dashboards_by_user.insert(
+                user_id.clone(),
+                DashboardLiveView {
+                    projection: dashboard_projection(&*self.database, user_id).await?,
+                    score_totals: user_score_totals(&*self.database, user_id).await?,
+                },
+            );
+        }
+        Ok(ServerGameUpdate {
+            views_by_user,
+            dashboards_by_user,
+        })
     }
 
     fn projected_event(
@@ -118,6 +154,28 @@ impl GameSharedStateDispatcher {
             metadata: BTreeMap::from([(
                 PRIVATE_PARTICIPANT_METADATA.to_string(),
                 participant_id.to_string(),
+            )]),
+            created_at_ms,
+        })
+    }
+
+    fn dashboard_event(
+        user_id: &str,
+        view: &DashboardLiveView,
+        revision: Revision,
+        command_id: Option<&hyperchad::shared_state_models::CommandId>,
+        created_at_ms: i64,
+    ) -> SharedStateTransportDispatchResult<EventEnvelope> {
+        Ok(EventEnvelope {
+            event_id: EventId::new(format!("dashboard:{user_id}:{}", revision.value())),
+            channel_id: dashboard_channel(user_id),
+            revision,
+            command_id: command_id.cloned(),
+            event_name: DASHBOARD_EVENT.to_string(),
+            payload: PayloadBlob::from_serializable(view)?,
+            metadata: BTreeMap::from([(
+                PRIVATE_PARTICIPANT_METADATA.to_string(),
+                user_id.to_string(),
             )]),
             created_at_ms,
         })
@@ -149,6 +207,20 @@ impl GameSharedStateDispatcher {
                 )
                 .is_ok_and(|event| subscriber.sender.send(event).is_ok())
             });
+        }
+        let revision = update
+            .views_by_user
+            .values()
+            .next()
+            .map_or(Revision::new(0), |view| Revision::new(view.revision));
+        for (user_id, view) in &update.dashboards_by_user {
+            if let Some(channel_subscribers) = subscribers.get_mut(&dashboard_channel(user_id)) {
+                channel_subscribers.retain(|subscriber| {
+                    subscriber.user_id == *user_id
+                        && Self::dashboard_event(user_id, view, revision, command_id, created_at_ms)
+                            .is_ok_and(|event| subscriber.sender.send(event).is_ok())
+                });
+            }
         }
         let live_subscribers = subscribers.values().map(Vec::len).sum();
         crate::observability::set_live_subscribers(live_subscribers);
@@ -222,6 +294,22 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 }])
             }
             TransportOutbound::Subscribe(subscribe) => {
+                if dashboard_user(&subscribe.channel_id) == Some(context.participant_id.as_str()) {
+                    let view = self.dashboard_view(context.participant_id.as_str()).await?;
+                    let revision = view
+                        .projection
+                        .games
+                        .iter()
+                        .map(|game| game.canonical_revision)
+                        .max()
+                        .unwrap_or(0);
+                    return Ok(vec![TransportInbound::Snapshot(SnapshotEnvelope {
+                        channel_id: subscribe.channel_id,
+                        revision: Revision::new(revision),
+                        payload: PayloadBlob::from_serializable(&view)?,
+                        created_at_ms: 0,
+                    })]);
+                }
                 let (game_id, player_id) = self.authorize(context, &subscribe.channel_id).await?;
                 let state = recover_game(&*self.database, game_id).await?;
                 let view =
@@ -234,6 +322,10 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 })])
             }
             TransportOutbound::Unsubscribe(unsubscribe) => {
+                if dashboard_user(&unsubscribe.channel_id) == Some(context.participant_id.as_str())
+                {
+                    return Ok(Vec::new());
+                }
                 self.authorize(context, &unsubscribe.channel_id).await?;
                 Ok(Vec::new())
             }
@@ -246,6 +338,34 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         channel_id: &ChannelId,
     ) -> SharedStateTransportDispatchResult<flume::Receiver<EventEnvelope>> {
+        if dashboard_user(channel_id) == Some(context.participant_id.as_str()) {
+            let (sender, receiver) = flume::unbounded();
+            self.subscribers
+                .lock()
+                .map_err(|_| "dashboard subscriber registry is unavailable")?
+                .entry(channel_id.clone())
+                .or_default()
+                .push(GameSubscriber {
+                    user_id: context.participant_id.as_str().to_string(),
+                    sender: sender.clone(),
+                });
+            let view = self.dashboard_view(context.participant_id.as_str()).await?;
+            let revision = view
+                .projection
+                .games
+                .iter()
+                .map(|game| game.canonical_revision)
+                .max()
+                .unwrap_or(0);
+            sender.send(Self::dashboard_event(
+                context.participant_id.as_str(),
+                &view,
+                Revision::new(revision),
+                None,
+                0,
+            )?)?;
+            return Ok(receiver);
+        }
         let (game_id, player) = self.authorize(context, channel_id).await?;
         let (sender, receiver) = flume::unbounded();
         self.subscribers
@@ -285,13 +405,28 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         event: &EventEnvelope,
     ) -> Option<EventEnvelope> {
-        if event.event_name != GAME_VIEW_EVENT
-            || event
-                .metadata
-                .get(PRIVATE_PARTICIPANT_METADATA)
-                .map(String::as_str)
-                != Some(context.participant_id.as_str())
+        if event
+            .metadata
+            .get(PRIVATE_PARTICIPANT_METADATA)
+            .map(String::as_str)
+            != Some(context.participant_id.as_str())
         {
+            return None;
+        }
+        if event.event_name == DASHBOARD_EVENT {
+            let view: DashboardLiveView = event.payload.deserialize().ok()?;
+            return Some(EventEnvelope {
+                event_id: event.event_id.clone(),
+                channel_id: event.channel_id.clone(),
+                revision: event.revision,
+                command_id: event.command_id.clone(),
+                event_name: DASHBOARD_EVENT.to_string(),
+                payload: PayloadBlob::from_serializable(&view).ok()?,
+                metadata: BTreeMap::new(),
+                created_at_ms: event.created_at_ms,
+            });
+        }
+        if event.event_name != GAME_VIEW_EVENT {
             return None;
         }
         let view: GameView = event.payload.deserialize().ok()?;
@@ -316,6 +451,16 @@ fn command_name_matches(name: &str, command: &GameCommand) -> bool {
             | ("PASS", GameCommand::Pass)
             | ("RESIGN", GameCommand::Resign)
     )
+}
+
+fn dashboard_user(channel_id: &ChannelId) -> Option<&str> {
+    channel_id.as_str().strip_prefix(DASHBOARD_CHANNEL_PREFIX)
+}
+
+/// Returns the private shared-state dashboard channel for one authenticated user.
+#[must_use]
+pub fn dashboard_channel(user_id: &str) -> ChannelId {
+    ChannelId::new(format!("{DASHBOARD_CHANNEL_PREFIX}{user_id}"))
 }
 
 fn game_id(channel_id: &ChannelId) -> SharedStateTransportDispatchResult<GameId> {
@@ -345,6 +490,7 @@ mod tests {
     use futures_lite::future::block_on;
     use hyperchad::shared_state_models::{
         CommandEnvelope, CommandId, IdempotencyKey, ParticipantId, TransportSubscribe,
+        TransportUnsubscribe,
     };
     use time::OffsetDateTime;
 
@@ -385,6 +531,243 @@ mod tests {
             participant_id: ParticipantId::new(user_id),
             identity_binding: format!("session:{user_id}"),
         }
+    }
+
+    fn gameplay_command(
+        game_id: GameId,
+        participant: &str,
+        command_id: &str,
+        revision: u64,
+        command: &GameCommand,
+    ) -> CommandEnvelope {
+        let name = match command {
+            GameCommand::Play { .. } => "PLAY",
+            GameCommand::Exchange { .. } => "EXCHANGE",
+            GameCommand::Pass => "PASS",
+            GameCommand::Resign => "RESIGN",
+        };
+        CommandEnvelope {
+            command_id: CommandId::new(command_id),
+            channel_id: game_channel(game_id),
+            participant_id: ParticipantId::new(participant),
+            idempotency_key: IdempotencyKey::new(format!("{command_id}-idempotency")),
+            expected_revision: Revision::new(revision),
+            command_name: name.to_string(),
+            payload: PayloadBlob::from_serializable(command).expect("command encodes"),
+            metadata: BTreeMap::new(),
+            created_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn dashboard_subscribers_receive_private_turn_updates_and_rehydrate() {
+        block_on(async {
+            let (database, game_id, alice, bob, mallory) = fixture().await;
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let alice_context = context(&alice);
+            let bob_context = context(&bob);
+            let alice_dashboard = dispatcher
+                .subscribe_channel(&alice_context, &dashboard_channel(&alice))
+                .await
+                .expect("Alice dashboard subscribes");
+            let bob_dashboard = dispatcher
+                .subscribe_channel(&bob_context, &dashboard_channel(&bob))
+                .await
+                .expect("Bob dashboard subscribes");
+            assert!(
+                dispatcher
+                    .subscribe_channel(&context(&mallory), &dashboard_channel(&alice))
+                    .await
+                    .is_err()
+            );
+            let alice_initial = alice_dashboard.recv_async().await.expect("Alice dashboard");
+            let bob_initial = bob_dashboard.recv_async().await.expect("Bob dashboard");
+            let alice_view: DashboardLiveView = dispatcher
+                .project_event(&alice_context, &alice_initial)
+                .expect("Alice dashboard projects")
+                .payload
+                .deserialize()
+                .expect("dashboard decodes");
+            assert_eq!(alice_view.projection.games[0].canonical_revision, 1);
+            assert!(
+                dispatcher
+                    .project_event(&bob_context, &alice_initial)
+                    .is_none()
+            );
+            assert!(
+                dispatcher
+                    .project_event(&bob_context, &bob_initial)
+                    .is_some()
+            );
+
+            let state = recover_game(&*database, game_id)
+                .await
+                .expect("state loads");
+            let response = dispatcher
+                .ingest_outbound(
+                    &alice_context,
+                    TransportOutbound::Command(gameplay_command(
+                        game_id,
+                        &alice,
+                        "dashboard-pass",
+                        state.revision,
+                        &GameCommand::Pass,
+                    )),
+                )
+                .await
+                .expect("turn dispatches");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ));
+            for (context, receiver) in [
+                (&alice_context, &alice_dashboard),
+                (&bob_context, &bob_dashboard),
+            ] {
+                let event = receiver.recv_async().await.expect("dashboard updates");
+                let view: DashboardLiveView = dispatcher
+                    .project_event(context, &event)
+                    .expect("private dashboard projects")
+                    .payload
+                    .deserialize()
+                    .expect("dashboard decodes");
+                assert_eq!(
+                    view.projection.games[0].canonical_revision,
+                    state.revision + 1
+                );
+                assert_eq!(
+                    view.projection.games[0].active_player_user_id.as_deref(),
+                    Some(bob.as_str())
+                );
+            }
+
+            let reconnected = dispatcher
+                .subscribe_channel(&alice_context, &dashboard_channel(&alice))
+                .await
+                .expect("dashboard reconnects");
+            let event = reconnected
+                .recv_async()
+                .await
+                .expect("dashboard rehydrates");
+            let view: DashboardLiveView = dispatcher
+                .project_event(&alice_context, &event)
+                .expect("rehydrated dashboard projects")
+                .payload
+                .deserialize()
+                .expect("dashboard decodes");
+            assert_eq!(
+                view.projection.games[0].canonical_revision,
+                state.revision + 1
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_forged_identity_channel_state_and_out_of_turn_commands() {
+        block_on(async {
+            let (database, game_id, alice, bob, mallory) = fixture().await;
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let state = recover_game(&*database, game_id)
+                .await
+                .expect("state loads");
+
+            let forged_identity = gameplay_command(
+                game_id,
+                &bob,
+                "forged-identity",
+                state.revision,
+                &GameCommand::Pass,
+            );
+            let response = dispatcher
+                .ingest_outbound(
+                    &context(&alice),
+                    TransportOutbound::Command(forged_identity),
+                )
+                .await
+                .expect("forged identity is rejected normally");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandRejected { .. }]
+            ));
+
+            let guessed_channel = ChannelId::new(format!("game:{}", uuid::Uuid::new_v4()));
+            assert!(
+                dispatcher
+                    .ingest_outbound(
+                        &context(&mallory),
+                        TransportOutbound::Subscribe(TransportSubscribe {
+                            channel_id: guessed_channel.clone(),
+                            last_seen_revision: None,
+                        }),
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                dispatcher
+                    .ingest_outbound(
+                        &context(&mallory),
+                        TransportOutbound::Unsubscribe(TransportUnsubscribe {
+                            channel_id: guessed_channel,
+                        }),
+                    )
+                    .await
+                    .is_err()
+            );
+
+            let out_of_turn = gameplay_command(
+                game_id,
+                &bob,
+                "out-of-turn",
+                state.revision,
+                &GameCommand::Pass,
+            );
+            let response = dispatcher
+                .ingest_outbound(&context(&bob), TransportOutbound::Command(out_of_turn))
+                .await
+                .expect("out-of-turn command rejects");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandRejected { reason, .. }]
+                    if reason.contains("turn")
+            ));
+
+            let mut command = gameplay_command(
+                game_id,
+                &alice,
+                "forged-name",
+                state.revision,
+                &GameCommand::Pass,
+            );
+            command.command_name = "PLAY".to_string();
+            command.payload = PayloadBlob::from_serializable(&serde_json::json!({
+                "Play": {
+                    "placements": [{
+                        "tile_id": 65535,
+                        "coordinate": { "x": 7, "y": 7 },
+                        "blank_letter": null
+                    }],
+                    "scores": { "forged": 999_999 },
+                    "rack": [65535]
+                }
+            }))
+            .expect("forged payload encodes");
+            let response = dispatcher
+                .ingest_outbound(&context(&alice), TransportOutbound::Command(command))
+                .await
+                .expect("mismatched command rejects");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandRejected { .. }]
+            ));
+            assert_eq!(
+                recover_game(&*database, game_id)
+                    .await
+                    .expect("rejected commands do not mutate state")
+                    .revision,
+                state.revision
+            );
+        });
     }
 
     #[test]
@@ -444,6 +827,11 @@ mod tests {
                 .expect("Bob view decodes");
             assert_ne!(alice_view.rack, bob_view.rack);
             assert_eq!(alice_view.board, bob_view.board);
+            let alice_payload =
+                serde_json::to_string(alice_snapshot).expect("private snapshot serializes");
+            for forbidden in ["\"bag\"", "password", "session", "invitation"] {
+                assert!(!alice_payload.contains(forbidden));
+            }
         });
     }
 
