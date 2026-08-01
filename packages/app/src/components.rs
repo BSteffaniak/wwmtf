@@ -413,6 +413,7 @@ mod tests {
             PendingMoveView::reorder_rack(&rack, 4),
             vec![(4, 'B', 3), (5, 'C', 3), (3, 'A', 1)]
         );
+        assert_eq!(PendingMoveView::reorder_rack(&rack, 99), rack);
     }
 
     #[test]

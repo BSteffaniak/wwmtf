@@ -5,6 +5,7 @@
 mod durable_web_session;
 
 use hyperchad::app::AppBuilder;
+use hyperchad::renderer::assets::{AssetPathTarget, StaticAssetRoute};
 use words_with_spouses_app::{
     CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router,
 };
@@ -47,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = {
         use std::sync::Arc;
 
+        use hyperchad::renderer_html::actix::HtmlActixRuntime as _;
         use hyperchad::renderer_html_actix::{CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig};
 
         let csrf_token = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
@@ -61,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )),
         ));
 
-        let mut app = AppBuilder::new()
+        let mut app_builder = AppBuilder::new()
             .with_router(create_product_router(
                 database.clone(),
                 dispatcher.clone(),
@@ -70,9 +72,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
             .with_actix_bind_address(address)
-            .with_actix_port(port)
-            .build_default_html_actix()?;
-        app.renderer.app.set_shared_state_csrf_token(csrf_token);
+            .with_actix_port(port);
+        app_builder.static_asset_route_result(StaticAssetRoute {
+            route: format!(
+                "js/{}",
+                hyperchad::renderer_vanilla_js::SCRIPT_NAME_HASHED.as_str()
+            ),
+            target: AssetPathTarget::FileContents(
+                hyperchad::renderer_vanilla_js::SCRIPT.as_bytes().into(),
+            ),
+            not_found_behavior: None,
+        })?;
+        let mut app = app_builder.build_default_html_vanilla_js_actix()?;
+        app.renderer
+            .app
+            .set_shared_state_csrf_token(csrf_token.clone());
+        app.renderer.app.set_html_csrf_token(csrf_token);
         app.renderer
             .app
             .set_shared_state_transport_dispatcher(dispatcher, web_security);

@@ -284,10 +284,13 @@ async fn login_route(
     )
     .await
     {
-        Ok((_, session)) => View::builder()
-            .with_primary(dashboard_refresh_page())
-            .with_response(authenticated_session_response(session.expose(), csrf_token))
-            .build(),
+        Ok((_, session)) => {
+            let dashboard = dashboard_refresh_page(database, session.expose(), now).await;
+            View::builder()
+                .with_primary(dashboard)
+                .with_response(authenticated_session_response(session.expose(), csrf_token))
+                .build()
+        }
         Err(error) => View::from(login_page(Some(account_error_message(&error)))),
     }
 }
@@ -314,10 +317,13 @@ async fn register_route(
     )
     .await
     {
-        Ok((_, session)) => View::builder()
-            .with_primary(dashboard_refresh_page())
-            .with_response(authenticated_session_response(session.expose(), csrf_token))
-            .build(),
+        Ok((_, session)) => {
+            let dashboard = dashboard_refresh_page(database, session.expose(), now).await;
+            View::builder()
+                .with_primary(dashboard)
+                .with_response(authenticated_session_response(session.expose(), csrf_token))
+                .build()
+        }
         Err(error) => View::from(register_page(Some(account_error_message(&error)))),
     }
 }
@@ -345,13 +351,26 @@ async fn logout_route(
         .build()
 }
 
-fn dashboard_refresh_page() -> Container {
-    container! {
-        section id="account-result" {
-            span { "Signed in. Loading your dashboard…" }
-        }
-    }
-    .into()
+async fn dashboard_refresh_page(
+    database: &dyn Database,
+    session: &str,
+    now: OffsetDateTime,
+) -> Container {
+    let cookies = std::collections::BTreeMap::from([(
+        crate::SESSION_COOKIE_NAME.to_string(),
+        session.to_string(),
+    )]);
+    load_authenticated_dashboard(database, &cookies, now)
+        .await
+        .map_or_else(
+            |_| {
+                product_error_page(
+                    "Unable to load dashboard",
+                    "Your account is signed in, but the dashboard could not be loaded. Reload the page.",
+                )
+            },
+            |dashboard| dashboard_page(&dashboard),
+        )
 }
 
 async fn game_turn_route(
@@ -582,10 +601,10 @@ pub async fn game_route(
 pub fn login_page(error: Option<&str>) -> Container {
     let message = error.unwrap_or_default();
     container! {
-        div padding=32 gap=16 {
+        div id="app-page" padding=32 gap=16 {
             anchor href="/" { "Home" }
             h1 { "Sign in" }
-            form hx-post="/login" hx-target="#account-result" gap=8 {
+            form hx-post="/login" hx-target="#app-page" gap=8 {
                 input type=text name="username" placeholder="Username";
                 input type=password name="password" placeholder="Password";
                 button type=submit { "Sign in" }
@@ -602,10 +621,10 @@ pub fn login_page(error: Option<&str>) -> Container {
 pub fn register_page(error: Option<&str>) -> Container {
     let message = error.unwrap_or_default();
     container! {
-        div padding=32 gap=16 {
+        div id="app-page" padding=32 gap=16 {
             anchor href="/" { "Home" }
             h1 { "Create account" }
-            form hx-post="/register" hx-target="#account-result" gap=8 {
+            form hx-post="/register" hx-target="#app-page" gap=8 {
                 input type=text name="username" placeholder="Username";
                 input type=password name="password" placeholder="Password (12+ characters)";
                 button type=submit { "Create account" }
@@ -621,9 +640,9 @@ pub fn register_page(error: Option<&str>) -> Container {
 #[must_use]
 pub fn logout_page() -> Container {
     container! {
-        div padding=32 gap=16 {
+        div id="app-page" padding=32 gap=16 {
             h1 { "Sign out" }
-            form hx-post="/logout" hx-target="#account-result" {
+            form hx-post="/logout" hx-target="#app-page" {
                 button type=submit { "Sign out" }
             }
             section id="account-result" {
@@ -638,7 +657,7 @@ pub fn logout_page() -> Container {
 #[must_use]
 pub fn signed_out_page() -> Container {
     container! {
-        div padding=32 gap=24 {
+        div id="app-page" padding=32 gap=24 {
             header gap=8 {
                 h1 { "Words with Spouses" }
                 span { "Private asynchronous word-tile games" }
@@ -663,7 +682,7 @@ pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
     let totals = score_totals_label(dashboard.score_totals.as_ref());
     let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
     container! {
-        div id="dashboard" data-shared-state-channel=(dashboard_channel.as_str()) padding=32 gap=24 {
+        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str()) padding=32 gap=24 {
             header gap=8 {
                 h1 { "Words with Spouses" }
                 span { "Signed in as " (user_id) }
@@ -672,16 +691,16 @@ pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
             main gap=24 {
                 section id="new-game-actions" gap=8 {
                     h2 { "Start a game" }
-                    form hx-post="/dashboard/action" hx-target="#dashboard" gap=4 {
+                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
                         input type=hidden name="action" value="CHALLENGE";
                         input type=text name="username" placeholder="Opponent username";
                         button type=submit { "Challenge" }
                     }
-                    form hx-post="/dashboard/action" hx-target="#dashboard" gap=4 {
+                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
                         input type=hidden name="action" value="CREATE_INVITATION";
                         button type=submit { "Create shareable invitation" }
                     }
-                    form hx-post="/dashboard/action" hx-target="#dashboard" gap=4 {
+                    form hx-post="/dashboard/action" hx-target="#app-page" gap=4 {
                         input type=hidden name="action" value="REDEEM_INVITATION";
                         input type=text name="invitation_token" placeholder="Invitation token";
                         button type=submit { "Join from invitation" }
@@ -698,24 +717,24 @@ pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
                             span { (item.kind) " " (item.direction) }
                             span { (item.counterparty_user_id.as_deref().unwrap_or("Shareable invitation")) }
                             @if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
-                                form hx-post="/dashboard/action" hx-target="#dashboard" {
+                                form hx-post="/dashboard/action" hx-target="#app-page" {
                                     input type=hidden name="action" value="ACCEPT_CHALLENGE";
                                     input type=hidden name="challenge_id" value=(item.id.as_str());
                                     button type=submit { "Accept" }
                                 }
-                                form hx-post="/dashboard/action" hx-target="#dashboard" {
+                                form hx-post="/dashboard/action" hx-target="#app-page" {
                                     input type=hidden name="action" value="DECLINE_CHALLENGE";
                                     input type=hidden name="challenge_id" value=(item.id.as_str());
                                     button type=submit { "Decline" }
                                 }
                             } @else if item.kind == "CHALLENGE" {
-                                form hx-post="/dashboard/action" hx-target="#dashboard" {
+                                form hx-post="/dashboard/action" hx-target="#app-page" {
                                     input type=hidden name="action" value="CANCEL_CHALLENGE";
                                     input type=hidden name="challenge_id" value=(item.id.as_str());
                                     button type=submit { "Cancel" }
                                 }
                             } @else {
-                                form hx-post="/dashboard/action" hx-target="#dashboard" {
+                                form hx-post="/dashboard/action" hx-target="#app-page" {
                                     input type=hidden name="action" value="REVOKE_INVITATION";
                                     input type=hidden name="invitation_id" value=(item.id.as_str());
                                     button type=submit { "Revoke" }
@@ -764,46 +783,57 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
     let action = format!("/games/{}/turn", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
-    let rack = game
-        .view
-        .rack
-        .first()
-        .map_or_else(Vec::new, |(tile_id, _, _)| {
-            PendingMoveView::reorder_rack(&game.view.rack, *tile_id)
-        });
-    let reversed_rack = rack.iter().rev().copied().collect::<Vec<_>>();
-    let rack_forward = rack
+    let rack = game.view.rack.clone();
+    let rack_orders = rack
         .iter()
-        .map(|(tile_id, letter, points)| format!("{tile_id}:{letter}:{points}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let rack_reverse = reversed_rack
-        .iter()
-        .map(|(tile_id, letter, points)| format!("{tile_id}:{letter}:{points}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let show_reverse = ActionType::Multi(vec![
-        ActionType::no_display_by_id("rack-order-forward"),
-        ActionType::display_by_id("rack-order-reverse"),
-    ]);
-    let show_forward = ActionType::Multi(vec![
-        ActionType::no_display_by_id("rack-order-reverse"),
-        ActionType::display_by_id("rack-order-forward"),
-    ]);
+        .map(|(tile_id, _, _)| PendingMoveView::reorder_rack(&rack, *tile_id))
+        .collect::<Vec<_>>();
+    let show_rack_order = |target_index: usize| {
+        ActionType::Multi(
+            rack_orders
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let order_id = format!("rack-order-{index}");
+                    if index == target_index {
+                        ActionType::display_by_id(order_id)
+                    } else {
+                        ActionType::no_display_by_id(order_id)
+                    }
+                })
+                .collect(),
+        )
+    };
     container! {
         section id="turn-composer" gap=12 {
             h2 { "Compose turn" }
             span { "Select one or more rack tile IDs and provide matching board coordinates. Blank letters are optional and normalized server-side." }
             section id="local-rack-order" gap=4 {
-                span id="rack-order-forward" { (rack_forward) }
-                span id="rack-order-reverse"
-                    fx-immediate=(ActionType::no_display_by_id("rack-order-reverse")) {
-                    (rack_reverse)
+                h3 { "Local rack order" }
+                @for (order_index, ordered_rack) in rack_orders.iter().enumerate() {
+                    @let order_id = format!("rack-order-{order_index}");
+                    section id=(order_id.as_str()) gap=4
+                        fx-immediate=(if order_index == 0 {
+                            ActionType::display_by_id(order_id.clone())
+                        } else {
+                            ActionType::no_display_by_id(order_id.clone())
+                        }) {
+                        @for (tile_id, letter, points) in ordered_rack {
+                            @let reorder_label = format!("Tile {tile_id}: {letter} ({points})");
+                            @let target_order = rack
+                                .iter()
+                                .position(|(candidate_id, _, _)| candidate_id == tile_id)
+                                .expect("ordered rack tiles originate in the projected rack");
+                            button type=button
+                                fx-click=(show_rack_order(target_order)) {
+                                (reorder_label)
+                            }
+                        }
+                    }
                 }
-                button type=button fx-click=(show_reverse) { "Reverse rack order" }
-                button type=button fx-click=(show_forward) { "Restore rack order" }
+                span { "Choose a tile to make it first in the local order. This does not submit a turn." }
             }
-            form hx-post=(action.as_str()) hx-target="#turn-result" gap=8 {
+            form hx-post=(action.as_str()) hx-target="#app-page" gap=8 {
                 input type=hidden name="command_id" value=(command_id);
                 input type=hidden name="idempotency_key" value=(idempotency_key);
                 input type=hidden name="expected_revision" value=(game.view.revision);
@@ -870,7 +900,8 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
         .collect::<Vec<_>>()
         .join(" ");
     container! {
-        div padding=32 gap=24 {
+        div id="app-page" data-shared-state-channel=(game_channel.as_str())
+            padding=32 gap=24 {
             header gap=8 {
                 anchor href="/" { "Dashboard" }
                 h1 { "Game " (game_id) }
@@ -900,7 +931,7 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
 fn product_error_page(title: &str, message: &str) -> Container {
     let error = error_component(message);
     container! {
-        div padding=32 gap=16 {
+        div id="app-page" padding=32 gap=16 {
             anchor href="/" { "Dashboard" }
             h1 { (title) }
             (error)
@@ -919,7 +950,7 @@ pub fn authenticated_session_response(session: &str, csrf_token: &str) -> Respon
             ResponseCookie::secure(crate::SESSION_COOKIE_NAME, session),
             csrf_cookie,
         ],
-        redirect: Some("/".to_string()),
+        redirect: None,
     }
 }
 
@@ -1125,8 +1156,9 @@ mod tests {
             assert!(page.contains("name=\"idempotency_key\""));
             assert!(page.contains("pending-editor-0"));
             assert!(page.contains("blank-letter-0"));
-            assert!(page.contains("rack-order-forward"));
-            assert!(page.contains("rack-order-reverse"));
+            assert!(page.contains("rack-order-0"));
+            assert!(page.contains("rack-order-1"));
+            assert!(page.contains("make it first in the local order"));
             assert!(page.contains("fx-click"));
             assert!(page.contains("Select"));
             assert!(page.contains("SetDisplay"));
@@ -1311,7 +1343,7 @@ mod tests {
                 "csrf-test",
             )
             .await;
-            assert_eq!(response.response.redirect.as_deref(), Some("/"));
+            assert_eq!(response.response.redirect, None);
             assert_eq!(response.response.cookies.len(), 2);
             let session = response.response.cookies[0].value.clone();
             assert!(response.response.cookies[0].http_only);
@@ -1337,7 +1369,7 @@ mod tests {
     #[test]
     fn account_session_effects_are_secure_and_expirable() {
         let signed_in = authenticated_session_response("opaque-test-session", "csrf-test");
-        assert_eq!(signed_in.redirect.as_deref(), Some("/"));
+        assert_eq!(signed_in.redirect, None);
         assert_eq!(signed_in.cookies.len(), 2);
         assert!(signed_in.cookies[0].secure);
         assert!(signed_in.cookies[0].http_only);
