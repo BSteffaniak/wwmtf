@@ -40,6 +40,9 @@ impl WebSessionIdentityResolver for DurableWebSessionIdentityResolver {
             | words_with_spouses_app::SessionError::Timestamp => {
                 WebSessionIdentityError::Unauthenticated
             }
+            words_with_spouses_app::SessionError::Busy => WebSessionIdentityError::Operation(
+                "session storage is temporarily busy".to_string(),
+            ),
             words_with_spouses_app::SessionError::Database(error) => {
                 WebSessionIdentityError::Operation(error.to_string())
             }

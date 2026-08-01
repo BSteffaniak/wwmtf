@@ -1,7 +1,10 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     str::FromStr as _,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -57,6 +60,7 @@ struct GameSubscriber {
 pub struct GameSharedStateDispatcher {
     database: Arc<dyn Database>,
     subscribers: Mutex<BTreeMap<ChannelId, Vec<GameSubscriber>>>,
+    dashboard_revision: AtomicU64,
 }
 
 impl GameSharedStateDispatcher {
@@ -66,7 +70,56 @@ impl GameSharedStateDispatcher {
         Self {
             database,
             subscribers: Mutex::new(BTreeMap::new()),
+            dashboard_revision: AtomicU64::new(0),
         }
+    }
+
+    pub(crate) async fn refresh_dashboard_subscribers(
+        &self,
+        created_at_ms: i64,
+    ) -> SharedStateTransportDispatchResult<()> {
+        let subscribed_users = self
+            .subscribers
+            .lock()
+            .map_err(|_| "dashboard subscriber registry is unavailable")?
+            .iter()
+            .filter_map(|(channel_id, subscribers)| {
+                dashboard_user(channel_id)
+                    .and_then(|user_id| (!subscribers.is_empty()).then(|| user_id.to_string()))
+            })
+            .collect::<BTreeSet<_>>();
+
+        for user_id in subscribed_users {
+            let view = self.dashboard_view(&user_id).await?;
+            let revision = self.next_dashboard_revision(&view);
+            let event = Self::dashboard_event(&user_id, &view, revision, None, created_at_ms)?;
+            if let Some(subscribers) = self
+                .subscribers
+                .lock()
+                .map_err(|_| "dashboard subscriber registry is unavailable")?
+                .get_mut(&dashboard_channel(&user_id))
+            {
+                subscribers.retain(|subscriber| subscriber.sender.send(event.clone()).is_ok());
+            }
+        }
+        Ok(())
+    }
+
+    fn next_dashboard_revision(&self, view: &DashboardLiveView) -> Revision {
+        let game_revision = view
+            .projection
+            .games
+            .iter()
+            .map(|game| game.canonical_revision)
+            .max()
+            .unwrap_or(0);
+        let previous = self
+            .dashboard_revision
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
+                Some((revision + 1).max(game_revision))
+            })
+            .unwrap_or_default();
+        Revision::new((previous + 1).max(game_revision))
     }
 
     async fn dashboard_view(
@@ -296,16 +349,10 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
             TransportOutbound::Subscribe(subscribe) => {
                 if dashboard_user(&subscribe.channel_id) == Some(context.participant_id.as_str()) {
                     let view = self.dashboard_view(context.participant_id.as_str()).await?;
-                    let revision = view
-                        .projection
-                        .games
-                        .iter()
-                        .map(|game| game.canonical_revision)
-                        .max()
-                        .unwrap_or(0);
+                    let revision = self.next_dashboard_revision(&view);
                     return Ok(vec![TransportInbound::Snapshot(SnapshotEnvelope {
                         channel_id: subscribe.channel_id,
-                        revision: Revision::new(revision),
+                        revision,
                         payload: PayloadBlob::from_serializable(&view)?,
                         created_at_ms: 0,
                     })]);
@@ -350,17 +397,11 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                     sender: sender.clone(),
                 });
             let view = self.dashboard_view(context.participant_id.as_str()).await?;
-            let revision = view
-                .projection
-                .games
-                .iter()
-                .map(|game| game.canonical_revision)
-                .max()
-                .unwrap_or(0);
+            let revision = self.next_dashboard_revision(&view);
             sender.send(Self::dashboard_event(
                 context.participant_id.as_str(),
                 &view,
-                Revision::new(revision),
+                revision,
                 None,
                 0,
             )?)?;

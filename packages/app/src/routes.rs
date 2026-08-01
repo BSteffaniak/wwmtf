@@ -25,7 +25,7 @@ use crate::{
     decline_pending_challenge, error_component, load_authenticated_dashboard,
     load_authorized_game_page, login_and_create_session, logout_session, move_history_component,
     rack_component, redeem_shareable_invitation, register_and_create_session,
-    revoke_shareable_invitation, status_component,
+    revoke_shareable_invitation, status_component, viewer_turn_component,
 };
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +59,7 @@ const fn product_error_message(error: &ProductWorkflowError) -> &'static str {
 
 async fn dashboard_action_route(
     database: &dyn Database,
+    dispatcher: &crate::GameSharedStateDispatcher,
     request: &RouteRequest,
     now: OffsetDateTime,
 ) -> Container {
@@ -100,7 +101,15 @@ async fn dashboard_action_route(
     if let Err(error) = result {
         return error_component(product_error_message(&error));
     }
-    match load_authenticated_dashboard(database, &request.cookies, now).await {
+    let dashboard = load_authenticated_dashboard(database, &request.cookies, now).await;
+    if dispatcher
+        .refresh_dashboard_subscribers(now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX))
+        .await
+        .is_err()
+    {
+        crate::observability::record_database_failure("refresh_dashboard_subscribers");
+    }
+    match dashboard {
         Ok(dashboard) => dashboard_page(&dashboard),
         Err(PresentationError::Unauthenticated) => {
             error_component("Your session expired. Sign in and review your dashboard.")
@@ -493,11 +502,20 @@ pub fn create_product_router(
         }
     });
     let dashboard_action_database = database.clone();
+    let dashboard_action_dispatcher = dispatcher.clone();
     router.add_route_result("/dashboard/action", move |request: RouteRequest| {
         let database = dashboard_action_database.clone();
+        let dispatcher = dashboard_action_dispatcher.clone();
         async move {
-            Ok(dashboard_action_route(&*database, &request, OffsetDateTime::now_utc()).await)
-                as Result<Container, Box<dyn std::error::Error>>
+            Ok(
+                dashboard_action_route(
+                    &*database,
+                    &dispatcher,
+                    &request,
+                    OffsetDateTime::now_utc(),
+                )
+                .await,
+            ) as Result<Container, Box<dyn std::error::Error>>
         }
     });
     let csrf_token = Arc::new(csrf_token);
@@ -682,7 +700,9 @@ pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
     let totals = score_totals_label(dashboard.score_totals.as_ref());
     let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
     container! {
-        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str()) padding=32 gap=24 {
+        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
+            data-shared-state-refresh-path="/" data-shared-state-refresh-target="#app-page"
+            padding=32 gap=24 {
             header gap=8 {
                 h1 { "Words with Spouses" }
                 span { "Signed in as " (user_id) }
@@ -889,6 +909,7 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
     };
     let board = board_component(&game.view);
     let status = status_component(&game.view);
+    let viewer_turn = viewer_turn_component(&game.view, game.viewer_player);
     let rack = rack_component(&game.view);
     let composer = turn_composer(game);
     let history = move_history_component(&game.history);
@@ -901,7 +922,8 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
         .join(" ");
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
-            padding=32 gap=24 {
+            data-shared-state-refresh-path=(format!("/games/{game_id}"))
+            data-shared-state-refresh-target="#app-page" padding=32 gap=24 {
             header gap=8 {
                 anchor href="/" { "Dashboard" }
                 h1 { "Game " (game_id) }
@@ -910,6 +932,7 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
             main gap=16 {
                 (board)
                 (status)
+                (viewer_turn)
                 (rack)
                 @if !game.completed {
                     (composer)
@@ -1093,6 +1116,75 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_actions_publish_private_refreshes_for_waiting_users() {
+        block_on(async {
+            let database: Arc<dyn Database> = Arc::from(
+                switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("Turso opens"),
+            );
+            migrate_app(&*database).await.expect("migrations run");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let alice_session = create_session(&*database, &alice, now, Duration::days(1))
+                .await
+                .expect("Alice session creates");
+            let dispatcher = crate::GameSharedStateDispatcher::new(database.clone());
+            let bob_context = AuthenticatedTransportContext {
+                participant_id: ParticipantId::new(&bob),
+                identity_binding: "bob-browser".to_string(),
+            };
+            let bob_events = dispatcher
+                .subscribe_channel(&bob_context, &crate::dashboard_channel(&bob))
+                .await
+                .expect("Bob dashboard subscribes");
+            let initial = bob_events
+                .recv_async()
+                .await
+                .expect("initial dashboard arrives");
+
+            let mut challenge =
+                RouteRequest::from_path("/dashboard/action", RequestInfo::default());
+            challenge.method = "POST".parse().expect("POST parses");
+            challenge.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            challenge.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                alice_session.expose().to_string(),
+            );
+            challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
+            let rendered = dashboard_action_route(&*database, &dispatcher, &challenge, now)
+                .await
+                .display_to_string(false, false)
+                .expect("dashboard renders");
+            assert!(rendered.contains("OUTGOING"));
+
+            let refresh = bob_events.recv_async().await.expect("Bob refresh arrives");
+            assert!(refresh.revision.value() > initial.revision.value());
+            let view: crate::DashboardLiveView = refresh
+                .payload
+                .deserialize()
+                .expect("dashboard view decodes");
+            assert!(
+                view.projection
+                    .pending
+                    .iter()
+                    .any(|item| { item.kind == "CHALLENGE" && item.direction == "INCOMING" })
+            );
+        });
+    }
+
+    #[test]
     fn database_backed_routes_render_dashboard_and_private_game() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -1135,6 +1227,8 @@ mod tests {
             assert!(dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
             assert!(dashboard.contains("name=\"action\" value=\"CREATE_INVITATION\""));
             assert!(dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
+            assert!(dashboard.contains("data-shared-state-refresh-path=\"/\""));
+            assert!(dashboard.contains("data-shared-state-refresh-target=\"#app-page\""));
 
             let mut game_request =
                 RouteRequest::from_path(&format!("/games/{game_id}"), RequestInfo::default());
@@ -1146,6 +1240,10 @@ mod tests {
             assert!(page.contains("player-rack"));
             assert!(page.contains("move-history"));
             assert!(page.contains("data-shared-state-channel"));
+            assert!(page.contains(&format!(
+                "data-shared-state-refresh-path=\"/games/{game_id}\""
+            )));
+            assert!(page.contains("data-shared-state-refresh-target=\"#app-page\""));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-composer"));
             assert!(page.contains("value=\"PLAY\""));
@@ -1257,6 +1355,8 @@ mod tests {
                 .await
                 .expect("Turso opens");
             migrate_app(&*database).await.expect("migrations run");
+            let database: Arc<dyn Database> = Arc::from(database);
+            let dispatcher = crate::GameSharedStateDispatcher::new(database.clone());
             let now = OffsetDateTime::UNIX_EPOCH;
             let alice = register(&*database, "alice", "correct horse battery staple", now)
                 .await
@@ -1283,7 +1383,7 @@ mod tests {
                 alice_session.expose().to_string(),
             );
             challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
-            let alice_dashboard = dashboard_action_route(&*database, &challenge, now)
+            let alice_dashboard = dashboard_action_route(&*database, &dispatcher, &challenge, now)
                 .await
                 .display_to_string(false, false)
                 .expect("dashboard renders");
@@ -1308,7 +1408,7 @@ mod tests {
             accept.body = Some(std::sync::Arc::new(
                 format!("action=ACCEPT_CHALLENGE&challenge_id={challenge_id}").into(),
             ));
-            let accepted = dashboard_action_route(&*database, &accept, now)
+            let accepted = dashboard_action_route(&*database, &dispatcher, &accept, now)
                 .await
                 .display_to_string(false, false)
                 .expect("dashboard renders");

@@ -18,7 +18,7 @@ pub const SESSION_COOKIE_NAME: &str = "words-with-spouses-session";
 /// Cookie name used by `HyperChad`'s renderer-owned CSRF client.
 pub const CSRF_COOKIE_NAME: &str = "words-with-spouses-csrf";
 /// Header name used by `HyperChad`'s renderer-owned CSRF client.
-pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+pub const CSRF_HEADER_NAME: &str = "x-hyperchad-csrf-token";
 
 /// Signed-in dashboard presentation data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,7 @@ pub struct AuthenticatedDashboard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedGamePage {
     pub user_id: String,
+    pub viewer_player: words_with_spouses_game_domain::PlayerId,
     pub game_id: GameId,
     pub view: GameView,
     pub history: Vec<MoveHistoryView>,
@@ -61,6 +62,10 @@ pub async fn authenticated_user(
             crate::SessionError::Invalid | crate::SessionError::Timestamp => {
                 crate::observability::record_authentication_failure("invalid_session");
                 PresentationError::Unauthenticated
+            }
+            crate::SessionError::Busy => {
+                crate::observability::record_database_failure("resolve_session_busy");
+                PresentationError::Database(switchy_database::DatabaseError::UnexpectedResult)
             }
             crate::SessionError::Database(error) => {
                 crate::observability::record_database_failure("resolve_session");
@@ -120,6 +125,7 @@ pub async fn load_authorized_game_page(
     let final_score_adjustments = final_score_adjustments(&events)?;
     Ok(AuthorizedGamePage {
         user_id,
+        viewer_player: player,
         game_id,
         view,
         history,

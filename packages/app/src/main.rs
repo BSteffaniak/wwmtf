@@ -32,14 +32,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let database_path = std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH")
         .unwrap_or_else(|_| "words-with-spouses.db".to_string());
-    let database: std::sync::Arc<dyn switchy_database::Database> =
-        std::sync::Arc::from(futures_lite::future::block_on(
+    let open_database = || {
+        futures_lite::future::block_on(
             switchy_database_connection::builder()
                 .turso()
-                .with_path(database_path)
+                .with_path(&database_path)
                 .with_busy_timeout(std::time::Duration::from_secs(5))
                 .build(),
-        )?);
+        )
+        .map(std::sync::Arc::<dyn switchy_database::Database>::from)
+    };
+    let database = open_database()?;
     futures_lite::future::block_on(words_with_spouses_app::migrate_app(&*database))?;
 
     let dispatcher = std::sync::Arc::new(words_with_spouses_app::GameSharedStateDispatcher::new(

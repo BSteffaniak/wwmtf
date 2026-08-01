@@ -363,6 +363,22 @@ pub fn status_component(view: &GameView) -> Container {
     .into()
 }
 
+/// Renders whether the authorized viewer owns the current turn.
+#[must_use]
+pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
+    let status = if view.status == GameStatus::Completed {
+        "Game complete"
+    } else if view.active_player == viewer {
+        "Your turn"
+    } else {
+        "Waiting for opponent"
+    };
+    container! {
+        span id="viewer-turn-status" { (status) }
+    }
+    .into()
+}
+
 /// Renders recoverable validation/error feedback.
 #[must_use]
 pub fn error_component(message: &str) -> Container {

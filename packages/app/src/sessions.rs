@@ -118,8 +118,20 @@ pub enum SessionError {
     Invalid,
     #[error("session timestamp is outside the supported range")]
     Timestamp,
+    #[error("session storage is temporarily busy")]
+    Busy,
     #[error(transparent)]
-    Database(#[from] switchy_database::DatabaseError),
+    Database(switchy_database::DatabaseError),
+}
+
+impl From<switchy_database::DatabaseError> for SessionError {
+    fn from(error: switchy_database::DatabaseError) -> Self {
+        if error.to_string().contains("concurrent use forbidden") {
+            Self::Busy
+        } else {
+            Self::Database(error)
+        }
+    }
 }
 
 #[cfg(test)]
