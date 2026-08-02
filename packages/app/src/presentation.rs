@@ -50,6 +50,8 @@ pub struct AuthorizedGamePage {
     pub latest_action: Option<String>,
     pub latest_play_coordinates:
         std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
+    pub viewer_play_coordinates:
+        std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
     pub completion_reason: Option<String>,
     state: words_with_spouses_game_domain::GameState,
     dictionary: words_with_spouses_game_domain::WordSetDictionary,
@@ -202,6 +204,7 @@ pub async fn load_authorized_game_page(
     let final_score_adjustments = final_score_adjustments(&events)?;
     let (latest_action, latest_play_coordinates) =
         latest_public_action(&events, &viewer_username, &opponent_username, player);
+    let viewer_play_coordinates = player_play_coordinates(&events, player);
     let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
     let rack_order = crate::load_rack_order(db, game_id, &user_id).await?;
     let exchange_available = state.bag.len() >= usize::from(rules.minimum_tiles_for_exchange);
@@ -220,6 +223,7 @@ pub async fn load_authorized_game_page(
         opponent_username,
         latest_action,
         latest_play_coordinates,
+        viewer_play_coordinates,
         completion_reason,
         state,
         dictionary,
@@ -236,6 +240,24 @@ async fn username_for_user(db: &dyn Database, user_id: &str) -> Result<String, P
         .and_then(|row| row.get("username_display"))
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .ok_or(PresentationError::Malformed)
+}
+
+fn player_play_coordinates(
+    events: &[words_with_spouses_game_domain::GameEvent],
+    player: words_with_spouses_game_domain::PlayerId,
+) -> std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            words_with_spouses_game_domain::GameEvent::TilesPlayed {
+                player_id,
+                placements,
+                ..
+            } if *player_id == player => Some(placements.keys().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 fn latest_public_action(
@@ -369,8 +391,51 @@ mod tests {
     use futures_lite::future::block_on;
     use time::Duration;
 
+    use words_with_spouses_game_domain::{BoardTile, GameEvent, Tile, TileFace, TileId};
+
     use super::*;
     use crate::{accept_challenge, create_challenge, create_session, migrate_app, register};
+
+    #[test]
+    fn player_play_coordinates_attribute_only_that_players_tiles() {
+        let viewer = words_with_spouses_game_domain::PlayerId::new();
+        let opponent = words_with_spouses_game_domain::PlayerId::new();
+        let viewer_coordinate = words_with_spouses_game_domain::Coordinate::new(7, 7);
+        let opponent_coordinate = words_with_spouses_game_domain::Coordinate::new(8, 7);
+        let board_tile = |id, letter| BoardTile {
+            tile: Tile {
+                id: TileId::new(id),
+                face: TileFace::Letter(letter),
+                points: 1,
+            },
+            letter,
+        };
+        let events = vec![
+            GameEvent::TilesPlayed {
+                player_id: viewer,
+                placements: std::collections::BTreeMap::from([(
+                    viewer_coordinate,
+                    board_tile(1, 'A'),
+                )]),
+                score: 1,
+                drawn: Vec::new(),
+            },
+            GameEvent::TilesPlayed {
+                player_id: opponent,
+                placements: std::collections::BTreeMap::from([(
+                    opponent_coordinate,
+                    board_tile(2, 'B'),
+                )]),
+                score: 1,
+                drawn: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            player_play_coordinates(&events, viewer),
+            std::collections::BTreeSet::from([viewer_coordinate])
+        );
+    }
 
     #[test]
     fn routes_load_only_authenticated_member_presentations() {

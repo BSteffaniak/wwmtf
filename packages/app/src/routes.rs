@@ -1714,7 +1714,7 @@ fn visual_board(
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
-            span color=#5d6258 { "Board key: gold tiles are committed; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
+            span color=#5d6258 { "Board key: gold tiles are committed; blue corner marks tiles you played; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
             div overflow-x="auto" {
                 div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1727,6 +1727,7 @@ fn visual_board(
                                 @let required = feedback.guidance.required.contains(&coordinate);
                                 @let eligible = feedback.guidance.eligible.contains(&coordinate);
                                 @let latest = game.latest_play_coordinates.contains(&coordinate);
+                                @let viewer_owned = game.viewer_play_coordinates.contains(&coordinate);
                                 @let (background, label, color) = if let Some((letter, _)) = committed {
                                     ("#f2d79b", letter.to_string(), "#2e291f")
                                 } else if let Some((tile_id, blank_letter)) = drafted {
@@ -1762,9 +1763,13 @@ fn visual_board(
                                         }
                                     }
                                 } @else if committed.is_some() {
-                                    div class=(if latest { "board-square committed-square latest-move-square" } else { "board-square committed-square" }) width="44px" height="44px"
-                                        background=(background) color=(color) border=((if latest { "#526243" } else { "#aa9e85" }, if latest { 3 } else { 1 }))
+                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width="44px" height="44px"
+                                        background=(background) color=(color) border=((if latest { "#526243" } else if viewer_owned { "#617f9f" } else { "#aa9e85" }, if latest { 3 } else if viewer_owned { 2 } else { 1 }))
                                         align-items="center" justify-content="center" font-weight=bold position="relative" {
+                                        @if viewer_owned {
+                                            span class="viewer-tile-marker" position="absolute" top="3px" left="3px"
+                                                width="7px" height="7px" background=#617f9f border-radius="999px" { }
+                                        }
                                         span font-size="20px" { (label) }
                                         @if let Some((_, points)) = committed {
                                             span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
@@ -2723,6 +2728,7 @@ mod tests {
             assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
             assert!(page.contains("Board key: gold tiles are committed"));
+            assert!(page.contains("blue corner marks tiles you played"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
             assert!(page.contains("DL"));
