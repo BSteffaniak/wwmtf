@@ -180,6 +180,14 @@ enum TurnMode {
 }
 
 impl TurnDraft {
+    fn has_unsubmitted_input(&self) -> bool {
+        self.selected_tile.is_some()
+            || self.selected_blank_letter.is_some()
+            || !self.placements.is_empty()
+            || !self.exchange_tiles.is_empty()
+            || self.mode != TurnMode::Play
+    }
+
     fn domain_placements(&self) -> Vec<Placement> {
         self.placements
             .iter()
@@ -1469,7 +1477,7 @@ fn dashboard_page_content(
     };
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            fx-global-shared-state-update=(refresh_dashboard)
+            fx-global-shared-state-event=(refresh_dashboard)
             direction="column" align-items="center"
             min-height="100vh" background=#f4f1e8 color=#293126
             padding-y=24 padding-x=16 {
@@ -1710,10 +1718,6 @@ fn visual_board(
                                     let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
                                         .map(|(_, letter, _)| blank_letter.unwrap_or(*letter)).unwrap_or('?');
                                     ("#f7e4ae", letter.to_string(), "#2e291f")
-                                } else if required {
-                                    ("#f3c78b", "!".to_string(), "#6b4018")
-                                } else if eligible {
-                                    ("#dce9d6", "·".to_string(), "#3f5735")
                                 } else if coordinate == game.rules.start {
                                     ("#e79b9b", "★".to_string(), "#6b3535")
                                 } else {
@@ -1748,9 +1752,17 @@ fn visual_board(
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
                                             width="44px" height="44px" background=(background) color=(color)
-                                            border=(("#aa9e85", 1)) align-items="center" justify-content="center"
+                                            border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a48", 3) } else { ("#aa9e85", 1) })
+                                            position="relative" align-items="center" justify-content="center"
                                             font-weight=bold cursor=pointer {
-                                            span { (label) }
+                                            @if required {
+                                                span class="required-square-highlight" position="absolute" top=0 left=0
+                                                    width="100%" height="100%" background=#f3a64b opacity=0.42 { }
+                                            } @else if eligible {
+                                                span class="eligible-square-highlight" position="absolute" top=0 left=0
+                                                    width="100%" height="100%" background=#68a85b opacity=0.32 { }
+                                            }
+                                            span position="relative" { (label) }
                                         }
                                     }
                                 }
@@ -2144,12 +2156,16 @@ fn visual_game_page(
     let actions = visual_turn_actions(game, draft);
     let history = move_history_component(&game.history);
     let game_channel = format!("game:{}", game.game_id);
-    let game_path = format!("/games/{game_id}?draft_stale=1");
+    let game_path = if draft.has_unsubmitted_input() {
+        format!("/games/{game_id}?draft_stale=1")
+    } else {
+        format!("/games/{game_id}")
+    };
     let refresh_game = ActionType::Navigate { url: game_path };
     let turn_feedback_view = turn_feedback(error);
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
-            fx-global-shared-state-update=(refresh_game)
+            fx-global-shared-state-event=(refresh_game)
             fx-global-shared-state-connecting=(live_status_action("live-status-connecting"))
             fx-global-shared-state-connected=(live_status_action("live-status-connected"))
             fx-global-shared-state-subscribed=(live_status_action("live-status-connected"))
@@ -2467,6 +2483,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn dashboard_actions_publish_private_refreshes_for_waiting_users() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -2488,6 +2505,9 @@ mod tests {
             let alice_session = create_session(&*database, &alice, now, Duration::days(1))
                 .await
                 .expect("Alice session creates");
+            let bob_session = create_session(&*database, &bob, now, Duration::days(1))
+                .await
+                .expect("Bob session creates");
             let dispatcher = crate::GameSharedStateDispatcher::new(database.clone());
             let bob_context = AuthenticatedTransportContext {
                 participant_id: ParticipantId::new(&bob),
@@ -2538,6 +2558,60 @@ mod tests {
                     .iter()
                     .any(|item| { item.kind == "CHALLENGE" && item.direction == "INCOMING" })
             );
+            let challenge_id = view
+                .projection
+                .pending
+                .iter()
+                .find(|item| item.kind == "CHALLENGE" && item.direction == "INCOMING")
+                .expect("incoming challenge is projected")
+                .id
+                .clone();
+            let alice_context = AuthenticatedTransportContext {
+                participant_id: ParticipantId::new(&alice),
+                identity_binding: "alice-browser".to_string(),
+            };
+            let alice_events = dispatcher
+                .subscribe_channel(&alice_context, &crate::dashboard_channel(&alice))
+                .await
+                .expect("Alice dashboard subscribes");
+            let alice_initial = alice_events
+                .recv_async()
+                .await
+                .expect("initial Alice dashboard arrives");
+
+            let mut accept = RouteRequest::from_path("/dashboard/action", RequestInfo::default());
+            accept.method = "POST".parse().expect("POST parses");
+            accept.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            accept.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                bob_session.expose().to_string(),
+            );
+            accept.body = Some(std::sync::Arc::new(
+                format!("action=ACCEPT_CHALLENGE&challenge_id={challenge_id}").into(),
+            ));
+            dashboard_action_route(
+                &*database,
+                &dispatcher,
+                "http://localhost:8343",
+                &accept,
+                now,
+            )
+            .await;
+
+            let alice_refresh = alice_events
+                .recv_async()
+                .await
+                .expect("Alice acceptance refresh arrives");
+            assert!(alice_refresh.revision.value() > alice_initial.revision.value());
+            let alice_view: crate::DashboardLiveView = alice_refresh
+                .payload
+                .deserialize()
+                .expect("Alice dashboard view decodes");
+            assert!(alice_view.projection.pending.is_empty());
+            assert_eq!(alice_view.projection.games.len(), 1);
         });
     }
 
@@ -2602,6 +2676,7 @@ mod tests {
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
             assert!(page.contains("id=\"turn-feedback\""));
+            assert!(!page.contains("draft_stale=1"));
             let mut stale_request = RouteRequest::from_path(
                 &format!("/games/{game_id}?draft_stale=1"),
                 RequestInfo::default(),
@@ -2634,6 +2709,7 @@ mod tests {
             assert!(page.contains("rack-tile"));
             assert!(page.contains("DL"));
             assert!(page.contains("TW"));
+            assert!(page.contains("eligible-square-highlight"));
             assert!(page.contains("game-rules"));
             assert!(page.contains("50-point full-rack bonus"));
             assert!(page.contains("6 consecutive scoreless turns"));
@@ -2645,6 +2721,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn compose_route_renders_server_derived_ready_preview() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -2746,6 +2823,7 @@ mod tests {
             assert!(rendered.contains(&word));
             assert!(rendered.contains("points"));
             assert!(rendered.contains("This draft is ready to play."));
+            assert!(rendered.contains("draft_stale=1"));
         });
     }
 
