@@ -65,9 +65,9 @@ Use a disposable path. For plain-HTTP access from another device on the LAN, set
 WORDS_WITH_SPOUSES_DEV_MODE=true \
 WORDS_WITH_SPOUSES_PUBLIC_BASE_URL=http://192.168.1.20:8343 \
 WORDS_WITH_SPOUSES_DATABASE_PATH=/tmp/words-with-spouses-dev.db \
-cargo run -p words_with_spouses_app --bin words-with-spouses
+cargo run -p words_with_spouses_app --bin words-with-spouses --features insecure -- serve
 ```
 
-The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. Development mode intentionally weakens cookie transport security and must never be enabled on an internet-facing or production deployment.
+The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. The `insecure` Cargo feature selects HyperChad's development UUID generator because browser Web Crypto UUID generation is unavailable on plain-HTTP LAN origins. Development mode and the insecure renderer feature intentionally weaken transport/runtime security and must never be enabled on an internet-facing or production deployment.
 
 Delete disposable development databases only when no retained game data is needed. Never reuse production credentials or production database copies without an approved, sanitized workflow.

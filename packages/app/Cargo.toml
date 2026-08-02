@@ -70,3 +70,4 @@ actix = [
     "hyperchad/shared-state-transport",
 ]
 fail-on-warnings = ["hyperchad/fail-on-warnings"]
+insecure = ["hyperchad/renderer-vanilla-js-plugin-uuid-insecure"]

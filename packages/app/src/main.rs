@@ -38,6 +38,16 @@ impl RuntimeConfig {
                 };
                 format!("http://{host}:{port}")
             });
+        if development_mode && !cfg!(feature = "insecure") {
+            return Err(
+                "WORDS_WITH_SPOUSES_DEV_MODE requires building with --features insecure".into(),
+            );
+        }
+        if !development_mode && cfg!(feature = "insecure") {
+            return Err(
+                "the insecure feature may only run with WORDS_WITH_SPOUSES_DEV_MODE=true".into(),
+            );
+        }
         if !development_mode
             && std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").is_ok()
             && !public_base_url.starts_with("https://")
