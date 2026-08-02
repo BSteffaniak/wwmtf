@@ -180,9 +180,8 @@ enum TurnMode {
 }
 
 impl TurnDraft {
-    fn has_unsubmitted_input(&self) -> bool {
-        self.selected_tile.is_some()
-            || self.selected_blank_letter.is_some()
+    fn has_composed_turn_input(&self) -> bool {
+        self.selected_blank_letter.is_some()
             || !self.placements.is_empty()
             || !self.exchange_tiles.is_empty()
             || self.mode != TurnMode::Play
@@ -1253,12 +1252,16 @@ pub async fn game_route(
     now: OffsetDateTime,
 ) -> Container {
     let game_id = request.path.strip_prefix("/games/").unwrap_or_default();
-    let stale_message = request
-        .query
-        .contains_key("draft_stale")
-        .then_some("The board changed while you were composing. Your unsubmitted tiles were cleared; your rack order was preserved.");
     match load_authorized_game_page(database, &request.cookies, game_id, now).await {
-        Ok(game) => visual_game_page(&game, &TurnDraft::default(), stale_message),
+        Ok(game) => {
+            let stale_message = request
+                .query
+                .get("draft_revision")
+                .and_then(|revision| revision.parse::<u64>().ok())
+                .filter(|draft_revision| *draft_revision < game.view.revision)
+                .map(|_| "The board changed while you were composing. Your unsubmitted tiles were cleared; your rack order was preserved.");
+            visual_game_page(&game, &TurnDraft::default(), stale_message)
+        }
         Err(PresentationError::Unauthenticated) => signed_out_page(),
         Err(error @ (PresentationError::Forbidden | PresentationError::UnknownGame)) => {
             product_error_page("Game unavailable", &error.to_string())
@@ -2273,8 +2276,8 @@ fn visual_game_page(
     let actions = visual_turn_actions(game, draft);
     let history = move_history_component(&game.history);
     let game_channel = format!("game:{}", game.game_id);
-    let game_path = if draft.has_unsubmitted_input() {
-        format!("/games/{game_id}?draft_stale=1")
+    let game_path = if draft.has_composed_turn_input() {
+        format!("/games/{game_id}?draft_revision={}", game.view.revision)
     } else {
         format!("/games/{game_id}")
     };
@@ -2838,9 +2841,19 @@ mod tests {
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
             assert!(page.contains("id=\"turn-feedback\""));
-            assert!(!page.contains("draft_stale=1"));
+            assert!(!page.contains("draft_revision="));
+            let mut current_draft_request = RouteRequest::from_path(
+                &format!("/games/{game_id}?draft_revision=1"),
+                RequestInfo::default(),
+            );
+            current_draft_request.cookies = game_request.cookies.clone();
+            let current_draft_page = game_route(&*database, &current_draft_request, now)
+                .await
+                .display_to_string(false, false)
+                .expect("current-revision draft game renders");
+            assert!(!current_draft_page.contains("The board changed while you were composing"));
             let mut stale_request = RouteRequest::from_path(
-                &format!("/games/{game_id}?draft_stale=1"),
+                &format!("/games/{game_id}?draft_revision=0"),
                 RequestInfo::default(),
             );
             stale_request.cookies = game_request.cookies.clone();
@@ -3001,7 +3014,18 @@ mod tests {
             assert_eq!(rendered.matches("primary-turn-action").count(), 1);
             assert!(rendered.contains("Play word ·"));
             assert!(rendered.contains("board-tile-points"));
-            assert!(rendered.contains("draft_stale=1"));
+            assert!(rendered.contains(&format!("draft_revision={}", game.view.revision)));
+
+            let rack_only_draft = TurnDraft {
+                selected_tile: Some(first.id.get()),
+                rack_tile: Some(first.id.get()),
+                ..TurnDraft::default()
+            };
+            let rack_only = visual_game_page(&game, &rack_only_draft, None)
+                .display_to_string(false, false)
+                .expect("rack-only response renders");
+            assert!(!rack_only.contains("draft_revision="));
+            assert!(!rack_only.contains("The board changed while you were composing"));
         });
     }
 
