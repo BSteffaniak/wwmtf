@@ -342,6 +342,7 @@ async fn login_route(
     request: &RouteRequest,
     now: OffsetDateTime,
     csrf_token: &str,
+    secure_cookies: bool,
 ) -> View {
     let invitation_token = request.query.get("invite").map_or("", String::as_str);
     if request.method.as_ref() != "POST" {
@@ -375,7 +376,11 @@ async fn login_route(
             .await;
             View::builder()
                 .with_primary(dashboard)
-                .with_response(authenticated_session_response(session.expose(), csrf_token))
+                .with_response(authenticated_session_response(
+                    session.expose(),
+                    csrf_token,
+                    secure_cookies,
+                ))
                 .build()
         }
         Err(error) => View::from(login_page_with_invitation(
@@ -390,6 +395,7 @@ async fn register_route(
     request: &RouteRequest,
     now: OffsetDateTime,
     csrf_token: &str,
+    secure_cookies: bool,
 ) -> View {
     let invitation_token = request.query.get("invite").map_or("", String::as_str);
     if request.method.as_ref() != "POST" {
@@ -423,7 +429,11 @@ async fn register_route(
             .await;
             View::builder()
                 .with_primary(dashboard)
-                .with_response(authenticated_session_response(session.expose(), csrf_token))
+                .with_response(authenticated_session_response(
+                    session.expose(),
+                    csrf_token,
+                    secure_cookies,
+                ))
                 .build()
         }
         Err(error) => View::from(register_page_with_invitation(
@@ -437,6 +447,7 @@ async fn logout_route(
     database: &dyn Database,
     request: &RouteRequest,
     now: OffsetDateTime,
+    secure_cookies: bool,
 ) -> View {
     if request.method.as_ref() != "POST" {
         return View::from(logout_page());
@@ -452,7 +463,7 @@ async fn logout_route(
     }
     View::builder()
         .with_primary(signed_out_page())
-        .with_response(logged_out_response())
+        .with_response(logged_out_response(secure_cookies))
         .build()
 }
 
@@ -880,6 +891,7 @@ pub fn create_product_router(
     dispatcher: Arc<crate::GameSharedStateDispatcher>,
     csrf_token: String,
     public_base_url: String,
+    secure_cookies: bool,
 ) -> Router {
     let router = Router::new();
     let dashboard_database = database.clone();
@@ -928,6 +940,7 @@ pub fn create_product_router(
                 &request,
                 OffsetDateTime::now_utc(),
                 csrf_token.as_str(),
+                secure_cookies,
             )
             .await) as Result<View, Box<dyn std::error::Error>>
         }
@@ -943,6 +956,7 @@ pub fn create_product_router(
                 &request,
                 OffsetDateTime::now_utc(),
                 csrf_token.as_str(),
+                secure_cookies,
             )
             .await) as Result<View, Box<dyn std::error::Error>>
         }
@@ -951,8 +965,13 @@ pub fn create_product_router(
     router.add_route_result("/logout", move |request: RouteRequest| {
         let database = logout_database.clone();
         async move {
-            Ok(logout_route(&*database, &request, OffsetDateTime::now_utc()).await)
-                as Result<View, Box<dyn std::error::Error>>
+            Ok(logout_route(
+                &*database,
+                &request,
+                OffsetDateTime::now_utc(),
+                secure_cookies,
+            )
+            .await) as Result<View, Box<dyn std::error::Error>>
         }
     });
     let game_dispatcher = dispatcher;
@@ -1662,28 +1681,33 @@ fn product_error_page(title: &str, message: &str) -> Container {
     .into()
 }
 
-/// Builds secure response effects for a newly authenticated browser session.
+/// Builds session response effects using the runtime's cookie transport policy.
 #[must_use]
-pub fn authenticated_session_response(session: &str, csrf_token: &str) -> ResponseMetadata {
+pub fn authenticated_session_response(
+    session: &str,
+    csrf_token: &str,
+    secure_cookies: bool,
+) -> ResponseMetadata {
+    let mut session_cookie = ResponseCookie::secure(crate::SESSION_COOKIE_NAME, session);
+    session_cookie.secure = secure_cookies;
     let mut csrf_cookie = ResponseCookie::secure(crate::CSRF_COOKIE_NAME, csrf_token);
     csrf_cookie.http_only = false;
+    csrf_cookie.secure = secure_cookies;
     ResponseMetadata {
-        cookies: vec![
-            ResponseCookie::secure(crate::SESSION_COOKIE_NAME, session),
-            csrf_cookie,
-        ],
+        cookies: vec![session_cookie, csrf_cookie],
         redirect: None,
     }
 }
 
-/// Builds secure cookie-expiration effects for logout.
+/// Builds cookie-expiration effects for logout using the runtime transport policy.
 #[must_use]
-pub fn logged_out_response() -> ResponseMetadata {
+pub fn logged_out_response(secure_cookies: bool) -> ResponseMetadata {
+    let mut session_cookie = ResponseCookie::expired(crate::SESSION_COOKIE_NAME);
+    session_cookie.secure = secure_cookies;
+    let mut csrf_cookie = ResponseCookie::expired(crate::CSRF_COOKIE_NAME);
+    csrf_cookie.secure = secure_cookies;
     ResponseMetadata {
-        cookies: vec![
-            ResponseCookie::expired(crate::SESSION_COOKIE_NAME),
-            ResponseCookie::expired(crate::CSRF_COOKIE_NAME),
-        ],
+        cookies: vec![session_cookie, csrf_cookie],
         redirect: Some("/login".to_string()),
     }
 }
@@ -2242,6 +2266,7 @@ mod tests {
                 &register,
                 OffsetDateTime::UNIX_EPOCH,
                 "csrf-test",
+                true,
             )
             .await;
             assert_eq!(response.response.redirect, None);
@@ -2255,7 +2280,8 @@ mod tests {
             logout
                 .cookies
                 .insert(crate::SESSION_COOKIE_NAME.to_string(), session);
-            let response = logout_route(&*database, &logout, OffsetDateTime::UNIX_EPOCH).await;
+            let response =
+                logout_route(&*database, &logout, OffsetDateTime::UNIX_EPOCH, true).await;
             assert_eq!(response.response.redirect.as_deref(), Some("/login"));
             assert!(
                 response
@@ -2269,7 +2295,7 @@ mod tests {
 
     #[test]
     fn account_session_effects_are_secure_and_expirable() {
-        let signed_in = authenticated_session_response("opaque-test-session", "csrf-test");
+        let signed_in = authenticated_session_response("opaque-test-session", "csrf-test", true);
         assert_eq!(signed_in.redirect, None);
         assert_eq!(signed_in.cookies.len(), 2);
         assert!(signed_in.cookies[0].secure);
@@ -2277,13 +2303,27 @@ mod tests {
         assert!(!signed_in.cookies[1].http_only);
         assert!(signed_in.cookies.iter().all(|cookie| cookie.secure));
 
-        let signed_out = logged_out_response();
+        let development = authenticated_session_response("opaque-test-session", "csrf-test", false);
+        assert!(development.cookies.iter().all(|cookie| !cookie.secure));
+        assert!(development.cookies[0].http_only);
+        assert!(!development.cookies[1].http_only);
+
+        let signed_out = logged_out_response(true);
         assert_eq!(signed_out.redirect.as_deref(), Some("/login"));
         assert!(
             signed_out
                 .cookies
                 .iter()
                 .all(|cookie| cookie.max_age_seconds == Some(0))
+        );
+        assert!(signed_out.cookies.iter().all(|cookie| cookie.secure));
+
+        let development_signed_out = logged_out_response(false);
+        assert!(
+            development_signed_out
+                .cookies
+                .iter()
+                .all(|cookie| cookie.max_age_seconds == Some(0) && !cookie.secure)
         );
     }
 

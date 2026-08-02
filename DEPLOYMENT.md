@@ -6,8 +6,9 @@ Words with Spouses is currently designed for a private deployment behind a TLS-t
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `WORDS_WITH_SPOUSES_BIND_ADDRESS` | No; defaults to `127.0.0.1` | Internal listener address. Keep loopback when using a local reverse proxy. |
-| `WORDS_WITH_SPOUSES_PORT` | No; defaults to `8343` | Internal listener port. |
+| `WORDS_WITH_SPOUSES_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
+| `WORDS_WITH_SPOUSES_PORT` | No; defaults to `8343` | Listener port. |
+| `WORDS_WITH_SPOUSES_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
 | `WORDS_WITH_SPOUSES_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
 | `WORDS_WITH_SPOUSES_PUBLIC_BASE_URL` | Production: yes operationally | Canonical HTTPS origin used by deployment/proxy configuration. The current runtime does not generate absolute links. |
 | `RUST_LOG` | No | Logging filter. Logs must never include passwords, session/invitation tokens, racks, bags, or canonical event payloads. |
@@ -58,13 +59,15 @@ The file-backed automated recovery tests now cover a stopped database-plus-sidec
 
 ## Local development
 
-Use a disposable path, for example:
+Use a disposable path. For plain-HTTP access from another device on the LAN, set the public base URL to this machine's reachable LAN IP or hostname:
 
 ```sh
+WORDS_WITH_SPOUSES_DEV_MODE=true \
+WORDS_WITH_SPOUSES_PUBLIC_BASE_URL=http://192.168.1.20:8343 \
 WORDS_WITH_SPOUSES_DATABASE_PATH=/tmp/words-with-spouses-dev.db \
-WORDS_WITH_SPOUSES_BIND_ADDRESS=127.0.0.1 \
-WORDS_WITH_SPOUSES_PORT=8343 \
 cargo run -p words_with_spouses_app --bin words-with-spouses
 ```
+
+The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. Development mode intentionally weakens cookie transport security and must never be enabled on an internet-facing or production deployment.
 
 Delete disposable development databases only when no retained game data is needed. Never reuse production credentials or production database copies without an approved, sanitized workflow.
