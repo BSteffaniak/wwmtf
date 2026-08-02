@@ -643,12 +643,14 @@ fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
             .join(", ")
     });
     container! {
-        section id="draft-preview" min-height="72px" padding-y="10px" padding-x="4px" gap="5px" {
+        section id="draft-preview" min-height="72px" padding-y="10px" padding-x="4px" gap="5px"
+            background=(if feedback.analysis.is_some() { "#e8f6ec" } else { "#fbfaf6" })
+            border-radius="10px" {
             h2 { "Draft preview" }
             @if let Some(analysis) = &feedback.analysis {
-                span color=#3f5735 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
-                span font-size="22px" font-weight=bold { (analysis.score) " points" }
-                span color=#3f5735 { (feedback.message.as_str()) }
+                span color=#2f8a57 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
+                span color=#246d45 font-size="24px" font-weight=bold { (analysis.score) " points" }
+                span color=#3b694d { (feedback.message.as_str()) }
                 @if analysis.full_rack_bonus > 0 {
                     span color=#5d6258 { "Includes a " (analysis.full_rack_bonus) "-point full-rack bonus." }
                 }
@@ -1493,13 +1495,13 @@ fn dashboard_page_content(
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
             fx-global-shared-state-event=(refresh_dashboard)
             direction="column" align-items="center"
-            min-height="100vh" background=#f4f1e8 color=#293126
+            min-height="100vh" background=#e9efe8 color=#24352c
             padding-y=24 padding-x=16 {
             div id="dashboard-shell" width="100%" max-width="1080px" gap="28px" {
                 header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                     background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
                     div gap="4px" {
-                        span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                        span color=#2f8a57 font-weight=bold { "WORDS WITH SPOUSES" }
                         h1 { "Your games" }
                         span color=#5d6258 { "Signed in as " (username) }
                     }
@@ -1720,7 +1722,7 @@ fn visual_board(
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
             span font-size="12px" color=#777b73 { "Open squares show their premium labels. Draft tiles are blue; your played tiles have a faint blue dot." }
             div overflow-x="auto" {
-                div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
+                div width="720px" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -1733,20 +1735,20 @@ fn visual_board(
                                 @let latest = game.latest_play_coordinates.contains(&coordinate);
                                 @let viewer_owned = game.viewer_play_coordinates.contains(&coordinate);
                                 @let (background, label, color) = if let Some((letter, _)) = committed {
-                                    ("#f2d79b", letter.to_string(), "#2e291f")
+                                    ("#f6d47f", letter.to_string(), "#302515")
                                 } else if let Some((tile_id, blank_letter)) = drafted {
                                     let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
                                         .map(|(_, letter, _)| blank_letter.unwrap_or(*letter)).unwrap_or('?');
-                                    ("#f7e4ae", letter.to_string(), "#2e291f")
+                                    ("#d8ecff", letter.to_string(), "#193751")
                                 } else if coordinate == game.rules.start {
-                                    ("#e79b9b", "★".to_string(), "#6b3535")
+                                    ("#f5aaa7", "★".to_string(), "#6b2929")
                                 } else {
                                     match premium {
-                                        Some(PremiumSquare::Letter(2)) => ("#b9dbe8", "DL".to_string(), "#31596a"),
-                                        Some(PremiumSquare::Letter(_)) => ("#77b6d1", "TL".to_string(), "#173f52"),
-                                        Some(PremiumSquare::Word(2)) => ("#e9b2b2", "DW".to_string(), "#743d3d"),
-                                        Some(PremiumSquare::Word(_)) => ("#d87f7f", "TW".to_string(), "#ffffff"),
-                                        None => ("#ede6d4", String::new(), "#756f64"),
+                                        Some(PremiumSquare::Letter(2)) => ("#a9d9f0", "DL".to_string(), "#24546a"),
+                                        Some(PremiumSquare::Letter(_)) => ("#5fb5dc", "TL".to_string(), "#123b4e"),
+                                        Some(PremiumSquare::Word(2)) => ("#f2b5b8", "DW".to_string(), "#743236"),
+                                        Some(PremiumSquare::Word(_)) => ("#e46e75", "TW".to_string(), "#ffffff"),
+                                        None => ("#eee7d5", String::new(), "#756f64"),
                                     }
                                 };
                                 @let draft_points = drafted.and_then(|(tile_id, _)| {
@@ -1758,7 +1760,7 @@ fn visual_board(
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square" width="44px" height="44px"
-                                            background=#dce8f5 color=#2e291f border=(("#4f7298", 3))
+                                            background=#d8ecff color=#193751 border=(("#4381b3", 3)) border-radius="4px"
                                             align-items="center" justify-content="center" font-weight=bold position="relative" cursor=pointer {
                                             span font-size="20px" { (label) }
                                             @if let Some(points) = draft_points {
@@ -1768,8 +1770,8 @@ fn visual_board(
                                     }
                                 } @else if committed.is_some() {
                                     div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width="44px" height="44px"
-                                        background=(background) color=(color) border=((if latest { "#526243" } else { "#aa9e85" }, if latest { 3 } else { 1 }))
-                                        align-items="center" justify-content="center" font-weight=bold position="relative" {
+                                        background=(background) color=(color) border=((if latest { "#2f8a57" } else { "#9a7d45" }, if latest { 3 } else { 1 }))
+                                        border-radius="4px" align-items="center" justify-content="center" font-weight=bold position="relative" {
                                         @if viewer_owned {
                                             span class="viewer-tile-marker" position="absolute" top="4px" left="4px"
                                                 width="5px" height="5px" background=#7f93a8 opacity=0.55 border-radius="999px" { }
@@ -1850,8 +1852,8 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
                             button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="50px" height="56px"
-                                background=(if placed { "#c8b88f" } else { "#f2d79b" }) color=#2e291f
-                                border=(("#d1b36f", 2)) border-radius="6px" align-items="center" justify-content="center"
+                                background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
+                                border=((if selected { "#2f8a57" } else if exchange_selected { "#b64c42" } else { "#b88a31" }, if selected || exchange_selected { 3 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
                                 span font-size="24px" { (face) }
                                 span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
@@ -1859,7 +1861,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                         }
                     } @else {
                         div class="rack-tile" data-tile-id=(tile_id) width="50px" height="56px"
-                            background=#f2d79b color=#2e291f border=(("#d1b36f", 2)) border-radius="6px"
+                            background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
                             span font-size="24px" { (face) }
                             span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
@@ -1905,6 +1907,9 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let compose_action = format!("/games/{}/compose", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
+    let play_score = draft_feedback(game, draft)
+        .analysis
+        .map(|analysis| analysis.score);
     container! {
         section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="10px" {
             div direction="row" justify-content="space-between" align-items="center" {
@@ -1969,8 +1974,14 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                             input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
                         }
                     }
-                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
-                        border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Play word" }
+                    button type=submit padding-y=13 padding-x=22 background=#2f8a57 color=#ffffff
+                        border=(("#246d45", 2)) border-radius="12px" font-weight=bold cursor=pointer {
+                        @if let Some(score) = play_score {
+                            "Play word · " (score)
+                        } @else {
+                            "Play word"
+                        }
+                    }
                 }
                 form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                     (compose_form_fields(game, draft, "CLEAR"))
@@ -2209,7 +2220,7 @@ fn visual_game_page(
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-event=(refresh_game)
             direction="column" align-items="center"
-            min-height="100vh" background=#f4f1e8 color=#293126
+            min-height="100vh" background=#e9efe8 color=#24352c
             padding-y=20 padding-x=10 gap="18px" {
             header id="game-header" width="100%" max-width="800px"
                 direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
@@ -2221,7 +2232,7 @@ fn visual_game_page(
                 (viewer_turn)
             }
             main id="game-layout" class="game-workspace" width="100%" max-width="800px"
-                background=#fbfaf6 border=(("#d8d1c1", 1)) border-radius="18px"
+                background=#fffdf7 border=(("#cdd9cf", 1)) border-radius="20px"
                 padding-y="18px" padding-x="18px" gap="0px" {
                 (awareness)
                 (turn_feedback_view)
