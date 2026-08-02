@@ -329,16 +329,18 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 boardRight: scrollerRect?.right ?? null,
                 rackBelowBoard: Boolean(boardRect && rackRect && rackRect.top >= boardRect.bottom),
                 hasRack: Boolean(rack),
-                hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
-                hasPreview: Boolean(document.querySelector('#draft-preview')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
+                hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('is playing') || document.body.innerText.includes('Game complete'),
+                hasPreview: Boolean(document.querySelector('#draft-preview')) || document.body.innerText.includes('is playing') || document.body.innerText.includes('Game complete'),
                 hasAwareness: Boolean(document.querySelector('#game-awareness')),
                 hasViewerBench: Boolean(document.querySelector('#viewer-bench')),
                 hasTurnDock: Boolean(document.querySelector('#play-console.turn-dock')),
                 hasActivityRail: Boolean(document.querySelector('#activity-rail')),
+                hasScene: Boolean(document.querySelector('#app-page.game-scene')),
+                hasPlatform: Boolean(document.querySelector('#play-stage.board-platform')),
+                menuClosed: !document.querySelector('#game-menu')?.open,
                 stageTop: document.querySelector('#play-stage')?.getBoundingClientRect().top ?? null,
                 stageBottom: document.querySelector('#play-stage')?.getBoundingClientRect().bottom ?? null,
-                activityTop: document.querySelector('#activity-rail')?.getBoundingClientRect().top ?? null,
-                activityRight: document.querySelector('#activity-rail')?.getBoundingClientRect().right ?? null,
+                menuTop: document.querySelector('#game-menu')?.getBoundingClientRect().top ?? null,
                 duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
             };
         })()"""
@@ -351,13 +353,11 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"rack is not below the board at {width}px: {layout!r}")
     if not all(layout[key] for key in [
         "hasRack", "hasActions", "hasPreview", "hasAwareness",
-        "hasViewerBench", "hasTurnDock", "hasActivityRail",
+        "hasViewerBench", "hasTurnDock", "hasActivityRail", "hasScene", "hasPlatform",
     ]):
         raise AcceptanceError(f"game interaction state is missing at {width}px: {layout!r}")
-    if width >= 800 and (layout["activityTop"] != layout["stageTop"] or layout["activityRight"] > width):
-        raise AcceptanceError(f"desktop activity rail is not integrated beside the play stage: {layout!r}")
-    if width < 800 and (layout["activityTop"] < layout["stageBottom"] or layout["activityRight"] > width):
-        raise AcceptanceError(f"mobile activity rail is not stacked below the play stage: {layout!r}")
+    if not layout["menuClosed"]:
+        raise AcceptanceError(f"secondary game information displaces the ordinary play scene: {layout!r}")
     if layout["duplicateIds"]:
         raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
     if width >= 800 and layout["boardOverflow"] != 0:

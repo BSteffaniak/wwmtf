@@ -643,19 +643,21 @@ fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
             .join(", ")
     });
     container! {
-        section id="draft-preview" min-height="60px" padding-y="10px" padding-x="12px" gap="5px"
-            background=(if feedback.analysis.is_some() { "#e8f6ec" } else { "#fbfaf6" })
-            border-radius="10px" {
-            h2 font-size="14px" { "Move preview" }
+        section id="draft-preview" min-height="52px" padding-y="8px" padding-x="12px" gap="3px"
+            background=(if feedback.analysis.is_some() { "#f4c95d" } else { "#214c38" })
+            color=(if feedback.analysis.is_some() { "#2d2515" } else { "#f4f0df" })
+            border=((if feedback.analysis.is_some() { "#ffe29a" } else { "#376d53" }, 2))
+            border-radius="14px" {
+            span font-size="11px" font-weight=bold { "MOVE" }
             @if let Some(analysis) = &feedback.analysis {
-                span color=#2f8a57 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
-                span color=#246d45 font-size="24px" font-weight=bold { (analysis.score) " points" }
-                span color=#3b694d { (feedback.message.as_str()) }
+                span color=#28573b font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
+                span color=#2d2515 font-size="24px" font-weight=bold { (analysis.score) " points" }
+                span color=#4d432b { (feedback.message.as_str()) }
                 @if analysis.full_rack_bonus > 0 {
                     span color=#5d6258 { "Includes a " (analysis.full_rack_bonus) "-point full-rack bonus." }
                 }
             } @else {
-                span color=#5d6258 { (feedback.message.as_str()) }
+                span color=#e8dfc8 { (feedback.message.as_str()) }
                 @if !feedback.guidance.required.is_empty() {
                     span color=#7a3f16 font-weight=bold { "Required squares are highlighted on the board." }
                 }
@@ -1719,8 +1721,7 @@ fn visual_board(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
-        section id="game-board" data-revision=(game.view.revision) gap="10px" {
-            span font-size="12px" color=#777b73 { "Open squares show their premium labels. Draft tiles are blue; your played tiles have a faint blue dot." }
+        section id="game-board" data-revision=(game.view.revision) gap="8px" {
             div overflow-x="auto" {
                 div width="720px" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1826,16 +1827,11 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" padding-y="12px" gap="9px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                div gap="1px" {
-                    span color=#47715a font-size="11px" font-weight=bold { "YOUR TILES" }
-                    span font-size="18px" font-weight=bold { "Build your move" }
-                }
-                span color=#777b73 font-size="12px" { "Tap tiles to play or rearrange" }
-            }
-            div class="rack-tray" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px"
-                background=#7f6038 border=(("#5b4025", 3)) border-radius="14px" padding-y="12px" padding-x="14px" {
+        section id="player-rack" padding-y="6px" gap="7px" {
+            span color=#f3e3b9 font-size="11px" font-weight=bold { "RACK" }
+            div class="rack-tray" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+                justify-content="center" gap="7px"
+                background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="11px" padding-x="14px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
@@ -1852,16 +1848,16 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                         form hx-post=(action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="50px" height="56px"
+                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="54px" height="60px"
                                 background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
-                                border=((if selected { "#2f8a57" } else if exchange_selected { "#b64c42" } else { "#b88a31" }, if selected || exchange_selected { 3 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
+                                border=((if selected { "#ffffff" } else if exchange_selected { "#ff796b" } else { "#b88a31" }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
                                 span font-size="24px" { (face) }
                                 span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
                             }
                         }
                     } @else {
-                        div class="rack-tile" data-tile-id=(tile_id) width="50px" height="56px"
+                        div class="rack-tile" data-tile-id=(tile_id) width="54px" height="60px"
                             background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
                             span font-size="24px" { (face) }
@@ -1912,12 +1908,14 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
         .analysis
         .map(|analysis| analysis.score);
     container! {
-        section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="10px"
-            background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#fff5e8" } else { "#f7f0df" })
-            border-radius="14px" padding-x="10px" {
+        section id="turn-actions" class="turn-composer action-hud" min-height="76px" padding-y="10px" gap="8px"
+            background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { "#173d2c" })
+            color=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#402c1e" } else { "#f4f0df" })
+            border=((if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f3b66e" } else { "#35674e" }, 2))
+            border-radius="16px" padding-x="12px" {
             div direction="row" justify-content="space-between" align-items="center" {
-                span font-weight=bold { "Your move" }
-                span color=#777b73 font-size="13px" { "Changes are saved as you compose." }
+                span font-size="12px" font-weight=bold { "YOUR MOVE" }
+                span color=#d4cbb4 font-size="11px" { "Saved as you compose" }
             }
             @if draft.mode == TurnMode::Exchange {
                 span font-weight=bold { (draft.exchange_tiles.len()) " tile(s) selected for exchange." }
@@ -2072,9 +2070,9 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
     let turn = if game.completed {
         "Game complete"
     } else if opponent_active {
-        "Playing now"
+        "Their move"
     } else {
-        "Waiting for you"
+        "Waiting"
     };
     let initial = game
         .opponent_username
@@ -2084,44 +2082,48 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
         .to_uppercase()
         .to_string();
     container! {
-        section id="game-awareness" class="player-bench opponent-bench" width="100%"
-            background=(if opponent_active { "#e3f3e8" } else { "#f3f0e8" })
-            border=((if opponent_active { "#75a886" } else { "#d8d1c1" }, if opponent_active { 2 } else { 1 }))
-            border-radius="16px" padding-y="12px" padding-x="16px" gap="8px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="14px" {
-                div direction="row" align-items="center" gap="11px" {
-                    span width="40px" height="40px" border-radius="999px" background=#526243 color=#ffffff
+        section id="game-awareness" class="player-hud opponent-hud" width="720px" max-width="100%"
+            background=(if opponent_active { "#f4c95d" } else { "#214c38" })
+            color=(if opponent_active { "#2d2515" } else { "#f4f0df" })
+            border=((if opponent_active { "#ffe29a" } else { "#376d53" }, 2))
+            border-radius="999px" padding-y="8px" padding-x="13px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
+                div direction="row" align-items="center" gap="10px" {
+                    span width="38px" height="38px" border-radius="999px"
+                        background=(if opponent_active { "#4d3821" } else { "#d6b361" })
+                        color=(if opponent_active { "#ffffff" } else { "#2d2515" })
+                        border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
                         align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
                     div gap="1px" {
-                        span color=#777b73 font-size="11px" font-weight=bold { "OPPONENT" }
-                        span font-size="18px" font-weight=bold { (game.opponent_username.as_str()) }
-                        span id="named-turn-status" color=(if opponent_active { "#2f704b" } else { "#777b73" })
-                            font-size="12px" font-weight=bold { (turn) }
+                        span font-size="17px" font-weight=bold { (game.opponent_username.as_str()) }
+                        span id="named-turn-status" font-size="11px" font-weight=bold { (turn) }
                     }
                 }
-                div align-items="end" gap="1px" {
-                    span color=#777b73 font-size="11px" { "SCORE" }
-                    span font-size="30px" font-weight=bold { (opponent_score) }
-                }
-            }
-            div id="live-status" color=#777b73 font-size="11px" {
-                span id="live-status-connecting"
-                    fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
-                    "● Connecting…"
-                }
-                span id="live-status-connected" hidden color=#2f704b
-                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
-                    "● Live"
-                }
-                span hidden
-                    fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                span id="live-status-reconnecting" hidden color=#9a651f
-                    fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
-                    "● Reconnecting…"
-                }
-                span id="live-status-disconnected" hidden color=#9b3f35
-                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
-                    "● Offline — retrying automatically"
+                div direction="row" align-items="center" gap="11px" {
+                    div id="live-status" font-size="11px" {
+                        span id="live-status-connecting"
+                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
+                            "● Connecting"
+                        }
+                        span id="live-status-connected" hidden
+                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
+                            "● Live"
+                        }
+                        span hidden
+                            fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                        span id="live-status-reconnecting" hidden color=#9a651f
+                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
+                            "● Reconnecting"
+                        }
+                        span id="live-status-disconnected" hidden color=#9b3f35
+                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
+                            "● Offline"
+                        }
+                    }
+                    span min-width="56px" align-items="center" justify-content="center"
+                        background=(if opponent_active { "#fff1bd" } else { "#163a2a" })
+                        border-radius="999px" padding-y="4px" padding-x="12px"
+                        font-size="25px" font-weight=bold { (opponent_score) }
                 }
             }
         }
@@ -2146,26 +2148,26 @@ fn viewer_bench_component(game: &AuthorizedGamePage) -> Container {
         .to_uppercase()
         .to_string();
     container! {
-        section id="viewer-bench" class="player-bench viewer-bench" width="100%"
-            background=(if viewer_active { "#dcf2e4" } else { "#f3f0e8" })
-            border=((if viewer_active { "#4f9369" } else { "#d8d1c1" }, if viewer_active { 2 } else { 1 }))
-            border-radius="16px" padding-y="12px" padding-x="16px" gap="8px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="14px" {
-                div direction="row" align-items="center" gap="11px" {
-                    span width="40px" height="40px" border-radius="999px" background=#2f8a57 color=#ffffff
+        section id="viewer-bench" class="player-hud viewer-hud" width="720px" max-width="100%"
+            background=(if viewer_active { "#f4c95d" } else { "#214c38" })
+            color=(if viewer_active { "#2d2515" } else { "#f4f0df" })
+            border=((if viewer_active { "#ffe29a" } else { "#376d53" }, 2))
+            border-radius="999px" padding-y="8px" padding-x="13px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
+                div direction="row" align-items="center" gap="10px" {
+                    span width="38px" height="38px" border-radius="999px"
+                        background=(if viewer_active { "#2e7049" } else { "#d6b361" })
+                        color=#ffffff border=((if viewer_active { "#73ba8d" } else { "#f2d98d" }, 2))
                         align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
-                    div gap="2px" {
-                        span color=#47715a font-size="11px" font-weight=bold { "YOUR BENCH" }
-                        span font-size="18px" font-weight=bold { (game.viewer_username.as_str()) }
+                    div gap="1px" {
+                        span font-size="17px" font-weight=bold { (game.viewer_username.as_str()) }
+                        (viewer_turn)
                     }
                 }
-                div direction="row" align-items="center" gap="14px" {
-                    (viewer_turn)
-                    div align-items="end" gap="1px" {
-                        span color=#777b73 font-size="11px" { "SCORE" }
-                        span font-size="30px" font-weight=bold { (viewer_score) }
-                    }
-                }
+                span min-width="56px" align-items="center" justify-content="center"
+                    background=(if viewer_active { "#fff1bd" } else { "#163a2a" })
+                    border-radius="999px" padding-y="4px" padding-x="12px"
+                    font-size="25px" font-weight=bold { (viewer_score) }
             }
         }
     }
@@ -2264,8 +2266,8 @@ fn visual_game_page(
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(&feedback);
-    let opponent_bench = opponent_bench_component(game);
-    let viewer_bench = viewer_bench_component(game);
+    let opponent_hud = opponent_bench_component(game);
+    let viewer_hud = viewer_bench_component(game);
     let completed_summary = game.completed.then(|| completed_game_summary(game));
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
@@ -2279,76 +2281,78 @@ fn visual_game_page(
     let refresh_game = ActionType::Navigate { url: game_path };
     let turn_feedback_view = turn_feedback(error);
     container! {
-        div id="app-page" data-shared-state-channel=(game_channel.as_str())
+        div id="app-page" class="game-scene" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-event=(refresh_game)
-            direction="column" align-items="center"
-            min-height="100vh" background=#e9efe8 color=#24352c
-            padding-y=16 padding-x=10 gap="14px" {
-            header id="game-header" width="100%" max-width="1120px"
-                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
-                justify-content="space-between" align-items="center"
-                padding-y="8px" padding-x="6px" gap="14px" {
-                div direction="row" align-items="center" gap="14px" {
-                    anchor href="/" color=#365e48 font-weight=bold { "← Games" }
-                    div gap="1px" {
-                        h1 font-size="22px" { (game.opponent_username.as_str()) " vs " (game.viewer_username.as_str()) }
-                        span color=#777b73 font-size="11px" { "MATCH " (short_game_id) }
+            direction="column" align-items="center" overflow-x="hidden"
+            min-height="100vh" background=#123b2a color=#f4f0df
+            padding-y=10 padding-x=10 gap="8px" {
+            header id="scene-controls" width="100%" max-width="1100px"
+                direction="row" justify-content="space-between" align-items="start" gap="12px" {
+                anchor href="/" background=#173326 color=#f4f0df border=(("#436854", 1))
+                    border-radius="999px" padding-y="9px" padding-x="14px" font-weight=bold { "← Leave table" }
+                details id="game-menu" align-items="end" {
+                    summary cursor=pointer background=#173326 color=#f4f0df border=(("#436854", 1))
+                        border-radius="999px" padding-y="9px" padding-x="14px" font-weight=bold { "Game menu ···" }
+                    aside id="activity-rail" width="340px" max-width="100%" background=#f6f0df color=#26382d
+                        border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
+                        div gap="2px" {
+                            span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
+                            h2 { (game.opponent_username.as_str()) " vs " (game.viewer_username.as_str()) }
+                        }
+                        @if let Some(latest) = &game.latest_action {
+                            section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))
+                                border-radius="12px" padding="12px" gap="3px" {
+                                span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
+                                span font-weight=bold { (latest.as_str()) }
+                            }
+                        }
+                        section id="recent-activity" gap="8px" {
+                            h3 { "Move history" }
+                            (history)
+                        }
+                        section id="game-reference" width="100%" border-top=(("#d8c9a7", 1))
+                            padding-top="12px" gap="10px" {
+                            (rules_component(game))
+                        }
                     }
                 }
-                span color="#52705e" font-size="12px" font-weight=bold { "WORDS WITH SPOUSES" }
             }
-            main id="game-layout" class="game-workspace" width="100%" max-width="1120px"
-                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
-                align-items="start" justify-content="center" gap="16px" {
-                section id="play-stage" width="780px" max-width="100%" overflow-x="hidden" background=#fffdf7 border=(("#cdd9cf", 1))
-                    border-radius="22px" padding-y="16px" padding-x="16px" gap="10px" {
+            main id="game-layout" class="game-arena" width="100%" max-width="1100px"
+                align-items="center" gap="6px" {
+                (opponent_hud)
+                section id="play-stage" class="board-platform" width="800px" max-width="100%"
+                    overflow-x="hidden" background=#714b2b border=(("#3c2819", 8))
+                    border-radius="24px" padding-y="14px" padding-x="14px" gap="8px" {
                     (turn_feedback_view)
-                    (opponent_bench)
-                    section id="board-region" width="100%" background=#dce5dc
-                        border=(("#c2d0c4", 1)) border-radius="18px"
-                        padding-y="14px" padding-x="10px" {
+                    section id="board-region" width="100%" background=#173d2c
+                        border=(("#9b7041", 5)) border-radius="16px"
+                        padding-y="12px" padding-x="9px" {
                         (board)
                     }
-                    (viewer_bench)
-                    section id="play-console" class="turn-dock" width="100%"
-                        background=#f7f0df border=(("#d7c7a4", 1)) border-radius="18px"
-                        padding-y="4px" padding-x="14px" gap="0px" {
-                        (rack)
-                        section id="composer-card" width="100%" border-top=(("#ddcfb2", 1)) gap="8px" {
-                            @if !game.completed && game.view.active_player == game.viewer_player {
-                                (draft_preview)
-                                (actions)
-                            } @else if !game.completed {
-                                section id="turn-actions" class="turn-composer" min-height="88px"
-                                    padding-y="14px" gap="6px" align-items="center" justify-content="center" {
-                                    span font-size="18px" font-weight=bold { "Waiting for " (game.opponent_username.as_str()) }
-                                    span color=#777b73 { "Your rack is ready. We’ll bring the board up to date after their move." }
-                                }
+                }
+                (viewer_hud)
+                section id="play-console" class="game-console turn-dock" width="720px" max-width="100%"
+                    background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
+                    padding-y="7px" padding-x="12px" gap="5px" {
+                    (rack)
+                    section id="composer-card" width="100%" gap="6px" {
+                        @if !game.completed && game.view.active_player == game.viewer_player {
+                            (draft_preview)
+                            (actions)
+                        } @else if !game.completed {
+                            section id="turn-actions" class="turn-composer action-hud" min-height="54px"
+                                background=#173d2c border=(("#35674e", 2)) border-radius="14px"
+                                padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
+                                span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
+                                span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
                             }
                         }
                     }
                 }
-                aside id="activity-rail" width="300px" max-width="100%" background=#fffdf7 border=(("#cdd9cf", 1))
-                    border-radius="20px" padding-y="18px" padding-x="16px" gap="16px" {
-                    div gap="3px" {
-                        span color="#52705e" font-size="11px" font-weight=bold { "MATCH FEED" }
-                        h2 { "Around the board" }
-                    }
-                    @if let Some(latest) = &game.latest_action {
-                        section id="latest-game-action" background=#e8f3eb border=(("#b9d4c1", 1))
-                            border-radius="14px" padding="14px" gap="4px" {
-                            span color=#47715a font-size="11px" font-weight=bold { "LATEST PLAY" }
-                            span font-weight=bold { (latest.as_str()) }
-                        }
-                    }
-                    @if let Some(completed_summary) = completed_summary { (completed_summary) }
-                    section id="recent-activity" gap="8px" {
-                        h3 { "Move history" }
-                        (history)
-                    }
-                    section id="game-reference" width="100%" border-top=(("#e3ded2", 1))
-                        padding-top="14px" gap="10px" {
-                        (rules_component(game))
+                @if let Some(completed_summary) = completed_summary {
+                    section id="game-overlay" width="720px" max-width="100%" background=#112b20
+                        border=(("#f4c95d", 3)) border-radius="18px" padding="12px" {
+                        (completed_summary)
                     }
                 }
             }
@@ -2850,12 +2854,16 @@ mod tests {
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
             assert!(page.contains("viewer-bench"));
-            assert!(page.contains("play-stage"));
+            assert!(page.contains("game-scene"));
+            assert!(page.contains("game-arena"));
+            assert!(page.contains("board-platform"));
+            assert!(page.contains("player-hud"));
+            assert!(page.contains("action-hud"));
+            assert!(page.contains("game-menu"));
             assert!(page.contains("activity-rail"));
             assert!(page.contains("turn-dock"));
-            assert!(page.contains("YOUR BENCH"));
-            assert!(page.contains("OPPONENT"));
-            assert!(page.contains("Around the board"));
+            assert!(page.contains("RACK"));
+            assert!(page.contains("Game menu"));
             assert!(!page.contains("primary-turn-action"));
             assert!(page.contains("composer-card"));
             assert!(page.contains("alice"));
@@ -2872,8 +2880,6 @@ mod tests {
             assert!(!page.contains("name=\"command\" value=\"PASS\""));
             assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
-            assert!(page.contains("Open squares show their premium labels"));
-            assert!(page.contains("faint blue dot"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
             assert!(page.contains("DL"));

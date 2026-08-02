@@ -530,9 +530,8 @@ pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
         "Waiting for opponent"
     };
     container! {
-        span id="viewer-turn-status" background=(if status == "Your turn" { "#2f8a57" } else { "#e5e1d7" })
-            color=(if status == "Your turn" { "#ffffff" } else { "#526057" })
-            border-radius="999px" padding-y=8 padding-x=13 font-weight=bold { (status) }
+        span id="viewer-turn-status" color=(if status == "Your turn" { "#28573b" } else { "#e3ddca" })
+            font-size="11px" font-weight=bold { (status) }
     }
     .into()
 }
