@@ -347,12 +347,15 @@ pub fn move_history_component(history: &[MoveHistoryView]) -> Container {
     container! {
         section id="move-history" gap=8 {
             @if history.is_empty() {
-                span color=#777b73 { "No moves yet." }
+                div background=#f3f0e8 border-radius="12px" padding="12px" {
+                    span color=#777b73 { "No moves yet. The first word will start the story." }
+                }
             }
             @for entry in history {
-                div direction="row" justify-content="space-between" gap=12 {
-                    span { (entry.description.as_str()) }
-                    span color=#5d6258 { (entry.score_summary.as_str()) }
+                div background=#f7f5ef border-left=(("#8eb59a", 3)) border-radius="10px"
+                    padding-y="10px" padding-x="12px" gap="3px" {
+                    span font-weight=bold { (entry.description.as_str()) }
+                    span color=#5d6258 font-size="12px" { (entry.score_summary.as_str()) }
                 }
             }
         }
@@ -527,8 +530,9 @@ pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
         "Waiting for opponent"
     };
     container! {
-        span id="viewer-turn-status" background=(if status == "Your turn" { "#e8f1e3" } else { "#f0ede5" })
-            color=#3f5735 border-radius="999px" padding-y=8 padding-x=13 font-weight=bold { (status) }
+        span id="viewer-turn-status" background=(if status == "Your turn" { "#2f8a57" } else { "#e5e1d7" })
+            color=(if status == "Your turn" { "#ffffff" } else { "#526057" })
+            border-radius="999px" padding-y=8 padding-x=13 font-weight=bold { (status) }
     }
     .into()
 }

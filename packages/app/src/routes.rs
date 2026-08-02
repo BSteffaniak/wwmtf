@@ -643,10 +643,10 @@ fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
             .join(", ")
     });
     container! {
-        section id="draft-preview" min-height="72px" padding-y="10px" padding-x="4px" gap="5px"
+        section id="draft-preview" min-height="60px" padding-y="10px" padding-x="12px" gap="5px"
             background=(if feedback.analysis.is_some() { "#e8f6ec" } else { "#fbfaf6" })
             border-radius="10px" {
-            h2 { "Draft preview" }
+            h2 font-size="14px" { "Move preview" }
             @if let Some(analysis) = &feedback.analysis {
                 span color=#2f8a57 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
                 span color=#246d45 font-size="24px" font-weight=bold { (analysis.score) " points" }
@@ -1826,13 +1826,16 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" padding-y="14px" gap="10px" {
+        section id="player-rack" padding-y="12px" gap="9px" {
             div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                span font-weight=bold { "Your rack" }
-                span color=#777b73 font-size="12px" { "Select two tiles to swap" }
+                div gap="1px" {
+                    span color=#47715a font-size="11px" font-weight=bold { "YOUR TILES" }
+                    span font-size="18px" font-weight=bold { "Build your move" }
+                }
+                span color=#777b73 font-size="12px" { "Tap tiles to play or rearrange" }
             }
             div class="rack-tray" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px"
-                background=#6f5a40 border=(("#5f4a34", 2)) border-radius="10px" padding-y="10px" padding-x="12px" {
+                background=#7f6038 border=(("#5b4025", 3)) border-radius="14px" padding-y="12px" padding-x="14px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
@@ -1843,8 +1846,6 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                             "TOGGLE_EXCHANGE"
                         } else if draft.rack_tile.is_some() || draft.selected_tile.is_some() {
                             "SWAP_RACK_TILES"
-                        } else if can_compose {
-                            "CHOOSE_TILE"
                         } else {
                             "PICK_RACK_TILE"
                         };
@@ -1870,7 +1871,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                 }
             }
             @if draft.rack_tile.is_some() || draft.selected_tile.is_some() {
-                span color=#3f5735 font-weight=bold { "Tile selected — choose another rack tile to swap positions, or choose a board square." }
+                span color=#3f5735 font-weight=bold { "Tile selected — choose another rack tile to swap positions, choose an exact rack position, or choose a board square." }
             } @else if draft.mode == TurnMode::Play {
                 span color=#777b73 { "Select a rack tile to play it or swap it with another tile." }
             }
@@ -1911,7 +1912,9 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
         .analysis
         .map(|analysis| analysis.score);
     container! {
-        section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="10px" {
+        section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="10px"
+            background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#fff5e8" } else { "#f7f0df" })
+            border-radius="14px" padding-x="10px" {
             div direction="row" justify-content="space-between" align-items="center" {
                 span font-weight=bold { "Your move" }
                 span color=#777b73 font-size="13px" { "Changes are saved as you compose." }
@@ -1921,8 +1924,8 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                 div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                         (compose_form_fields(game, draft, "REVIEW_EXCHANGE"))
-                        button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
-                            border=(("#526243", 1)) border-radius="9px" cursor=pointer { "Review exchange" }
+                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
+                            border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { "Review exchange" }
                     }
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                         (compose_form_fields(game, draft, "CANCEL_MODE"))
@@ -1942,8 +1945,8 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                         @for (index, tile_id) in draft.exchange_tiles.iter().enumerate() {
                             input type=hidden name=(format!("tile_{index}")) value=(tile_id);
                         }
-                        button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
-                            border=(("#526243", 1)) border-radius="9px" cursor=pointer { "Confirm exchange" }
+                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
+                            border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { "Confirm exchange" }
                     }
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                         (compose_form_fields(game, draft, "CANCEL_MODE"))
@@ -1960,53 +1963,67 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                 span color=#5d6258 { "The game ends immediately and your opponent wins." }
                 (confirmed_command_forms(game, draft, "RESIGN", "Confirm resignation", &command_id, &idempotency_key))
             } @else {
-                @if !draft.placements.is_empty() {
-                form hx-post=(turn_action.as_str()) hx-target="#app-page" gap="8px" {
-                    input type=hidden name="command" value="PLAY";
-                    input type=hidden name="command_id" value=(command_id.as_str());
-                    input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
-                    input type=hidden name="expected_revision" value=(game.view.revision);
-                    @for (index, placement) in draft.placements.iter().enumerate() {
-                        input type=hidden name=(format!("tile_{index}")) value=(placement.tile_id);
-                        input type=hidden name=(format!("x_{index}")) value=(placement.x);
-                        input type=hidden name=(format!("y_{index}")) value=(placement.y);
-                        @if let Some(letter) = placement.blank_letter {
-                            input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+                    justify-content="space-between" align-items="center" gap="10px" {
+                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+                        @if !draft.placements.is_empty() {
+                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                                (compose_form_fields(game, draft, "CLEAR"))
+                                button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall tiles" }
+                            }
+                        }
+                        @if game.exchange_available {
+                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                                (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
+                                button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange" }
+                            }
+                        }
+                        details id="more-turn-actions" {
+                            summary cursor=pointer color=#526243 font-weight=bold padding-y="10px" padding-x="4px" { "More actions" }
+                            div background=#ffffff border=(("#d8d1c1", 1)) border-radius="12px"
+                                padding="12px" gap="10px" {
+                                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                                    (compose_form_fields(game, draft, "CONFIRM_PASS"))
+                                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass turn" }
+                                }
+                                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                                    (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
+                                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#814434
+                                        border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign game" }
+                                }
+                            }
                         }
                     }
-                    button type=submit padding-y=13 padding-x=22 background=#2f8a57 color=#ffffff
-                        border=(("#246d45", 2)) border-radius="12px" font-weight=bold cursor=pointer {
-                        @if let Some(score) = play_score {
-                            "Play word · " (score)
-                        } @else {
-                            "Play word"
+                    @if !draft.placements.is_empty() {
+                        form hx-post=(turn_action.as_str()) hx-target="#app-page" gap="8px" {
+                            input type=hidden name="command" value="PLAY";
+                            input type=hidden name="command_id" value=(command_id.as_str());
+                            input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
+                            input type=hidden name="expected_revision" value=(game.view.revision);
+                            @for (index, placement) in draft.placements.iter().enumerate() {
+                                input type=hidden name=(format!("tile_{index}")) value=(placement.tile_id);
+                                input type=hidden name=(format!("x_{index}")) value=(placement.x);
+                                input type=hidden name=(format!("y_{index}")) value=(placement.y);
+                                @if let Some(letter) = placement.blank_letter {
+                                    input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
+                                }
+                            }
+                            button type=submit class="primary-turn-action" padding-y=13 padding-x=22 background=#2f8a57 color=#ffffff
+                                border=(("#246d45", 2)) border-radius="12px" font-weight=bold cursor=pointer {
+                                @if let Some(score) = play_score {
+                                    "Play word · " (score)
+                                } @else {
+                                    "Play word"
+                                }
+                            }
                         }
                     }
                 }
-                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "CLEAR"))
-                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall tiles" }
-                }
-                }
-                @if game.exchange_available {
-                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                        (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
-                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange tiles" }
-                    }
-                } @else {
-                    span color=#777b73 { "Tile exchange is not available now." }
-                }
-                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "CONFIRM_PASS"))
-                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
-                }
-                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
-                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#814434
-                        border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
+                @if !game.exchange_available {
+                    span color=#777b73 font-size="12px" { "Tile exchange is not available now." }
                 }
             }
         }
@@ -2031,8 +2048,8 @@ fn confirmed_command_forms(
                 input type=hidden name="command_id" value=(command_id);
                 input type=hidden name="idempotency_key" value=(idempotency_key);
                 input type=hidden name="expected_revision" value=(game.view.revision);
-                button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
-                    border=(("#526243", 1)) border-radius="9px" cursor=pointer { (label) }
+                button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
+                    border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { (label) }
             }
             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                 (compose_form_fields(game, draft, "CANCEL_MODE"))
@@ -2044,66 +2061,111 @@ fn confirmed_command_forms(
     .into()
 }
 
-fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
-    let viewer_score = game
-        .view
-        .scores
-        .iter()
-        .find(|(player, _)| *player == game.viewer_player)
-        .map_or(0, |(_, score)| *score);
+fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
     let opponent_score = game
         .view
         .scores
         .iter()
         .find(|(player, _)| *player != game.viewer_player)
         .map_or(0, |(_, score)| *score);
+    let opponent_active = !game.completed && game.view.active_player != game.viewer_player;
     let turn = if game.completed {
-        "Game complete".to_string()
-    } else if game.view.active_player == game.viewer_player {
-        format!("{}’s turn (you)", game.viewer_username)
+        "Game complete"
+    } else if opponent_active {
+        "Playing now"
     } else {
-        format!("{}’s turn", game.opponent_username)
+        "Waiting for you"
     };
+    let initial = game
+        .opponent_username
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
     container! {
-        section id="game-awareness" padding-y="14px" padding-x="6px" gap="8px" {
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
-                justify-content="space-between" align-items="center" gap="14px" {
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="22px" {
-                    div gap="2px" {
-                        span color=#777b73 font-size="13px" { (game.viewer_username.as_str()) " (you)" }
-                        span font-size="24px" font-weight=bold { (viewer_score) }
-                    }
-                    div gap="2px" {
-                        span color=#777b73 font-size="13px" { (game.opponent_username.as_str()) }
-                        span font-size="24px" font-weight=bold { (opponent_score) }
+        section id="game-awareness" class="player-bench opponent-bench" width="100%"
+            background=(if opponent_active { "#e3f3e8" } else { "#f3f0e8" })
+            border=((if opponent_active { "#75a886" } else { "#d8d1c1" }, if opponent_active { 2 } else { 1 }))
+            border-radius="16px" padding-y="12px" padding-x="16px" gap="8px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="14px" {
+                div direction="row" align-items="center" gap="11px" {
+                    span width="40px" height="40px" border-radius="999px" background=#526243 color=#ffffff
+                        align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    div gap="1px" {
+                        span color=#777b73 font-size="11px" font-weight=bold { "OPPONENT" }
+                        span font-size="18px" font-weight=bold { (game.opponent_username.as_str()) }
+                        span id="named-turn-status" color=(if opponent_active { "#2f704b" } else { "#777b73" })
+                            font-size="12px" font-weight=bold { (turn) }
                     }
                 }
-                div gap="4px" align-items="end" {
-                    span id="named-turn-status" color=#3f5735 font-weight=bold { (turn) }
-                    div id="live-status" color=#777b73 font-size="12px" {
-                        span id="live-status-connecting"
-                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
-                            "Live updates: connecting…"
-                        }
-                        span id="live-status-connected" hidden
-                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
-                            "Live updates: connected"
-                        }
-                        span hidden
-                            fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                        span id="live-status-reconnecting" hidden
-                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
-                            "Live updates: reconnecting…"
-                        }
-                        span id="live-status-disconnected" hidden
-                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
-                            "Live updates: disconnected. Retrying automatically."
-                        }
-                    }
+                div align-items="end" gap="1px" {
+                    span color=#777b73 font-size="11px" { "SCORE" }
+                    span font-size="30px" font-weight=bold { (opponent_score) }
                 }
             }
-            @if let Some(latest) = &game.latest_action {
-                span id="latest-game-action" color=#5d6258 font-size="13px" { "Latest: " (latest.as_str()) }
+            div id="live-status" color=#777b73 font-size="11px" {
+                span id="live-status-connecting"
+                    fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
+                    "● Connecting…"
+                }
+                span id="live-status-connected" hidden color=#2f704b
+                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
+                    "● Live"
+                }
+                span hidden
+                    fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                span id="live-status-reconnecting" hidden color=#9a651f
+                    fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
+                    "● Reconnecting…"
+                }
+                span id="live-status-disconnected" hidden color=#9b3f35
+                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
+                    "● Offline — retrying automatically"
+                }
+            }
+        }
+    }
+    .into()
+}
+
+fn viewer_bench_component(game: &AuthorizedGamePage) -> Container {
+    let viewer_score = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player == game.viewer_player)
+        .map_or(0, |(_, score)| *score);
+    let viewer_active = !game.completed && game.view.active_player == game.viewer_player;
+    let viewer_turn = viewer_turn_component(&game.view, game.viewer_player);
+    let initial = game
+        .viewer_username
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    container! {
+        section id="viewer-bench" class="player-bench viewer-bench" width="100%"
+            background=(if viewer_active { "#dcf2e4" } else { "#f3f0e8" })
+            border=((if viewer_active { "#4f9369" } else { "#d8d1c1" }, if viewer_active { 2 } else { 1 }))
+            border-radius="16px" padding-y="12px" padding-x="16px" gap="8px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="14px" {
+                div direction="row" align-items="center" gap="11px" {
+                    span width="40px" height="40px" border-radius="999px" background=#2f8a57 color=#ffffff
+                        align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    div gap="2px" {
+                        span color=#47715a font-size="11px" font-weight=bold { "YOUR BENCH" }
+                        span font-size="18px" font-weight=bold { (game.viewer_username.as_str()) }
+                    }
+                }
+                div direction="row" align-items="center" gap="14px" {
+                    (viewer_turn)
+                    div align-items="end" gap="1px" {
+                        span color=#777b73 font-size="11px" { "SCORE" }
+                        span font-size="30px" font-weight=bold { (viewer_score) }
+                    }
+                }
             }
         }
     }
@@ -2202,9 +2264,9 @@ fn visual_game_page(
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(&feedback);
-    let awareness = game_awareness_component(game);
+    let opponent_bench = opponent_bench_component(game);
+    let viewer_bench = viewer_bench_component(game);
     let completed_summary = game.completed.then(|| completed_game_summary(game));
-    let viewer_turn = viewer_turn_component(&game.view, game.viewer_player);
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
     let history = move_history_component(&game.history);
@@ -2221,46 +2283,73 @@ fn visual_game_page(
             fx-global-shared-state-event=(refresh_game)
             direction="column" align-items="center"
             min-height="100vh" background=#e9efe8 color=#24352c
-            padding-y=20 padding-x=10 gap="18px" {
-            header id="game-header" width="100%" max-width="800px"
-                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
-                padding-y="10px" padding-x="6px" gap="14px" {
-                div gap="3px" {
-                    anchor href="/" color=#526243 { "← Games" }
-                    h1 { "Game " (short_game_id) }
+            padding-y=16 padding-x=10 gap="14px" {
+            header id="game-header" width="100%" max-width="1120px"
+                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+                justify-content="space-between" align-items="center"
+                padding-y="8px" padding-x="6px" gap="14px" {
+                div direction="row" align-items="center" gap="14px" {
+                    anchor href="/" color=#365e48 font-weight=bold { "← Games" }
+                    div gap="1px" {
+                        h1 font-size="22px" { (game.opponent_username.as_str()) " vs " (game.viewer_username.as_str()) }
+                        span color=#777b73 font-size="11px" { "MATCH " (short_game_id) }
+                    }
                 }
-                (viewer_turn)
+                span color="#52705e" font-size="12px" font-weight=bold { "WORDS WITH SPOUSES" }
             }
-            main id="game-layout" class="game-workspace" width="100%" max-width="800px"
-                background=#fffdf7 border=(("#cdd9cf", 1)) border-radius="20px"
-                padding-y="18px" padding-x="18px" gap="0px" {
-                (awareness)
-                (turn_feedback_view)
-                @if let Some(completed_summary) = completed_summary { (completed_summary) }
-                section id="board-region" width="100%" padding-y="16px" border-top=(("#e3ded2", 1)) {
-                    (board)
-                }
-                section id="play-console" width="100%" border-top=(("#e3ded2", 1)) gap="0px" {
-                    (rack)
-                    section id="composer-card" width="100%" border-top=(("#e3ded2", 1)) gap="8px" {
-                        @if !game.completed && game.view.active_player == game.viewer_player {
-                            (draft_preview)
-                            (actions)
-                        } @else if !game.completed {
-                            section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="8px" {
-                                span font-weight=bold { "Waiting for " (game.opponent_username.as_str()) }
-                                span color=#777b73 { "Your rack is ready. The board will update after their move." }
+            main id="game-layout" class="game-workspace" width="100%" max-width="1120px"
+                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+                align-items="start" justify-content="center" gap="16px" {
+                section id="play-stage" width="780px" max-width="100%" overflow-x="hidden" background=#fffdf7 border=(("#cdd9cf", 1))
+                    border-radius="22px" padding-y="16px" padding-x="16px" gap="10px" {
+                    (turn_feedback_view)
+                    (opponent_bench)
+                    section id="board-region" width="100%" background=#dce5dc
+                        border=(("#c2d0c4", 1)) border-radius="18px"
+                        padding-y="14px" padding-x="10px" {
+                        (board)
+                    }
+                    (viewer_bench)
+                    section id="play-console" class="turn-dock" width="100%"
+                        background=#f7f0df border=(("#d7c7a4", 1)) border-radius="18px"
+                        padding-y="4px" padding-x="14px" gap="0px" {
+                        (rack)
+                        section id="composer-card" width="100%" border-top=(("#ddcfb2", 1)) gap="8px" {
+                            @if !game.completed && game.view.active_player == game.viewer_player {
+                                (draft_preview)
+                                (actions)
+                            } @else if !game.completed {
+                                section id="turn-actions" class="turn-composer" min-height="88px"
+                                    padding-y="14px" gap="6px" align-items="center" justify-content="center" {
+                                    span font-size="18px" font-weight=bold { "Waiting for " (game.opponent_username.as_str()) }
+                                    span color=#777b73 { "Your rack is ready. We’ll bring the board up to date after their move." }
+                                }
                             }
                         }
                     }
                 }
-                section id="game-reference" width="100%" border-top=(("#e3ded2", 1))
-                    padding-top="14px" gap="10px" {
-                    details width="100%" {
-                        summary cursor="pointer" font-weight=bold { "Move history" }
+                aside id="activity-rail" width="300px" max-width="100%" background=#fffdf7 border=(("#cdd9cf", 1))
+                    border-radius="20px" padding-y="18px" padding-x="16px" gap="16px" {
+                    div gap="3px" {
+                        span color="#52705e" font-size="11px" font-weight=bold { "MATCH FEED" }
+                        h2 { "Around the board" }
+                    }
+                    @if let Some(latest) = &game.latest_action {
+                        section id="latest-game-action" background=#e8f3eb border=(("#b9d4c1", 1))
+                            border-radius="14px" padding="14px" gap="4px" {
+                            span color=#47715a font-size="11px" font-weight=bold { "LATEST PLAY" }
+                            span font-weight=bold { (latest.as_str()) }
+                        }
+                    }
+                    @if let Some(completed_summary) = completed_summary { (completed_summary) }
+                    section id="recent-activity" gap="8px" {
+                        h3 { "Move history" }
                         (history)
                     }
-                    (rules_component(game))
+                    section id="game-reference" width="100%" border-top=(("#e3ded2", 1))
+                        padding-top="14px" gap="10px" {
+                        (rules_component(game))
+                    }
                 }
             }
         }
@@ -2760,6 +2849,14 @@ mod tests {
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
+            assert!(page.contains("viewer-bench"));
+            assert!(page.contains("play-stage"));
+            assert!(page.contains("activity-rail"));
+            assert!(page.contains("turn-dock"));
+            assert!(page.contains("YOUR BENCH"));
+            assert!(page.contains("OPPONENT"));
+            assert!(page.contains("Around the board"));
+            assert!(!page.contains("primary-turn-action"));
             assert!(page.contains("composer-card"));
             assert!(page.contains("alice"));
             assert!(page.contains("bob"));
@@ -2895,6 +2992,8 @@ mod tests {
             assert!(rendered.contains(&word));
             assert!(rendered.contains("points"));
             assert!(rendered.contains("This draft is ready to play."));
+            assert_eq!(rendered.matches("primary-turn-action").count(), 1);
+            assert!(rendered.contains("Play word ·"));
             assert!(rendered.contains("board-tile-points"));
             assert!(rendered.contains("draft_stale=1"));
         });

@@ -332,6 +332,13 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
                 hasPreview: Boolean(document.querySelector('#draft-preview')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
                 hasAwareness: Boolean(document.querySelector('#game-awareness')),
+                hasViewerBench: Boolean(document.querySelector('#viewer-bench')),
+                hasTurnDock: Boolean(document.querySelector('#play-console.turn-dock')),
+                hasActivityRail: Boolean(document.querySelector('#activity-rail')),
+                stageTop: document.querySelector('#play-stage')?.getBoundingClientRect().top ?? null,
+                stageBottom: document.querySelector('#play-stage')?.getBoundingClientRect().bottom ?? null,
+                activityTop: document.querySelector('#activity-rail')?.getBoundingClientRect().top ?? null,
+                activityRight: document.querySelector('#activity-rail')?.getBoundingClientRect().right ?? null,
                 duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
             };
         })()"""
@@ -342,8 +349,15 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game page overflows the viewport at {width}px: {layout!r}")
     if not layout["rackBelowBoard"]:
         raise AcceptanceError(f"rack is not below the board at {width}px: {layout!r}")
-    if not all(layout[key] for key in ["hasRack", "hasActions", "hasPreview", "hasAwareness"]):
+    if not all(layout[key] for key in [
+        "hasRack", "hasActions", "hasPreview", "hasAwareness",
+        "hasViewerBench", "hasTurnDock", "hasActivityRail",
+    ]):
         raise AcceptanceError(f"game interaction state is missing at {width}px: {layout!r}")
+    if width >= 800 and (layout["activityTop"] != layout["stageTop"] or layout["activityRight"] > width):
+        raise AcceptanceError(f"desktop activity rail is not integrated beside the play stage: {layout!r}")
+    if width < 800 and (layout["activityTop"] < layout["stageBottom"] or layout["activityRight"] > width):
+        raise AcceptanceError(f"mobile activity rail is not stacked below the play stage: {layout!r}")
     if layout["duplicateIds"]:
         raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
     if width >= 800 and layout["boardOverflow"] != 0:
@@ -542,8 +556,8 @@ def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange:
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',')"
     )
     browser.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{first_tile}"])')
-    browser.wait("document.body.innerText.includes('Choose the exact position')")
-    browser.submit('form:has(input[value="MOVE_RACK_TILE"]):has(input[name="slot"][value="6"])')
+    browser.wait("document.body.innerText.includes('Tile selected')")
+    browser.submit('#player-rack form:has(input[value="SWAP_RACK_TILES"]):not(:has(input[value="' + first_tile + '"]))')
     browser.wait(
         f"Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',') !== {json.dumps(original_order)}"
     )
@@ -642,10 +656,10 @@ def run() -> None:
             alice.navigate(game_path)
             bob.navigate(game_path)
             alice.wait(
-                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-update:')"
+                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
             )
             bob.wait(
-                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-update:')"
+                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
             )
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
