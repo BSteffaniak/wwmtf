@@ -1,0 +1,40 @@
+name: Deploy Application
+
+"on":
+  workflow_dispatch:
+    inputs:
+      snapshot_before_deploy:
+        description: Stop the Machine and snapshot the volume before deploying
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+environment: production
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Snapshot production volume
+        if: inputs.snapshot_before_deploy
+        run: ./scripts/deploy.sh snapshot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Deploy one Machine
+        run: ./scripts/deploy.sh deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Verify canonical hostname
+        run: ./scripts/deploy.sh smoke
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

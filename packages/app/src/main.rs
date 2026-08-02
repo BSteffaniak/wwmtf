@@ -15,11 +15,14 @@ struct RuntimeConfig {
     port: u16,
     database_path: String,
     public_base_url: String,
+    production_mode: bool,
     development_mode: bool,
 }
 
 impl RuntimeConfig {
     fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let production_mode = std::env::var("WORDS_WITH_SPOUSES_PRODUCTION_MODE")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
         let development_mode = std::env::var("WORDS_WITH_SPOUSES_DEV_MODE")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
         let address = std::env::var("WORDS_WITH_SPOUSES_BIND_ADDRESS")
@@ -29,15 +32,14 @@ impl RuntimeConfig {
             .map(|value| value.parse::<u16>())
             .transpose()?
             .unwrap_or(8343);
-        let public_base_url =
-            std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").unwrap_or_else(|_| {
-                let host = if address == "0.0.0.0" {
-                    "127.0.0.1"
-                } else {
-                    address.as_str()
-                };
-                format!("http://{host}:{port}")
-            });
+        let public_base_url = std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL")
+            .unwrap_or_else(|_| format!("http://{address}:{port}"));
+        if production_mode && cfg!(feature = "insecure") {
+            return Err("the insecure feature may not run in production mode".into());
+        }
+        if production_mode && development_mode {
+            return Err("production mode and development mode are mutually exclusive".into());
+        }
         if development_mode && !cfg!(feature = "insecure") {
             return Err(
                 "WORDS_WITH_SPOUSES_DEV_MODE requires building with --features insecure".into(),
@@ -48,20 +50,34 @@ impl RuntimeConfig {
                 "the insecure feature may only run with WORDS_WITH_SPOUSES_DEV_MODE=true".into(),
             );
         }
-        if !development_mode
-            && std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").is_ok()
-            && !public_base_url.starts_with("https://")
-        {
-            return Err(
-                "WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https outside development mode".into(),
-            );
+        if production_mode {
+            if std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").is_err() {
+                return Err(
+                    "WORDS_WITH_SPOUSES_PUBLIC_BASE_URL is required in production mode".into(),
+                );
+            }
+            if !public_base_url.starts_with("https://") {
+                return Err(
+                    "WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https in production mode".into(),
+                );
+            }
         }
+        let database_path = match std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH") {
+            Ok(path) if !path.trim().is_empty() => path,
+            Ok(_) => return Err("WORDS_WITH_SPOUSES_DATABASE_PATH must not be empty".into()),
+            Err(_) if !production_mode => "words-with-spouses.db".to_string(),
+            Err(_) => {
+                return Err(
+                    "WORDS_WITH_SPOUSES_DATABASE_PATH is required in production mode".into(),
+                );
+            }
+        };
         Ok(Self {
             address,
             port,
-            database_path: std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH")
-                .unwrap_or_else(|_| "words-with-spouses.db".to_string()),
+            database_path,
             public_base_url,
+            production_mode,
             development_mode,
         })
     }
@@ -77,6 +93,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.address,
         config.port
     );
+    if !config.development_mode && !config.public_base_url.starts_with("https://") {
+        log::warn!("public base URL is not HTTPS; intended only for local development");
+    }
+    if config.production_mode {
+        log::info!("production mode enabled");
+    }
     if config.development_mode {
         log::warn!("development mode enabled: HTTP and non-secure cookies are allowed");
     } else if config.public_base_url.starts_with("https://") {

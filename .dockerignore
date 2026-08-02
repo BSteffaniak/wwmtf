@@ -1,0 +1,12 @@
+target
+.git
+.github
+.direnv
+.env
+.env.*
+!.env.example
+infra
+words-with-spouses-play-experience.md
+*.db
+*.db-shm
+*.db-wal

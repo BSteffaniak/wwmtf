@@ -1,0 +1,45 @@
+name: Deploy Infrastructure
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+environment: production
+
+concurrency:
+  group: deploy-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.TOFU_STATE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TOFU_STATE_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.10.9
+      - name: Write backend configuration
+        working-directory: infra/deploy
+        env:
+          BACKEND_HCL: ${{ secrets.TOFU_BACKEND_HCL }}
+        run: printf '%s' "$BACKEND_HCL" > backend.hcl
+      - name: Initialize
+        run: tofu init -backend-config=backend.hcl
+        working-directory: infra/deploy
+      - name: Check formatting
+        run: tofu fmt -check -recursive .
+        working-directory: infra/deploy
+      - name: Plan
+        run: tofu plan -out=tfplan
+        working-directory: infra/deploy
+      - name: Apply reviewed plan
+        run: tofu apply -auto-approve tfplan
+        working-directory: infra/deploy

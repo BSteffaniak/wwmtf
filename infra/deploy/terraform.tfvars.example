@@ -1,0 +1,18 @@
+cloudflare_api_token  = "use-TF_VAR_cloudflare_api_token-instead"
+cloudflare_account_id = "your-cloudflare-account-id"
+zone_name              = "hyperchad.dev"
+app_subdomain           = "wwmtf"
+fly_app_name            = "words-with-spouses"
+fly_ipv6_address         = "2a09:8280:1::15d:94b3:0"
+fly_ownership_txt        = "onx2065"
+
+# Shared zone-phase rulesets are opt-in. Inventory/import or coordinate existing
+# hyperchad.dev rules before setting this to true.
+manage_zone_rulesets = false
+
+# Creating a widget does not integrate Turnstile into the app by itself.
+manage_turnstile = false
+
+# Optional: set to a managed ruleset ID returned by the Cloudflare API and
+# available to this zone's plan before enabling shared zone rulesets.
+cloudflare_managed_ruleset_id = null

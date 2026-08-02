@@ -1,16 +1,17 @@
 # Deployment and Recovery
 
-Words with Spouses is currently designed for a private deployment behind a TLS-terminating reverse proxy. The application remains renderer-neutral; HTML/Actix is selected only by runtime wiring.
+Words with Spouses is designed for an internet deployment behind a TLS-terminating reverse proxy. The application remains renderer-neutral; HTML/Actix is selected only by runtime wiring.
 
 ## Runtime configuration
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
+| `WORDS_WITH_SPOUSES_PRODUCTION_MODE` | Production: yes (`true`) | Enables fail-closed production configuration checks. Mutually exclusive with development mode. |
 | `WORDS_WITH_SPOUSES_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
 | `WORDS_WITH_SPOUSES_PORT` | No; defaults to `8343` | Listener port. |
 | `WORDS_WITH_SPOUSES_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
 | `WORDS_WITH_SPOUSES_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
-| `WORDS_WITH_SPOUSES_PUBLIC_BASE_URL` | Production: yes operationally | Canonical HTTPS origin used by deployment/proxy configuration. The current runtime does not generate absolute links. |
+| `WORDS_WITH_SPOUSES_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration and generated invitation links. |
 | `RUST_LOG` | No | Logging filter. Logs must never include passwords, session/invitation tokens, racks, bags, or canonical event payloads. |
 
 The pinned `switchy_database_connection` Turso backend is local/file-backed and does not accept a Turso Cloud URL/token. A remote Turso deployment therefore requires a generic upstream `switchy` connection capability before this application may support `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`; do not add a backend-specific application bypass.
@@ -28,6 +29,8 @@ The session cookie carries only a random opaque token whose hash is persisted. C
 ## Startup and migrations
 
 The binary opens the configured database and runs all application code migrations before constructing or accepting traffic. A migration failure aborts startup. Application schema/query access remains builder-only through `switchy`.
+
+The production Fly deployment, volume/bootstrap commands, OpenTofu resources, backup commands, and launch checklist are documented in `PRODUCTION.md`.
 
 Before deploying a release with migrations:
 

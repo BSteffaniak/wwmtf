@@ -1,0 +1,11 @@
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+
+# Generated backend configuration
+backend.hcl

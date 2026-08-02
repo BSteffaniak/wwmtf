@@ -1,0 +1,48 @@
+app = "words-with-spouses"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  WORDS_WITH_SPOUSES_PRODUCTION_MODE = "true"
+  WORDS_WITH_SPOUSES_BIND_ADDRESS = "127.0.0.1"
+  WORDS_WITH_SPOUSES_PORT = "8343"
+  WORDS_WITH_SPOUSES_DATABASE_PATH = "/data/words-with-spouses.db"
+  WORDS_WITH_SPOUSES_PUBLIC_BASE_URL = "https://wwmtf.hyperchad.dev"
+  RUST_LOG = "info,moosicbox_middleware::api_logger=off"
+
+[[mounts]]
+  source = "wwmtf_data"
+  destination = "/data"
+  initial_size = "1gb"
+  snapshot_retention = 60
+  scheduled_snapshots = true
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 100
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "15s"
+    method = "GET"
+    path = "/health/ready"
+    timeout = "5s"
+
+    [http_service.checks.headers]
+      Host = "wwmtf.hyperchad.dev"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

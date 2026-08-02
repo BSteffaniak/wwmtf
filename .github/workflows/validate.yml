@@ -1,0 +1,57 @@
+name: Validate
+
+"on":
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component clippy,rustfmt
+      - name: Install validation tools
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
+        with:
+          tool: cargo-nextest@0.9.140,cargo-machete@0.9.2
+      - run: cargo fmt --check
+      - run: cargo check --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo nextest run --workspace --no-fail-fast
+      - run: cargo machete --with-metadata
+      - run: ./scripts/check-architecture.sh
+      - run: ./scripts/test-architecture-checks.sh
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.10.9
+      - name: Check OpenTofu formatting
+        run: tofu fmt -check -recursive .
+        working-directory: infra/deploy
+      - name: Check Fly configuration
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - run: flyctl config validate --config fly.toml
+      - name: Check nginx configuration
+        run: docker run --rm -v "$PWD/config/nginx.conf:/etc/nginx/nginx.conf:ro" nginx:1.28-bookworm nginx -t
+      - name: Initialize OpenTofu without production state
+        run: tofu init -backend=false
+        working-directory: infra/deploy
+      - name: Validate OpenTofu
+        run: tofu validate
+        working-directory: infra/deploy
+      - name: Build production container
+        run: docker build --tag words-with-spouses:validation .

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use hyperchad::{
     actions::ActionType,
-    renderer::{ResponseCookie, ResponseMetadata, View},
+    renderer::{Content, ResponseCookie, ResponseMetadata, View},
     router::{Container, RoutePath, RouteRequest, Router},
     shared_state_models::{
         CommandEnvelope, CommandId, IdempotencyKey, ParticipantId, PayloadBlob, Revision,
@@ -1113,6 +1113,30 @@ pub fn create_product_router(
     secure_cookies: bool,
 ) -> Router {
     let router = Router::new();
+    router.add_route_result("/health/live", |_request: RouteRequest| async move {
+        Ok(Content::Raw {
+            data: b"ok\n".to_vec().into(),
+            content_type: "text/plain; charset=utf-8".to_string(),
+        }) as Result<Content, Box<dyn std::error::Error>>
+    });
+    let readiness_database = database.clone();
+    router.add_route_result("/health/ready", move |_request: RouteRequest| {
+        let database = readiness_database.clone();
+        async move {
+            if !database
+                .table_exists("__words_with_spouses_migrations")
+                .await?
+                || !database.table_exists("game_journal").await?
+            {
+                return Err("application schema is not ready".into());
+            }
+            database.select("users").execute_first(&*database).await?;
+            Ok(Content::Raw {
+                data: b"ready\n".to_vec().into(),
+                content_type: "text/plain; charset=utf-8".to_string(),
+            }) as Result<Content, Box<dyn std::error::Error>>
+        }
+    });
     let dashboard_database = database.clone();
     router.add_route_result("/", move |request: RouteRequest| {
         let database = dashboard_database.clone();
@@ -2439,6 +2463,19 @@ mod tests {
         register,
     };
 
+    async fn test_database() -> Arc<dyn Database> {
+        let database: Arc<dyn Database> = Arc::from(
+            switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens"),
+        );
+        migrate_app(&*database).await.expect("migrations run");
+        database
+    }
+
     #[test]
     fn invitation_creation_returns_the_only_shareable_link_and_uses_display_name() {
         block_on(async {
@@ -3288,6 +3325,35 @@ mod tests {
                 accepted.contains("Your turn") || accepted.contains("Waiting for opponent"),
                 "{accepted}"
             );
+        });
+    }
+
+    #[test]
+    fn health_routes_report_process_and_database_readiness() {
+        block_on(async {
+            let database = test_database().await;
+            let dispatcher = Arc::new(crate::GameSharedStateDispatcher::new(database.clone()));
+            let router = create_product_router(
+                database,
+                dispatcher,
+                "csrf-test".to_string(),
+                "https://games.example.test".to_string(),
+                true,
+            );
+
+            let live = router
+                .navigate(("/health/live", RequestInfo::default()))
+                .await
+                .expect("liveness route resolves")
+                .expect("liveness returns content");
+            let ready = router
+                .navigate(("/health/ready", RequestInfo::default()))
+                .await
+                .expect("readiness route resolves")
+                .expect("readiness returns content");
+
+            assert!(matches!(live, Content::Raw { .. }));
+            assert!(matches!(ready, Content::Raw { .. }));
         });
     }
 
