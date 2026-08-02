@@ -1,24 +1,25 @@
 [package]
-authors = { workspace = true }
-categories = ["games", "web-programming"]
+authors     = { workspace = true }
+categories  = ["games", "web-programming"]
 description = "Renderer-neutral Words with Spouses application runtime"
-edition = { workspace = true }
-keywords = ["asynchronous", "game", "hyperchad", "word"]
-license = { workspace = true }
-name = "words_with_spouses_app"
-readme = { workspace = true }
-repository = { workspace = true }
-version = { workspace = true }
+edition     = { workspace = true }
+keywords    = ["asynchronous", "game", "hyperchad", "word"]
+license     = { workspace = true }
+name        = "words_with_spouses_app"
+readme      = { workspace = true }
+repository  = { workspace = true }
+version     = { workspace = true }
 
 [[bin]]
-name = "words-with-spouses"
-path = "src/main.rs"
+name              = "words-with-spouses"
+path              = "src/main.rs"
 required-features = ["actix"]
 
 [dependencies]
 argon2 = { workspace = true }
 async-trait = { workspace = true }
 env_logger = { workspace = true }
+flume = { workspace = true }
 futures-lite = { workspace = true }
 hyperchad = { workspace = true, features = [
     "actions",
@@ -44,7 +45,6 @@ hyperchad = { workspace = true, features = [
     "transformer",
     "transformer-models",
 ] }
-flume = { workspace = true }
 log = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }
@@ -62,12 +62,12 @@ words_with_spouses_game_domain = { workspace = true }
 futures-lite = { workspace = true }
 
 [features]
-default = ["actix"]
 actix = [
     "hyperchad/renderer-html-actix",
     "hyperchad/renderer-html-sse",
     "hyperchad/shared-state-models",
     "hyperchad/shared-state-transport",
 ]
+default = ["actix"]
 fail-on-warnings = ["hyperchad/fail-on-warnings"]
 insecure = ["hyperchad/renderer-vanilla-js-plugin-uuid-insecure"]

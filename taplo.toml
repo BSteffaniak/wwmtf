@@ -1,0 +1,15 @@
+exclude = [".direnv/**", "target/**"]
+include = [
+    ".cargo/**/*.toml",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "taplo.toml",
+    "packages/**/*.toml",
+]
+
+[formatting]
+align_entries  = true
+indent_string  = "    "
+reorder_arrays = false
+reorder_keys   = true

@@ -1,25 +1,25 @@
 [package]
-authors = { workspace = true }
-categories = ["game-development"]
+authors     = { workspace = true }
+categories  = ["game-development"]
 description = "Deterministic word-tile game domain"
-edition = { workspace = true }
-keywords = ["board-game", "domain", "game", "word"]
-license = { workspace = true }
-name = "words_with_spouses_game_domain"
-readme = { workspace = true }
-repository = { workspace = true }
-version = { workspace = true }
+edition     = { workspace = true }
+keywords    = ["board-game", "domain", "game", "word"]
+license     = { workspace = true }
+name        = "words_with_spouses_game_domain"
+readme      = { workspace = true }
+repository  = { workspace = true }
+version     = { workspace = true }
 
 [dependencies]
-serde = { workspace = true }
+serde     = { workspace = true }
 thiserror = { workspace = true }
-time = { workspace = true }
-uuid = { workspace = true }
+time      = { workspace = true }
+uuid      = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest   = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-default = []
+default          = []
 fail-on-warnings = []

@@ -1,35 +1,56 @@
 [workspace]
-members = [
-    "packages/app",
-    "packages/game_domain",
-]
+members  = ["packages/app", "packages/game_domain"]
 resolver = "3"
 
 [workspace.package]
-authors = ["Braden Steffaniak"]
-edition = "2024"
-license = "MPL-2.0"
-readme = "README.md"
+authors    = ["Braden Steffaniak"]
+edition    = "2024"
+license    = "MPL-2.0"
+readme     = "README.md"
 repository = "https://github.com/bradenst/words-with-spouses"
-version = "0.1.0"
+version    = "0.1.0"
 
 [workspace.dependencies]
+argon2 = { version = "0.5.3", default-features = false, features = [
+    "alloc",
+    "password-hash",
+    "rand",
+] }
 async-trait = { version = "0.1.89", default-features = false }
-argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "password-hash", "rand"] }
-env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
+env_logger = { version = "0.11.11", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-futures-lite = { version = "2.6.1", default-features = false, features = ["std"] }
+futures-lite = { version = "2.6.1", default-features = false, features = [
+    "std",
+] }
 hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "bcda87279b176f2f30fd1476dd923efa3fcb6d46", default-features = false }
-log = { version = "0.4.33", default-features = false, features = ["release_max_level_trace"] }
+log = { version = "0.4.33", default-features = false, features = [
+    "release_max_level_trace",
+] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
-rand_core = { version = "0.6.4", default-features = false, features = ["getrandom"] }
-serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+rand_core = { version = "0.6.4", default-features = false, features = [
+    "getrandom",
+] }
+serde = { version = "1.0.229", default-features = false, features = [
+    "derive",
+    "std",
+] }
+serde_json = { version = "1.0.151", default-features = false, features = [
+    "std",
+] }
 sha2 = { version = "0.11.0", default-features = false }
 switchy_database = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 switchy_database_connection = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 switchy_schema = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 thiserror = { version = "2.0.19", default-features = false }
-time = { version = "0.3.54", default-features = false, features = ["serde", "std"] }
-uuid = { version = "1.24.0", default-features = false, features = ["serde", "v4"] }
+time = { version = "0.3.54", default-features = false, features = [
+    "serde",
+    "std",
+] }
+uuid = { version = "1.24.0", default-features = false, features = [
+    "serde",
+    "v4",
+] }
 words_with_spouses_game_domain = { path = "packages/game_domain" }
