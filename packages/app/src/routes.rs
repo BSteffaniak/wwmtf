@@ -643,8 +643,7 @@ fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
             .join(", ")
     });
     container! {
-        section id="draft-preview" min-height="82px" background=#f8f7f2 border=(("#ded8c9", 1))
-            border-radius="12px" padding="14px" gap="6px" {
+        section id="draft-preview" min-height="72px" padding-y="10px" padding-x="4px" gap="5px" {
             h2 { "Draft preview" }
             @if let Some(analysis) = &feedback.analysis {
                 span color=#3f5735 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
@@ -1430,8 +1429,7 @@ fn dashboard_request_error() -> ActionType {
 
 fn start_game_component() -> Container {
     container! {
-        section id="new-game-actions" width="100%" background=#ffffff
-            border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="18px" {
+        section id="new-game-actions" width="100%" gap="14px" {
             div gap="5px" {
                 h2 { "Start a game" }
                 span color=#5d6258 { "Challenge a username or make a one-time private invite." }
@@ -1521,7 +1519,7 @@ fn dashboard_page_content(
                     }
                 }
                 section id="active-games" data-dashboard-order="1" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="18px" padding="24px" gap="14px" {
+                    border-radius="16px" padding="24px" gap="4px" {
                     h2 { "Games" }
                     @if dashboard.projection.games.is_empty() {
                         div gap="8px" {
@@ -1547,7 +1545,7 @@ fn dashboard_page_content(
                         };
                         div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
-                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
+                            border-bottom=(("#e3ded2", 1)) padding-y=16 padding-x=4 gap="12px" {
                             div gap="3px" {
                                 anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_username.as_str()) }
                                 span color=#3f5735 font-weight=bold { (state) }
@@ -1558,7 +1556,7 @@ fn dashboard_page_content(
                     }
                 }
                 section id="pending-games" data-dashboard-order="2" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="18px" padding="24px" gap="14px" {
+                    border-radius="16px" padding="24px" gap="4px" {
                     div gap="5px" {
                         h2 { "Challenges & invitations" }
                         span color=#5d6258 { "Invitations are private and single-use. Old invite secrets cannot be displayed again." }
@@ -1582,7 +1580,7 @@ fn dashboard_page_content(
                         };
                         div id=(format!("pending-item-{}", item.id)) class="pending-item" data-direction=(item.direction.as_str())
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
-                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
+                            border-bottom=(("#e3ded2", 1)) padding-y=14 padding-x=4 gap="12px" {
                             div gap="3px" {
                                 span font-weight=bold { (heading) }
                                 @if item.kind == "INVITATION" && item.id != created_invitation_id {
@@ -1622,12 +1620,16 @@ fn dashboard_page_content(
                         }
                     }
                 }
-                main id="dashboard-main" data-dashboard-order="3" direction="column" gap="24px" align-items="start" {
-                    (start_game_component())
-                    section id="score-totals" width="100%" background=#ffffff
-                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="10px" {
-                        h2 { "Score history" }
-                        span color=#5d6258 { (totals) }
+                main id="dashboard-main" data-dashboard-order="3" direction="column" gap="16px" align-items="start" {
+                    details id="new-game-panel" width="100%" background=#ffffff border=(("#ded8c9", 1))
+                        border-radius="16px" padding="20px" {
+                        summary cursor="pointer" font-weight=bold { "New game" }
+                        div padding-top="14px" { (start_game_component()) }
+                    }
+                    details id="score-totals" width="100%" background=#ffffff border=(("#ded8c9", 1))
+                        border-radius="16px" padding="20px" {
+                        summary cursor="pointer" font-weight=bold { "Score history" }
+                        span padding-top="12px" color=#5d6258 { (totals) }
                     }
                 }
             }
@@ -1716,7 +1718,7 @@ fn visual_board(
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
-            span color=#5d6258 { "Board key: gold tiles are committed; faint blue dots mark tiles you played; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
+            span font-size="12px" color=#777b73 { "Open squares show their premium labels. Draft tiles are blue; your played tiles have a faint blue dot." }
             div overflow-x="auto" {
                 div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1822,13 +1824,13 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" background=#ffffff border=(("#ded8c9", 1))
-            border-radius="16px" padding="18px" gap="10px" {
+        section id="player-rack" padding-y="14px" gap="10px" {
             div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                h2 { "Your rack" }
-                span color=#777b73 font-size="13px" { "Select two tiles to swap them." }
+                span font-weight=bold { "Your rack" }
+                span color=#777b73 font-size="12px" { "Select two tiles to swap" }
             }
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
+            div class="rack-tray" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px"
+                background=#6f5a40 border=(("#5f4a34", 2)) border-radius="10px" padding-y="10px" padding-x="12px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
@@ -1904,10 +1906,9 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     container! {
-        section id="turn-actions" class="turn-composer" min-height="126px" background=#ffffff border=(("#ded8c9", 1))
-            border-radius="16px" padding="18px" gap="12px" {
+        section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="10px" {
             div direction="row" justify-content="space-between" align-items="center" {
-                h2 { "Turn controls" }
+                span font-weight=bold { "Your move" }
                 span color=#777b73 font-size="13px" { "Changes are saved as you compose." }
             }
             @if draft.mode == TurnMode::Exchange {
@@ -2053,8 +2054,7 @@ fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
         format!("{}’s turn", game.opponent_username)
     };
     container! {
-        section id="game-awareness" background=#ffffff border=(("#ded8c9", 1))
-            border-radius="16px" padding="18px" gap="10px" {
+        section id="game-awareness" padding-y="14px" padding-x="6px" gap="8px" {
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
                 justify-content="space-between" align-items="center" gap="14px" {
                 div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="22px" {
@@ -2156,8 +2156,7 @@ fn rules_component(game: &AuthorizedGamePage) -> Container {
     let full_rack_bonus = game.rules.full_rack_bonus;
     let scoreless_turn_limit = game.rules.scoreless_turn_limit;
     container! {
-        details id="game-rules" width="100%" background=#ffffff border=(("#ded8c9", 1))
-            border-radius="14px" padding="16px" {
+        details id="game-rules" width="100%" {
             summary cursor="pointer" font-weight=bold { "Rules and board key" }
             div padding-top="12px" gap="9px" color=#5d6258 {
                 span { "Place tiles in one row or column to form connected words. The opening play must cover the center star. All formed words must be accepted by this game’s pinned dictionary." }
@@ -2214,39 +2213,44 @@ fn visual_game_page(
             padding-y=20 padding-x=10 gap="18px" {
             header id="game-header" width="100%" max-width="800px"
                 direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
-                background=#ffffff border=(("#ded8c9", 1)) border-radius="16px"
-                padding-y=18 padding-x=22 gap="14px" {
+                padding-y="10px" padding-x="6px" gap="14px" {
                 div gap="3px" {
                     anchor href="/" color=#526243 { "← Games" }
                     h1 { "Game " (short_game_id) }
                 }
                 (viewer_turn)
             }
-            main id="game-layout" width="100%" max-width="800px" gap="14px" {
+            main id="game-layout" class="game-workspace" width="100%" max-width="800px"
+                background=#fbfaf6 border=(("#d8d1c1", 1)) border-radius="18px"
+                padding-y="18px" padding-x="18px" gap="0px" {
                 (awareness)
                 (turn_feedback_view)
                 @if let Some(completed_summary) = completed_summary { (completed_summary) }
-                section id="board-card" width="100%" background=#ffffff
-                    border=(("#ded8c9", 1)) border-radius="16px" padding="14px" { (board) }
-                (rack)
-                section id="composer-card" width="100%" gap="10px" {
-                    @if !game.completed && game.view.active_player == game.viewer_player {
-                        (draft_preview)
-                        (actions)
-                    } @else if !game.completed {
-                        section id="turn-actions" class="turn-composer" min-height="126px"
-                            background=#ffffff border=(("#ded8c9", 1)) border-radius="16px" padding="18px" gap="8px" {
-                            h2 { "Turn controls" }
-                            span color=#777b73 { "Your rack is ready. The board will update when your opponent plays." }
+                section id="board-region" width="100%" padding-y="16px" border-top=(("#e3ded2", 1)) {
+                    (board)
+                }
+                section id="play-console" width="100%" border-top=(("#e3ded2", 1)) gap="0px" {
+                    (rack)
+                    section id="composer-card" width="100%" border-top=(("#e3ded2", 1)) gap="8px" {
+                        @if !game.completed && game.view.active_player == game.viewer_player {
+                            (draft_preview)
+                            (actions)
+                        } @else if !game.completed {
+                            section id="turn-actions" class="turn-composer" min-height="104px" padding-y="14px" gap="8px" {
+                                span font-weight=bold { "Waiting for " (game.opponent_username.as_str()) }
+                                span color=#777b73 { "Your rack is ready. The board will update after their move." }
+                            }
                         }
                     }
                 }
-                details width="100%" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="14px" padding="16px" {
-                    summary cursor="pointer" font-weight=bold { "Move history" }
-                    (history)
+                section id="game-reference" width="100%" border-top=(("#e3ded2", 1))
+                    padding-top="14px" gap="10px" {
+                    details width="100%" {
+                        summary cursor="pointer" font-weight=bold { "Move history" }
+                        (history)
+                    }
+                    (rules_component(game))
                 }
-                (rules_component(game))
             }
         }
     }
@@ -2760,8 +2764,8 @@ mod tests {
             assert!(!page.contains("name=\"command\" value=\"PASS\""));
             assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
-            assert!(page.contains("Board key: gold tiles are committed"));
-            assert!(page.contains("faint blue dots mark tiles you played"));
+            assert!(page.contains("Open squares show their premium labels"));
+            assert!(page.contains("faint blue dot"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
             assert!(page.contains("DL"));
