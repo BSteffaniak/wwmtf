@@ -976,9 +976,8 @@ async fn game_turn_route(
 
 fn turn_feedback(message: Option<&str>) -> Container {
     container! {
-        section id="turn-feedback" width="100%" min-height="48px"
-            {
-            @if let Some(message) = message {
+        @if let Some(message) = message {
+            section id="turn-feedback" width="100%" {
                 div id="game-error" background=#fff3e8 border=(("#e2b98f", 1))
                     border-radius="12px" padding="14px" {
                     span color=#7a3f16 { (message) }
@@ -1723,10 +1722,14 @@ fn visual_board(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    let board_grid_width = u32::from(game.rules.board_size) * 44
+        + u32::from(game.rules.board_size.saturating_sub(1)) * 2;
+    let board_frame_width = board_grid_width + 12;
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="8px" {
             div overflow-x="auto" {
-                div width="720px" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
+                div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
+                    width=(board_frame_width) background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -2324,10 +2327,10 @@ fn visual_game_page(
                 align-items="center" gap="6px" {
                 (opponent_hud)
                 section id="play-stage" class="board-platform" width="800px" max-width="100%"
-                    overflow-x="hidden" background=#714b2b border=(("#3c2819", 8))
+                    align-items="center" overflow-x="hidden" background=#714b2b border=(("#3c2819", 8))
                     border-radius="24px" padding-y="14px" padding-x="14px" gap="8px" {
                     (turn_feedback_view)
-                    section id="board-region" width="100%" background=#173d2c
+                    section id="board-region" width="730px" max-width="100%" background=#173d2c
                         border=(("#9b7041", 5)) border-radius="16px"
                         padding-y="12px" padding-x="9px" {
                         (board)
@@ -2840,7 +2843,7 @@ mod tests {
             assert!(page.contains("move-history"));
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
-            assert!(page.contains("id=\"turn-feedback\""));
+            assert!(!page.contains("id=\"turn-feedback\""));
             assert!(!page.contains("draft_revision="));
             let mut current_draft_request = RouteRequest::from_path(
                 &format!("/games/{game_id}?draft_revision=1"),
@@ -2862,6 +2865,7 @@ mod tests {
                 .display_to_string(false, false)
                 .expect("stale game renders");
             assert!(stale_page.contains("The board changed while you were composing"));
+            assert!(stale_page.contains("id=\"turn-feedback\""));
             assert!(stale_page.contains("your rack order was preserved"));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
@@ -2895,6 +2899,9 @@ mod tests {
             assert!(page.contains("open-square"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
+            assert!(page.contains("data-board-grid-width=\"688\""));
+            assert!(page.contains("data-board-frame-width=\"700\""));
+            assert!(!page.contains("width:720px"));
             assert!(page.contains("DL"));
             assert!(page.contains("TW"));
             assert!(page.contains("eligible-square-highlight"));
