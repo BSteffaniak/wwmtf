@@ -643,8 +643,8 @@ fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
             .join(", ")
     });
     container! {
-        section id="draft-preview" background=#ffffff border=(("#ded8c9", 1))
-            border-radius="16px" padding="18px" gap="8px" {
+        section id="draft-preview" min-height="82px" background=#f8f7f2 border=(("#ded8c9", 1))
+            border-radius="12px" padding="14px" gap="6px" {
             h2 { "Draft preview" }
             @if let Some(analysis) = &feedback.analysis {
                 span color=#3f5735 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
@@ -974,7 +974,7 @@ async fn game_turn_route(
 
 fn turn_feedback(message: Option<&str>) -> Container {
     container! {
-        section id="turn-feedback" width="100%" max-width="1120px"
+        section id="turn-feedback" width="100%" min-height="48px"
             {
             @if let Some(message) = message {
                 div id="game-error" background=#fff3e8 border=(("#e2b98f", 1))
@@ -1436,10 +1436,12 @@ fn start_game_component() -> Container {
                 h2 { "Start a game" }
                 span color=#5d6258 { "Challenge a username or make a one-time private invite." }
             }
-            div id="dashboard-action-progress" hidden background=#e8f1e3 border=(("#a9bf9c", 1))
-                border-radius="10px" padding="12px" { span { "Working…" } }
-            div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
-                border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
+            div id="dashboard-action-status" min-height="48px" {
+                div id="dashboard-action-progress" hidden background=#e8f1e3 border=(("#a9bf9c", 1))
+                    border-radius="10px" padding="12px" { span { "Working…" } }
+                div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
+                    border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
+            }
             form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
                 fx-http-before-request=(dashboard_request_before())
                 fx-http-after-request=(dashboard_request_after())
@@ -1518,15 +1520,44 @@ fn dashboard_page_content(
                         span overflow-wrap="anywhere" font-weight=bold { (token) }
                     }
                 }
-                main id="dashboard-main" direction="column" gap="24px" align-items="start" {
-                    (start_game_component())
-                    section id="score-totals" width="100%" background=#ffffff
-                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="10px" {
-                        h2 { "Score history" }
-                        span color=#5d6258 { (totals) }
+                section id="active-games" data-dashboard-order="1" background=#ffffff border=(("#ded8c9", 1))
+                    border-radius="18px" padding="24px" gap="14px" {
+                    h2 { "Games" }
+                    @if dashboard.projection.games.is_empty() {
+                        div gap="8px" {
+                            h3 { "Your first game starts here" }
+                            span color=#777b73 { "Challenge someone by username or create a private link to send them." }
+                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a private game" }
+                        }
+                    }
+                    @for game in &dashboard.projection.games {
+                        @let href = format!("/games/{}", game.game_id);
+                        @let state = if game.status == "COMPLETED" {
+                            if game.winner_user_id.as_deref() == Some(user_id) {
+                                "You won"
+                            } else if game.winner_user_id.is_none() {
+                                "Tie game"
+                            } else {
+                                "You lost"
+                            }
+                        } else if game.active_player_user_id.as_deref() == Some(user_id) {
+                            "Your turn"
+                        } else {
+                            "Waiting for opponent"
+                        };
+                        div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
+                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
+                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
+                            div gap="3px" {
+                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_username.as_str()) }
+                                span color=#3f5735 font-weight=bold { (state) }
+                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_username.as_str()) }
+                            }
+                            span color=#777b73 { (game.latest_activity.as_str()) }
+                        }
                     }
                 }
-                section id="pending-games" background=#ffffff border=(("#ded8c9", 1))
+                section id="pending-games" data-dashboard-order="2" background=#ffffff border=(("#ded8c9", 1))
                     border-radius="18px" padding="24px" gap="14px" {
                     div gap="5px" {
                         h2 { "Challenges & invitations" }
@@ -1591,41 +1622,12 @@ fn dashboard_page_content(
                         }
                     }
                 }
-                section id="active-games" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="18px" padding="24px" gap="14px" {
-                    h2 { "Games" }
-                    @if dashboard.projection.games.is_empty() {
-                        div gap="8px" {
-                            h3 { "Your first game starts here" }
-                            span color=#777b73 { "Challenge someone by username or create a private link to send them." }
-                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a private game" }
-                        }
-                    }
-                    @for game in &dashboard.projection.games {
-                        @let href = format!("/games/{}", game.game_id);
-                        @let state = if game.status == "COMPLETED" {
-                            if game.winner_user_id.as_deref() == Some(user_id) {
-                                "You won"
-                            } else if game.winner_user_id.is_none() {
-                                "Tie game"
-                            } else {
-                                "You lost"
-                            }
-                        } else if game.active_player_user_id.as_deref() == Some(user_id) {
-                            "Your turn"
-                        } else {
-                            "Waiting for opponent"
-                        };
-                        div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
-                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
-                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
-                            div gap="3px" {
-                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_username.as_str()) }
-                                span color=#3f5735 font-weight=bold { (state) }
-                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_username.as_str()) }
-                            }
-                            span color=#777b73 { (game.latest_activity.as_str()) }
-                        }
+                main id="dashboard-main" data-dashboard-order="3" direction="column" gap="24px" align-items="start" {
+                    (start_game_component())
+                    section id="score-totals" width="100%" background=#ffffff
+                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="10px" {
+                        h2 { "Score history" }
+                        span color=#5d6258 { (totals) }
                     }
                 }
             }
@@ -1820,8 +1822,12 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" gap="10px" {
-            h2 { "Your rack" }
+        section id="player-rack" background=#ffffff border=(("#ded8c9", 1))
+            border-radius="16px" padding="18px" gap="10px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
+                h2 { "Your rack" }
+                span color=#777b73 font-size="13px" { "Select two tiles to swap them." }
+            }
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
@@ -1891,14 +1897,19 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     .into()
 }
 
+#[allow(clippy::too_many_lines)]
 fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let turn_action = format!("/games/{}/turn", game.game_id);
     let compose_action = format!("/games/{}/compose", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     container! {
-        section id="turn-actions" class="turn-composer" background=#ffffff border=(("#ded8c9", 1))
+        section id="turn-actions" class="turn-composer" min-height="126px" background=#ffffff border=(("#ded8c9", 1))
             border-radius="16px" padding="18px" gap="12px" {
+            div direction="row" justify-content="space-between" align-items="center" {
+                h2 { "Turn controls" }
+                span color=#777b73 font-size="13px" { "Changes are saved as you compose." }
+            }
             @if draft.mode == TurnMode::Exchange {
                 span font-weight=bold { (draft.exchange_tiles.len()) " tile(s) selected for exchange." }
                 div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
@@ -2042,40 +2053,46 @@ fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
         format!("{}’s turn", game.opponent_username)
     };
     container! {
-        section id="game-awareness" gap="10px" {
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
-                div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
-                    span color=#777b73 { (game.viewer_username.as_str()) " (you)" }
-                    span font-size="26px" font-weight=bold { (viewer_score) }
+        section id="game-awareness" background=#ffffff border=(("#ded8c9", 1))
+            border-radius="16px" padding="18px" gap="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+                justify-content="space-between" align-items="center" gap="14px" {
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="22px" {
+                    div gap="2px" {
+                        span color=#777b73 font-size="13px" { (game.viewer_username.as_str()) " (you)" }
+                        span font-size="24px" font-weight=bold { (viewer_score) }
+                    }
+                    div gap="2px" {
+                        span color=#777b73 font-size="13px" { (game.opponent_username.as_str()) }
+                        span font-size="24px" font-weight=bold { (opponent_score) }
+                    }
                 }
-                div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
-                    span color=#777b73 { (game.opponent_username.as_str()) }
-                    span font-size="26px" font-weight=bold { (opponent_score) }
+                div gap="4px" align-items="end" {
+                    span id="named-turn-status" color=#3f5735 font-weight=bold { (turn) }
+                    div id="live-status" color=#777b73 font-size="12px" {
+                        span id="live-status-connecting"
+                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
+                            "Live updates: connecting…"
+                        }
+                        span id="live-status-connected" hidden
+                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
+                            "Live updates: connected"
+                        }
+                        span hidden
+                            fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                        span id="live-status-reconnecting" hidden
+                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
+                            "Live updates: reconnecting…"
+                        }
+                        span id="live-status-disconnected" hidden
+                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
+                            "Live updates: disconnected. Retrying automatically."
+                        }
+                    }
                 }
             }
-            span id="named-turn-status" color=#3f5735 font-weight=bold { (turn) }
             @if let Some(latest) = &game.latest_action {
-                span id="latest-game-action" color=#5d6258 { "Latest: " (latest.as_str()) }
-            }
-            div id="live-status" color=#5d6258 {
-                span id="live-status-connecting"
-                    fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
-                    "Live updates: connecting…"
-                }
-                span id="live-status-connected" hidden
-                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
-                    "Live updates: connected"
-                }
-                span hidden
-                    fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                span id="live-status-reconnecting" hidden
-                    fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
-                    "Live updates: reconnecting…"
-                }
-                span id="live-status-disconnected" hidden
-                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
-                    "Live updates: disconnected. Retrying automatically."
-                }
+                span id="latest-game-action" color=#5d6258 font-size="13px" { "Latest: " (latest.as_str()) }
             }
         }
     }
@@ -2195,7 +2212,7 @@ fn visual_game_page(
             direction="column" align-items="center"
             min-height="100vh" background=#f4f1e8 color=#293126
             padding-y=20 padding-x=10 gap="18px" {
-            header id="game-header" width="100%" max-width="760px"
+            header id="game-header" width="100%" max-width="800px"
                 direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                 background=#ffffff border=(("#ded8c9", 1)) border-radius="16px"
                 padding-y=18 padding-x=22 gap="14px" {
@@ -2205,19 +2222,23 @@ fn visual_game_page(
                 }
                 (viewer_turn)
             }
-            (turn_feedback_view)
-            main id="game-layout" width="100%" max-width="760px" gap="16px" {
+            main id="game-layout" width="100%" max-width="800px" gap="14px" {
                 (awareness)
+                (turn_feedback_view)
                 @if let Some(completed_summary) = completed_summary { (completed_summary) }
-                @if !game.completed && game.view.active_player == game.viewer_player { (draft_preview) }
                 section id="board-card" width="100%" background=#ffffff
-                    border=(("#ded8c9", 1)) border-radius="18px" padding="14px" { (board) }
+                    border=(("#ded8c9", 1)) border-radius="16px" padding="14px" { (board) }
                 (rack)
-                @if !game.completed && game.view.active_player == game.viewer_player { (actions) }
-                @else if !game.completed {
-                    section id="turn-composer" background=#ffffff border=(("#ded8c9", 1))
-                        border-radius="16px" padding="18px" {
-                        span color=#777b73 { "Your rack is ready. The board will update when your opponent plays." }
+                section id="composer-card" width="100%" gap="10px" {
+                    @if !game.completed && game.view.active_player == game.viewer_player {
+                        (draft_preview)
+                        (actions)
+                    } @else if !game.completed {
+                        section id="turn-actions" class="turn-composer" min-height="126px"
+                            background=#ffffff border=(("#ded8c9", 1)) border-radius="16px" padding="18px" gap="8px" {
+                            h2 { "Turn controls" }
+                            span color=#777b73 { "Your rack is ready. The board will update when your opponent plays." }
+                        }
                     }
                 }
                 details width="100%" background=#ffffff border=(("#ded8c9", 1))
@@ -2684,6 +2705,17 @@ mod tests {
             assert!(dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
             assert!(dashboard.contains("dashboard-action-progress"));
             assert!(dashboard.contains("dashboard-action-error"));
+            assert!(dashboard.contains("dashboard-action-status"));
+            let active_position = dashboard
+                .find("id=\"active-games\"")
+                .expect("games section");
+            let pending_position = dashboard
+                .find("id=\"pending-games\"")
+                .expect("pending section");
+            let actions_position = dashboard
+                .find("id=\"dashboard-main\"")
+                .expect("actions section");
+            assert!(active_position < pending_position && pending_position < actions_position);
             assert!(!dashboard.contains("data-shared-state-refresh-"));
 
             let mut game_request =
@@ -2713,6 +2745,7 @@ mod tests {
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
+            assert!(page.contains("composer-card"));
             assert!(page.contains("alice"));
             assert!(page.contains("bob"));
             assert!(page.contains("named-turn-status"));
