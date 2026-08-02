@@ -228,8 +228,6 @@ struct ComposeTurnForm {
     y: Option<u8>,
     #[serde(default)]
     letter: Option<char>,
-    #[serde(default)]
-    slot: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -707,7 +705,7 @@ async fn game_compose_route(
     if !viewer_turn
         && !matches!(
             form.action.as_str(),
-            "PICK_RACK_TILE" | "MOVE_RACK_TILE" | "CANCEL_MODE"
+            "PICK_RACK_TILE" | "SWAP_RACK_TILES" | "CANCEL_MODE"
         )
     {
         return draft_error_page(
@@ -817,12 +815,27 @@ async fn game_compose_route(
                 return draft_error_page(&game, &draft, "That tile is not in your rack.");
             }
             draft.rack_tile = Some(tile_id);
+            draft.selected_tile = Some(tile_id);
         }
-        "MOVE_RACK_TILE" => {
-            let (Some(tile_id), Some(slot)) = (draft.rack_tile, form.slot) else {
-                return draft_error_page(&game, &draft, "Choose a tile and a rack position.");
+        "SWAP_RACK_TILES" => {
+            let selected_tile = draft.rack_tile.or(draft.selected_tile);
+            let (Some(selected_tile), Some(target_tile)) = (selected_tile, form.tile_id) else {
+                return draft_error_page(&game, &draft, "Choose two rack tiles to swap.");
             };
-            let order = crate::move_tile_to_slot(&game.rack_order, TileId::new(tile_id), slot);
+            if selected_tile == target_tile {
+                draft.rack_tile = Some(selected_tile);
+                draft.selected_tile = Some(selected_tile);
+                return visual_game_page(&game, &draft, None);
+            }
+            if !game.rack_order.contains(&selected_tile) || !game.rack_order.contains(&target_tile)
+            {
+                return draft_error_page(&game, &draft, "That tile is not in your rack.");
+            }
+            let order = crate::swap_rack_tiles(
+                &game.rack_order,
+                TileId::new(selected_tile),
+                TileId::new(target_tile),
+            );
             if crate::save_rack_order(
                 database,
                 game.game_id,
@@ -836,6 +849,7 @@ async fn game_compose_route(
                 return draft_error_page(&game, &draft, "Your rack order could not be saved.");
             }
             draft.rack_tile = None;
+            draft.selected_tile = None;
             let game =
                 match load_authorized_game_page(database, &request.cookies, game_id, now).await {
                     Ok(game) => game,
@@ -1795,12 +1809,14 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
-                    @let selected = draft.selected_tile == Some(*tile_id);
+                    @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
                     @let exchange_selected = draft.exchange_tiles.contains(tile_id);
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
                     @if can_compose || draft.mode == TurnMode::Play {
                         @let rack_action = if draft.mode == TurnMode::Exchange {
                             "TOGGLE_EXCHANGE"
+                        } else if draft.rack_tile.is_some() || draft.selected_tile.is_some() {
+                            "SWAP_RACK_TILES"
                         } else if can_compose {
                             "CHOOSE_TILE"
                         } else {
@@ -1827,30 +1843,10 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     }
                 }
             }
-            @if draft.rack_tile.is_some() {
-                span color=#3f5735 font-weight=bold { "Choose the exact position for the selected rack tile:" }
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="5px" {
-                    @for slot in 0..game.rack_order.len() {
-                        form hx-post=(action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "MOVE_RACK_TILE"))
-                            input type=hidden name="slot" value=(slot);
-                            button type=submit padding-y=6 padding-x=9 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="7px" cursor=pointer { (slot + 1) }
-                        }
-                    }
-                }
+            @if draft.rack_tile.is_some() || draft.selected_tile.is_some() {
+                span color=#3f5735 font-weight=bold { "Tile selected — choose another rack tile to swap positions, or choose a board square." }
             } @else if draft.mode == TurnMode::Play {
-                span color=#777b73 { "Arrange any tile into an exact rack position:" }
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="5px" {
-                    @for tile_id in &game.rack_order {
-                        form hx-post=(action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "PICK_RACK_TILE"))
-                            input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit padding-y=5 padding-x=8 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="7px" cursor=pointer { "Tile " (tile_id) }
-                        }
-                    }
-                }
+                span color=#777b73 { "Select a rack tile to play it or swap it with another tile." }
             }
             @if let Some(tile_id) = draft.selected_tile {
                 @let selected_blank = game.view.rack.iter().any(|(id, letter, _)| *id == tile_id && *letter == ' ');

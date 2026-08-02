@@ -57,7 +57,7 @@ pub use projections::{
     user_score_totals,
 };
 pub use rack_preferences::{
-    RackPreferenceError, load_rack_order, move_tile_to_slot, reconcile_rack_order, save_rack_order,
+    RackPreferenceError, load_rack_order, reconcile_rack_order, save_rack_order, swap_rack_tiles,
 };
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,

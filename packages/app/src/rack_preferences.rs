@@ -107,18 +107,17 @@ pub enum RackPreferenceError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// Moves one rack tile into an exact zero-based slot.
+/// Swaps two rack tiles while preserving every other position.
 #[must_use]
-pub fn move_tile_to_slot(order: &[u16], tile_id: TileId, slot: usize) -> Vec<u16> {
+pub fn swap_rack_tiles(order: &[u16], first: TileId, second: TileId) -> Vec<u16> {
     let mut order = order.to_vec();
-    let Some(index) = order
-        .iter()
-        .position(|candidate| *candidate == tile_id.get())
-    else {
+    let Some(first_index) = order.iter().position(|tile_id| *tile_id == first.get()) else {
         return order;
     };
-    let tile_id = order.remove(index);
-    order.insert(slot.min(order.len()), tile_id);
+    let Some(second_index) = order.iter().position(|tile_id| *tile_id == second.get()) else {
+        return order;
+    };
+    order.swap(first_index, second_index);
     order
 }
 
@@ -243,11 +242,14 @@ mod tests {
     }
 
     #[test]
-    fn exact_slot_move_preserves_membership() {
+    fn tile_swap_preserves_membership_and_other_positions() {
         assert_eq!(
-            move_tile_to_slot(&[1, 2, 3, 4], TileId::new(2), 3),
-            [1, 3, 4, 2]
+            swap_rack_tiles(&[1, 2, 3, 4], TileId::new(2), TileId::new(4)),
+            [1, 4, 3, 2]
         );
-        assert_eq!(move_tile_to_slot(&[1, 2], TileId::new(9), 0), [1, 2]);
+        assert_eq!(
+            swap_rack_tiles(&[1, 2], TileId::new(9), TileId::new(1)),
+            [1, 2]
+        );
     }
 }
