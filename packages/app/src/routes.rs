@@ -11,7 +11,7 @@ use hyperchad::{
         TransportInbound, TransportOutbound,
     },
     shared_state_transport::{AuthenticatedTransportContext, SharedStateTransportDispatcher as _},
-    template::container,
+    template::{LayoutOverflow, container},
 };
 use serde::Deserialize;
 use switchy_database::Database;
@@ -746,9 +746,9 @@ async fn game_turn_route(
 fn turn_feedback(message: Option<&str>) -> Container {
     container! {
         section id="turn-feedback" width="100%" max-width="1120px"
-            margin-left="auto" margin-right="auto" {
+            {
             @if let Some(message) = message {
-                div id="game-error" background=#fff3e8 border="1px solid #e2b98f"
+                div id="game-error" background=#fff3e8 border=(("#e2b98f", 1))
                     border-radius="12px" padding="14px" {
                     span color=#7a3f16 { (message) }
                 }
@@ -790,14 +790,14 @@ fn turn_rejection(reason: &str) -> View {
 fn invitation_joined_page(game_id: words_with_spouses_game_domain::GameId) -> Container {
     let game_href = format!("/games/{game_id}");
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
-            main width="100%" max-width="560px" margin-left="auto" margin-right="auto"
-                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="16px" {
+        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
+            main width="100%" max-width="560px"
+                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="16px" {
                 span color=#3f5735 font-weight=bold { "INVITATION ACCEPTED" }
                 h1 { "Your game is ready" }
                 span color=#5d6258 { "The invitation was redeemed and the game was created." }
-                anchor href=(game_href) color=#ffffff background=#526243 border="1px solid #526243"
-                    border-radius="10px" padding="13px 18px" { "Open game" }
+                anchor href=(game_href) color=#ffffff background=#526243 border=(("#526243", 1))
+                    border-radius="10px" padding-y=13 padding-x=18 { "Open game" }
             }
         }
     }
@@ -808,9 +808,9 @@ fn invitation_page(invitation_token: &str, signed_in: bool) -> Container {
     let login_href = format!("/login?invite={invitation_token}");
     let register_href = format!("/register?invite={invitation_token}");
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
-            main width="100%" max-width="560px" margin-left="auto" margin-right="auto"
-                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="18px" {
+        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
+            main width="100%" max-width="560px"
+                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="18px" {
                 span color=#7b6240 font-weight=bold { "PRIVATE GAME INVITATION" }
                 h1 { "You’ve been invited to play" }
                 span color=#5d6258 { "This invitation creates a private two-player game. It can be used once." }
@@ -818,17 +818,17 @@ fn invitation_page(invitation_token: &str, signed_in: bool) -> Container {
                     form hx-post="/join" hx-target="#app-page" gap="10px" {
                         input type=hidden name="action" value="REDEEM_INVITATION";
                         input type=hidden name="invitation_token" value=(invitation_token);
-                        button type=submit padding="13px 18px" background=#526243 color=#ffffff
-                            border="1px solid #526243" border-radius="10px" cursor=pointer { "Accept invitation" }
+                        button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
+                            border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Accept invitation" }
                     }
                     anchor href="/" color=#526243 { "Back to dashboard" }
                 } @else {
                     span { "Sign in or create an account to accept." }
                     div direction="row" gap="10px" {
-                        anchor href=(login_href) color=#ffffff background=#526243 border="1px solid #526243"
-                            border-radius="10px" padding="13px 18px" { "Sign in" }
-                        anchor href=(register_href) color=#526243 border="1px solid #839276"
-                            border-radius="10px" padding="13px 18px" { "Create account" }
+                        anchor href=(login_href) color=#ffffff background=#526243 border=(("#526243", 1))
+                            border-radius="10px" padding-y=13 padding-x=18 { "Sign in" }
+                        anchor href=(register_href) color=#526243 border=(("#839276", 1))
+                            border-radius="10px" padding-y=13 padding-x=18 { "Create account" }
                     }
                 }
             }
@@ -1037,9 +1037,9 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
         format!("/register?invite={invitation_token}")
     };
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
-            main width="100%" max-width="480px" margin-left="auto" margin-right="auto"
-                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="20px" {
+        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
+            main width="100%" max-width="480px"
+                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
                 anchor href="/" color=#526243 { "← Home" }
                 div gap="6px" {
                     span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
@@ -1048,15 +1048,17 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                 }
                 form hx-post="/login" hx-target="#app-page" gap="12px" {
                     input type=hidden name="invitation_token" value=(invitation_token);
-                    input type=text name="username" placeholder="Username" padding="13px 14px"
-                        border="1px solid #cfc8b8" border-radius="10px";
-                    input type=password name="password" placeholder="Password" padding="13px 14px"
-                        border="1px solid #cfc8b8" border-radius="10px";
-                    button type=submit padding="13px 18px" background=#526243 color=#ffffff
-                        border="1px solid #526243" border-radius="10px" cursor=pointer { "Sign in" }
+                    span font-weight=bold { "Username" }
+                    input type=text name="username" placeholder="Username" padding-y=13 padding-x=14
+                        border=(("#cfc8b8", 1)) border-radius="10px";
+                    span font-weight=bold { "Password" }
+                    input type=password name="password" placeholder="Password" padding-y=13 padding-x=14
+                        border=(("#cfc8b8", 1)) border-radius="10px";
+                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
+                        border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Sign in" }
                 }
                 @if !message.is_empty() {
-                    section id="account-result" background=#fff3e8 border="1px solid #e2b98f"
+                    section id="account-result" background=#fff3e8 border=(("#e2b98f", 1))
                         border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
                 }
                 span { "New here? " anchor href=(register_href) color=#526243 { "Create an account" } }
@@ -1080,9 +1082,9 @@ fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) ->
         format!("/login?invite={invitation_token}")
     };
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding="48px 24px" {
-            main width="100%" max-width="480px" margin-left="auto" margin-right="auto"
-                background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="32px" gap="20px" {
+        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
+            main width="100%" max-width="480px"
+                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
                 anchor href="/" color=#526243 { "← Home" }
                 div gap="6px" {
                     span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
@@ -1091,15 +1093,17 @@ fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) ->
                 }
                 form hx-post="/register" hx-target="#app-page" gap="12px" {
                     input type=hidden name="invitation_token" value=(invitation_token);
-                    input type=text name="username" placeholder="Username" padding="13px 14px"
-                        border="1px solid #cfc8b8" border-radius="10px";
-                    input type=password name="password" placeholder="Password (12+ characters)" padding="13px 14px"
-                        border="1px solid #cfc8b8" border-radius="10px";
-                    button type=submit padding="13px 18px" background=#526243 color=#ffffff
-                        border="1px solid #526243" border-radius="10px" cursor=pointer { "Create account" }
+                    span font-weight=bold { "Username" }
+                    input type=text name="username" placeholder="Username" padding-y=13 padding-x=14
+                        border=(("#cfc8b8", 1)) border-radius="10px";
+                    span font-weight=bold { "Password" }
+                    input type=password name="password" placeholder="Password (12+ characters)" padding-y=13 padding-x=14
+                        border=(("#cfc8b8", 1)) border-radius="10px";
+                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
+                        border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Create account" }
                 }
                 @if !message.is_empty() {
-                    section id="account-result" background=#fff3e8 border="1px solid #e2b98f"
+                    section id="account-result" background=#fff3e8 border=(("#e2b98f", 1))
                         border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
                 }
                 span { "Already have an account? " anchor href=(login_href) color=#526243 { "Sign in" } }
@@ -1113,13 +1117,17 @@ fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) ->
 #[must_use]
 pub fn logout_page() -> Container {
     container! {
-        div id="app-page" padding=32 gap=16 {
-            h1 { "Sign out" }
-            form hx-post="/logout" hx-target="#app-page" {
-                button type=submit { "Sign out" }
-            }
-            section id="account-result" {
-                span { "Signing out revokes the current durable session." }
+        div id="app-page" direction="column" align-items="center" min-height="100vh"
+            background=#f4f1e8 padding=24 {
+            main width="100%" max-width="480px" background=#ffffff border=(("#ded8c9", 1))
+                border-radius=18 padding=32 gap=16 {
+                h1 { "Sign out" }
+                span color=#5d6258 { "Signing out revokes the current durable session." }
+                form hx-post="/logout" hx-target="#app-page" {
+                    button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
+                        border=(("#526243", 1)) border-radius=10 cursor="pointer" { "Sign out" }
+                }
+                section id="account-result" {}
             }
         }
     }
@@ -1130,17 +1138,18 @@ pub fn logout_page() -> Container {
 #[must_use]
 pub fn signed_out_page() -> Container {
     container! {
-        div id="app-page" padding=32 gap=24 {
-            header gap=8 {
-                h1 { "Words with Spouses" }
-                span { "Private asynchronous word-tile games" }
-            }
-            main gap=16 {
-                h2 { "Sign in required" }
-                span { "A valid secure session is required to view games." }
-                div gap=8 {
-                    anchor href="/login" { "Sign in" }
-                    anchor href="/register" { "Create account" }
+        div id="app-page" direction="column" align-items="center" min-height="100vh"
+            background=#f4f1e8 padding=24 {
+            main width="100%" max-width="560px" background=#ffffff border=(("#ded8c9", 1))
+                border-radius=18 padding=32 gap=18 {
+                span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                h1 { "Sign in required" }
+                span color=#5d6258 { "A valid secure session is required to view games." }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=10 {
+                    anchor href="/login" color=#ffffff background=#526243 border=(("#526243", 1))
+                        border-radius=10 padding-y=12 padding-x=16 { "Sign in" }
+                    anchor href="/register" color=#526243 border=(("#839276", 1))
+                        border-radius=10 padding-y=12 padding-x=16 { "Create account" }
                 }
             }
         }
@@ -1182,10 +1191,12 @@ fn dashboard_page_content(
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
             fx-global-shared-state-update=(refresh_dashboard)
-            min-height="100vh" background=#f4f1e8 color=#293126 padding="40px 24px" {
-            div width="100%" max-width="1080px" margin-left="auto" margin-right="auto" gap="28px" {
-                header direction="row" justify-content="space-between" align-items="center"
-                    background=#ffffff border="1px solid #ded8c9" border-radius="18px" padding="22px 26px" gap="16px" {
+            direction="column" align-items="center"
+            min-height="100vh" background=#f4f1e8 color=#293126
+            padding-y=24 padding-x=16 {
+            div id="dashboard-shell" width="100%" max-width="1080px" gap="28px" {
+                header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
+                    background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
                     div gap="4px" {
                         span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
                         h1 { "Your games" }
@@ -1194,7 +1205,7 @@ fn dashboard_page_content(
                     anchor href="/logout" color=#526243 { "Sign out" }
                 }
                 @if let Some((_, token, _)) = created_invitation {
-                    section id="created-invitation" background=#e8f1e3 border="1px solid #a9bf9c"
+                    section id="created-invitation" background=#e8f1e3 border=(("#a9bf9c", 1))
                         border-radius="16px" padding="22px" gap="10px" {
                         span color=#3f5735 font-weight=bold { "Invitation ready" }
                         h2 { "Send this private link to your opponent" }
@@ -1206,40 +1217,40 @@ fn dashboard_page_content(
                         span overflow-wrap="anywhere" font-weight=bold { (token) }
                     }
                 }
-                main direction="row" gap="24px" align-items="start" {
+                main id="dashboard-main" direction="column" gap="24px" align-items="start" {
                     section id="new-game-actions" width="100%" background=#ffffff
-                        border="1px solid #ded8c9" border-radius="18px" padding="24px" gap="18px" {
+                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="18px" {
                         div gap="5px" {
                             h2 { "Start a game" }
                             span color=#5d6258 { "Challenge a username or make a one-time private invite." }
                         }
                         form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
                             input type=hidden name="action" value="CHALLENGE";
-                            input type=text name="username" placeholder="Opponent username" padding="13px 14px"
-                                border="1px solid #cfc8b8" border-radius="10px";
-                            button type=submit padding="12px 16px" background=#526243 color=#ffffff
-                                border="1px solid #526243" border-radius="10px" cursor=pointer { "Send challenge" }
+                            input type=text name="username" placeholder="Opponent username" padding-y=13 padding-x=14
+                                border=(("#cfc8b8", 1)) border-radius="10px";
+                            button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
+                                border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Send challenge" }
                         }
                         form hx-post="/dashboard/action" hx-target="#app-page" gap="8px" {
                             input type=hidden name="action" value="CREATE_INVITATION";
-                            button type=submit padding="12px 16px" background=#f4ead7 color=#664f2e
-                                border="1px solid #cfb98e" border-radius="10px" cursor=pointer { "Create private invite link" }
+                            button type=submit padding-y=12 padding-x=16 background=#f4ead7 color=#664f2e
+                                border=(("#cfb98e", 1)) border-radius="10px" cursor=pointer { "Create private invite link" }
                         }
                         form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
                             input type=hidden name="action" value="REDEEM_INVITATION";
-                            input type=text name="invitation_token" placeholder="Paste an invite token" padding="13px 14px"
-                                border="1px solid #cfc8b8" border-radius="10px";
-                            button type=submit padding="12px 16px" background=#ffffff color=#526243
-                                border="1px solid #839276" border-radius="10px" cursor=pointer { "Join game" }
+                            input type=text name="invitation_token" placeholder="Paste an invite token" padding-y=13 padding-x=14
+                                border=(("#cfc8b8", 1)) border-radius="10px";
+                            button type=submit padding-y=12 padding-x=16 background=#ffffff color=#526243
+                                border=(("#839276", 1)) border-radius="10px" cursor=pointer { "Join game" }
                         }
                     }
                     section id="score-totals" width="100%" background=#ffffff
-                        border="1px solid #ded8c9" border-radius="18px" padding="24px" gap="10px" {
+                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="10px" {
                         h2 { "Score history" }
                         span color=#5d6258 { (totals) }
                     }
                 }
-                section id="pending-games" background=#ffffff border="1px solid #ded8c9"
+                section id="pending-games" background=#ffffff border=(("#ded8c9", 1))
                     border-radius="18px" padding="24px" gap="14px" {
                     div gap="5px" {
                         h2 { "Challenges & invitations" }
@@ -1259,40 +1270,41 @@ fn dashboard_page_content(
                         } else {
                             "Active private invitation".to_string()
                         };
-                        div class="pending-item" data-direction=(item.direction.as_str()) direction="row" justify-content="space-between" align-items="center"
-                            border="1px solid #e3ded2" border-radius="12px" padding="14px 16px" gap="12px" {
+                        div id=(format!("pending-item-{}", item.id)) class="pending-item" data-direction=(item.direction.as_str())
+                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
+                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
                             div gap="3px" {
                                 span font-weight=bold { (heading) }
                                 @if item.kind == "INVITATION" && item.id != created_invitation_id {
                                     span color=#777b73 { "Link hidden after creation for security." }
                                 }
                             }
-                            div direction="row" gap="8px" {
+                            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
                                 @if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
                                     form hx-post="/dashboard/action" hx-target="#app-page" {
                                         input type=hidden name="action" value="ACCEPT_CHALLENGE";
                                         input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding="9px 13px" background=#526243 color=#ffffff
-                                            border="1px solid #526243" border-radius="8px" cursor=pointer { "Accept" }
+                                        button type=submit padding-y=9 padding-x=13 background=#526243 color=#ffffff
+                                            border=(("#526243", 1)) border-radius="8px" cursor=pointer { "Accept" }
                                     }
                                     form hx-post="/dashboard/action" hx-target="#app-page" {
                                         input type=hidden name="action" value="DECLINE_CHALLENGE";
                                         input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding="9px 13px" border="1px solid #c9c2b4"
+                                        button type=submit padding-y=9 padding-x=13 border=(("#c9c2b4", 1))
                                             border-radius="8px" cursor=pointer { "Decline" }
                                     }
                                 } @else if item.kind == "CHALLENGE" {
                                     form hx-post="/dashboard/action" hx-target="#app-page" {
                                         input type=hidden name="action" value="CANCEL_CHALLENGE";
                                         input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding="9px 13px" border="1px solid #c9c2b4"
+                                        button type=submit padding-y=9 padding-x=13 border=(("#c9c2b4", 1))
                                             border-radius="8px" cursor=pointer { "Cancel" }
                                     }
                                 } @else {
                                     form hx-post="/dashboard/action" hx-target="#app-page" {
                                         input type=hidden name="action" value="REVOKE_INVITATION";
                                         input type=hidden name="invitation_id" value=(item.id.as_str());
-                                        button type=submit padding="9px 13px" color=#814434 border="1px solid #d3a99d"
+                                        button type=submit padding-y=9 padding-x=13 color=#814434 border=(("#d3a99d", 1))
                                             border-radius="8px" cursor=pointer { "Revoke" }
                                     }
                                 }
@@ -1300,7 +1312,7 @@ fn dashboard_page_content(
                         }
                     }
                 }
-                section id="active-games" background=#ffffff border="1px solid #ded8c9"
+                section id="active-games" background=#ffffff border=(("#ded8c9", 1))
                     border-radius="18px" padding="24px" gap="14px" {
                     h2 { "Games" }
                     @if dashboard.projection.games.is_empty() {
@@ -1313,11 +1325,16 @@ fn dashboard_page_content(
                         } else {
                             game.status.as_str()
                         };
-                        div class="game-summary" direction="row" justify-content="space-between"
-                            border="1px solid #e3ded2" border-radius="12px" padding="14px 16px" gap="12px" {
-                            anchor href=(href) color=#526243 font-weight=bold { "Open game" }
-                            span { (turn) }
-                            span color=#777b73 { "Revision " (game.canonical_revision) }
+                        @let short_game_id = game.game_id.chars().take(8).collect::<String>();
+                        @let score = game.last_score.map(|score| format!("Last play: {score} points"));
+                        div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
+                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
+                            border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
+                            div gap="3px" {
+                                anchor href=(href) color=#526243 font-weight=bold { "Game " (short_game_id) }
+                                span color=#777b73 { (turn) }
+                            }
+                            @if let Some(score) = score { span color=#777b73 { (score) } }
                         }
                     }
                 }
@@ -1346,26 +1363,25 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     container! {
-        section id="turn-composer" background=#ffffff border="1px solid #ded8c9"
-            border-radius="16px" padding="18px" gap="12px" {
+        section id="turn-composer" gap="12px" {
             h2 { "Turn controls" }
             span color=#5d6258 { "Tap a rack tile, then tap an open board square. Use these controls for non-placement turns." }
-            div direction="row" gap="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     input type=hidden name="command" value="PASS";
                     input type=hidden name="command_id" value=(command_id.as_str());
                     input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
                     input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding="10px 14px" background=#ffffff color=#526243
-                        border="1px solid #839276" border-radius="9px" cursor=pointer { "Pass" }
+                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
                 }
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     input type=hidden name="command" value="RESIGN";
                     input type=hidden name="command_id" value=(command_id.as_str());
                     input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
                     input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding="10px 14px" background=#ffffff color=#814434
-                        border="1px solid #d3a99d" border-radius="9px" cursor=pointer { "Resign" }
+                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#814434
+                        border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
                 }
             }
         }
@@ -1403,8 +1419,8 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
-            div overflow-x="auto" padding="4px" {
-                div width="720px" background=#7c6547 border="5px solid #7c6547" gap="2px" {
+            div overflow-x="auto" {
+                div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -1434,14 +1450,14 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square" width="44px" height="44px"
-                                            background=(background) color=(color) border="2px solid #526243"
+                                            background=(background) color=(color) border=(("#526243", 2))
                                             align-items="center" justify-content="center" font-weight=bold cursor=pointer {
                                             span font-size="20px" { (label) }
                                         }
                                     }
                                 } @else if committed.is_some() {
                                     div class="board-square committed-square" width="44px" height="44px"
-                                        background=(background) color=(color) border="1px solid #aa9e85"
+                                        background=(background) color=(color) border=(("#aa9e85", 1))
                                         align-items="center" justify-content="center" font-weight=bold {
                                         span font-size="20px" { (label) }
                                     }
@@ -1452,7 +1468,7 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
                                             width="44px" height="44px" background=(background) color=(color)
-                                            border="1px solid #aa9e85" align-items="center" justify-content="center"
+                                            border=(("#aa9e85", 1)) align-items="center" justify-content="center"
                                             font-weight=bold cursor=pointer {
                                             span { (label) }
                                         }
@@ -1474,7 +1490,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     container! {
         section id="player-rack" gap="10px" {
             h2 { "Your rack" }
-            div direction="row" gap="8px" background=#7c6547 border-radius="8px" padding="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
                 @for (tile_id, letter, points) in &game.view.rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id);
@@ -1483,19 +1499,19 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                         form hx-post=(action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, "CHOOSE_TILE"))
                             input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="58px" height="64px"
+                            button type=submit class=(if selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="50px" height="56px"
                                 background=(if placed { "#c8b88f" } else { "#f2d79b" }) color=#2e291f
-                                border="2px solid #d1b36f" border-radius="6px" align-items="center" justify-content="center"
+                                border=(("#d1b36f", 2)) border-radius="6px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
-                                span font-size="28px" { (face) }
+                                span font-size="24px" { (face) }
                                 span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
                             }
                         }
                     } @else {
-                        div class="rack-tile" data-tile-id=(tile_id) width="58px" height="64px"
-                            background=#f2d79b color=#2e291f border="2px solid #d1b36f" border-radius="6px"
+                        div class="rack-tile" data-tile-id=(tile_id) width="50px" height="56px"
+                            background=#f2d79b color=#2e291f border=(("#d1b36f", 2)) border-radius="6px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
-                            span font-size="28px" { (face) }
+                            span font-size="24px" { (face) }
                             span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
                         }
                     }
@@ -1507,12 +1523,12 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                 @if selected_blank {
                     div gap="7px" {
                         span { "Choose the blank tile’s letter first:" }
-                        div direction="row" gap="4px" {
+                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="4px" {
                             @for letter in 'A'..='Z' {
                                 form hx-post=(action.as_str()) hx-target="#app-page" {
                                     (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
                                     input type=hidden name="letter" value=(letter.to_string());
-                                    button type=submit data-blank-letter=(letter.to_string()) width="30px" height="30px" border="1px solid #aa9e85"
+                                    button type=submit data-blank-letter=(letter.to_string()) width="30px" height="30px" border=(("#aa9e85", 1))
                                         background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
                                         border-radius="5px" cursor=pointer { (letter) }
                                 }
@@ -1536,7 +1552,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     container! {
-        section id="turn-composer" background=#ffffff border="1px solid #ded8c9"
+        section id="turn-actions" background=#ffffff border=(("#ded8c9", 1))
             border-radius="16px" padding="18px" gap="12px" {
             @if !draft.placements.is_empty() {
                 form hx-post=(turn_action.as_str()) hx-target="#app-page" gap="8px" {
@@ -1552,13 +1568,13 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                             input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
                         }
                     }
-                    button type=submit padding="13px 18px" background=#526243 color=#ffffff
-                        border="1px solid #526243" border-radius="10px" cursor=pointer { "Play word" }
+                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
+                        border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Play word" }
                 }
                 form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                     (compose_form_fields(game, draft, "CLEAR"))
-                    button type=submit padding="10px 14px" background=#ffffff color=#526243
-                        border="1px solid #839276" border-radius="9px" cursor=pointer { "Recall tiles" }
+                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall tiles" }
                 }
             }
             (turn_composer(game))
@@ -1587,11 +1603,13 @@ fn visual_game_page(
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-update=(refresh_game)
-            min-height="100vh" background=#f4f1e8
-            color=#293126 padding="28px 20px" gap="22px" {
-            header width="100%" max-width="1120px" margin-left="auto" margin-right="auto"
-                direction="row" justify-content="space-between" align-items="center"
-                background=#ffffff border="1px solid #ded8c9" border-radius="16px" padding="18px 22px" gap="14px" {
+            direction="column" align-items="center"
+            min-height="100vh" background=#f4f1e8 color=#293126
+            padding-y=20 padding-x=10 gap="18px" {
+            header id="game-header" width="100%" max-width="760px"
+                direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
+                background=#ffffff border=(("#ded8c9", 1)) border-radius="16px"
+                padding-y=18 padding-x=22 gap="14px" {
                 div gap="3px" {
                     anchor href="/" color=#526243 { "← Games" }
                     h1 { "Game " (short_game_id) }
@@ -1599,22 +1617,23 @@ fn visual_game_page(
                 (viewer_turn)
             }
             (feedback)
-            main width="100%" max-width="1120px" margin-left="auto" margin-right="auto"
-                direction="row" align-items="start" gap="24px" {
-                section width="756px" background=#ffffff border="1px solid #ded8c9" border-radius="18px"
-                    padding="18px" gap="14px" { (board) }
-                aside width="380px" gap="16px" {
-                    (status)
-                    (rack)
-                    @if !game.completed && game.view.active_player == game.viewer_player { (actions) }
-                    @else if !game.completed {
-                        span color=#777b73 { "Your rack is ready for your next turn." }
+            main id="game-layout" width="100%" max-width="760px" gap="16px" {
+                (status)
+                section id="board-card" width="100%" background=#ffffff
+                    border=(("#ded8c9", 1)) border-radius="18px" padding="14px" { (board) }
+                (rack)
+                @if !game.completed && game.view.active_player == game.viewer_player { (actions) }
+                @else if !game.completed {
+                    section id="turn-composer" background=#ffffff border=(("#ded8c9", 1))
+                        border-radius="16px" padding="18px" {
+                        span color=#777b73 { "Your rack is ready. The board will update when your opponent plays." }
                     }
-                    details { summary { "Move history" } (history) }
                 }
-            }
-            section id="game-live-state" {
-                span color=#777b73 { "Private live game updates connected." }
+                details width="100%" background=#ffffff border=(("#ded8c9", 1))
+                    border-radius="14px" padding="16px" {
+                    summary cursor="pointer" font-weight=bold { "Move history" }
+                    (history)
+                }
             }
         }
     }
@@ -1630,10 +1649,14 @@ pub fn game_page(game: &AuthorizedGamePage) -> Container {
 fn product_error_page(title: &str, message: &str) -> Container {
     let error = error_component(message);
     container! {
-        div id="app-page" padding=32 gap=16 {
-            anchor href="/" { "Dashboard" }
-            h1 { (title) }
-            (error)
+        div id="app-page" direction="column" align-items="center" min-height="100vh"
+            background=#f4f1e8 padding=24 {
+            main width="100%" max-width="560px" background=#ffffff border=(("#ded8c9", 1))
+                border-radius=18 padding=32 gap=16 {
+                anchor href="/" color=#526243 { "← Dashboard" }
+                h1 { (title) }
+                (error)
+            }
         }
     }
     .into()

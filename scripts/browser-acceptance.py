@@ -265,6 +265,91 @@ def wait_for_server(process: subprocess.Popen[str]) -> None:
     raise AcceptanceError("application server did not become ready")
 
 
+def set_viewport(browser: Browser, width: int, height: int = 900) -> None:
+    browser.tools.call(
+        "Emulation.setDeviceMetricsOverride",
+        {
+            "width": width,
+            "height": height,
+            "deviceScaleFactor": 1,
+            "mobile": False,
+        },
+    )
+
+
+def assert_responsive_shell(
+    browser: Browser, path: str, content_selector: str, width: int
+) -> None:
+    set_viewport(browser, width)
+    browser.navigate(path)
+    browser.wait(f"Boolean(document.querySelector({json.dumps(content_selector)}))")
+    layout = browser.evaluate(
+        f"""(() => {{
+            const content = document.querySelector({json.dumps(content_selector)});
+            const rect = content?.getBoundingClientRect();
+            return {{
+                viewport: document.querySelector('meta[name="viewport"]')?.content ?? null,
+                documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                contentLeft: rect?.left ?? null,
+                contentRight: rect?.right ?? null,
+                contentWidth: rect?.width ?? null,
+            }};
+        }})()"""
+    )
+    if layout["viewport"] != "width=device-width, initial-scale=1":
+        raise AcceptanceError(f"responsive viewport metadata is missing: {layout!r}")
+    if layout["documentOverflow"] != 0:
+        raise AcceptanceError(f"{path} overflows at {width}px: {layout!r}")
+    if (
+        layout["contentLeft"] is None
+        or layout["contentRight"] is None
+        or layout["contentLeft"] < 0
+        or layout["contentRight"] > width
+    ):
+        raise AcceptanceError(f"{path} content escapes its shell at {width}px: {layout!r}")
+
+
+def assert_responsive_game_layout(browser: Browser, width: int) -> None:
+    set_viewport(browser, width)
+    browser.navigate(browser.evaluate("location.pathname"))
+    browser.wait("Boolean(document.querySelector('#game-board'))")
+    layout = browser.evaluate(
+        """(() => {
+            const board = document.querySelector('#game-board');
+            const scroller = board?.firstElementChild;
+            const rack = document.querySelector('#player-rack');
+            const boardRect = board?.getBoundingClientRect();
+            const scrollerRect = scroller?.getBoundingClientRect();
+            const rackRect = rack?.getBoundingClientRect();
+            const ids = Array.from(document.querySelectorAll('[id]')).map(element => element.id);
+            return {
+                viewport: document.querySelector('meta[name="viewport"]')?.content ?? null,
+                documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                boardOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : null,
+                boardRight: scrollerRect?.right ?? null,
+                rackBelowBoard: Boolean(boardRect && rackRect && rackRect.top >= boardRect.bottom),
+                duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
+            };
+        })()"""
+    )
+    if layout["viewport"] != "width=device-width, initial-scale=1":
+        raise AcceptanceError(f"responsive viewport metadata is missing: {layout!r}")
+    if layout["documentOverflow"] != 0:
+        raise AcceptanceError(f"game page overflows the viewport at {width}px: {layout!r}")
+    if not layout["rackBelowBoard"]:
+        raise AcceptanceError(f"rack is not below the board at {width}px: {layout!r}")
+    if layout["duplicateIds"]:
+        raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
+    if width >= 800 and layout["boardOverflow"] != 0:
+        raise AcceptanceError(f"desktop board unexpectedly scrolls: {layout!r}")
+    if width < 800 and (
+        layout["boardOverflow"] is None
+        or layout["boardOverflow"] <= 0
+        or layout["boardRight"] > width
+    ):
+        raise AcceptanceError(f"mobile board scrolling is not contained: {layout!r}")
+
+
 def register(browser: Browser, username: str) -> None:
     browser.navigate("/register")
     browser.submit('form[hx-post="/register"]', {"username": username, "password": "correct horse battery staple"})
@@ -461,12 +546,17 @@ def run() -> None:
             wait_for_server(server)
             alice = Browser.launch(chrome, 19221, temp / "alice-profile")
             bob = Browser.launch(chrome, 19222, temp / "bob-profile")
+            assert_responsive_shell(alice, "/login", "main", 390)
+            set_viewport(alice, 1440)
             alice.navigate("/register")
             bob.navigate("/register")
             install_readiness_probe(alice)
             install_readiness_probe(bob)
             register(alice, "acceptance-alice")
             register(bob, "acceptance-bob")
+            assert_responsive_shell(alice, "/", "#dashboard-shell", 390)
+            set_viewport(alice, 1440)
+            alice.navigate("/")
 
             # The currently pinned framework predates the readiness event. Keep the
             # assertion explicit so this harness becomes green only after repinning.
@@ -500,6 +590,11 @@ def run() -> None:
             )
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+            assert_responsive_game_layout(alice, 1440)
+            assert_responsive_game_layout(alice, 390)
+            set_viewport(alice, 1440)
+            alice.navigate(game_path)
+            alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
 
             stale_csrf_token = alice.evaluate(
                 "document.querySelector('meta[name=\"hyperchad-shared-state-csrf\"]')?.content"

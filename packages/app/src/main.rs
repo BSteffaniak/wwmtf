@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .with_title("Words with Spouses".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
+            .with_viewport("width=device-width, initial-scale=1".to_string())
             .with_actix_bind_address(address)
             .with_actix_port(port);
         app_builder.static_asset_route_result(StaticAssetRoute {

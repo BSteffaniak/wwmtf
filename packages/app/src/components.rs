@@ -1,6 +1,9 @@
 //! Renderer-neutral reusable gameplay view components.
 
-use hyperchad::{router::Container, template::container};
+use hyperchad::{
+    router::Container,
+    template::{LayoutOverflow, container},
+};
 use serde::{Deserialize, Serialize};
 use words_with_spouses_game_domain::{
     Coordinate, GameEvent, GameState, GameStatus, PlayerId, apply_event,
@@ -263,15 +266,28 @@ pub fn final_score_adjustments(
 /// Renders chronological move/score history.
 #[must_use]
 pub fn move_history_component(history: &[MoveHistoryView]) -> Container {
-    let rows = history
-        .iter()
-        .map(|entry| format!("{}:{}:+{}", entry.revision, entry.kind, entry.score_delta))
-        .collect::<Vec<_>>()
-        .join(" | ");
     container! {
         section id="move-history" gap=8 {
-            h2 { "Move history" }
-            span { (rows) }
+            @if history.is_empty() {
+                span color=#777b73 { "No moves yet." }
+            }
+            @for entry in history {
+                @let label = match entry.kind.as_str() {
+                    "GAME_STARTED" => "Game started",
+                    "TILES_PLAYED" => "Word played",
+                    "TILES_EXCHANGED" => "Tiles exchanged",
+                    "TURN_PASSED" => "Turn passed",
+                    "GAME_RESIGNED" => "Game resigned",
+                    "GAME_COMPLETED" => "Game completed",
+                    _ => "Game updated",
+                };
+                div direction="row" justify-content="space-between" gap=12 {
+                    span { (label) }
+                    @if entry.score_delta > 0 {
+                        span color=#3f5735 font-weight=bold { "+" (entry.score_delta) }
+                    }
+                }
+            }
         }
     }
     .into()
@@ -344,8 +360,8 @@ pub fn board_component(view: &GameView) -> Container {
     container! {
         section id="game-board" data-revision=(view.revision) gap="10px" {
             h2 { "Board" }
-            div overflow-x="auto" padding="4px" {
-                div width="690px" background=#7c6547 border="5px solid #7c6547" gap="2px" {
+            div overflow-x="auto" {
+                div width="690px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..view.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..view.board_size {
@@ -367,7 +383,7 @@ pub fn board_component(view: &GameView) -> Container {
                                 };
                                 div class="board-square" data-x=(x) data-y=(y) width="44px" height="44px"
                                     background=(background) color=(color) align-items="center" justify-content="center"
-                                    border="1px solid #aa9e85" font-weight=bold {
+                                    border=(("#aa9e85", 1)) font-weight=bold {
                                     span { (label) }
                                 }
                             }
@@ -386,13 +402,13 @@ pub fn rack_component(view: &GameView) -> Container {
     container! {
         section id="player-rack" gap="10px" {
             h2 { "Your rack" }
-            div direction="row" gap="8px" background=#7c6547 border-radius="8px" padding="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
                 @for (id, letter, points) in &view.rack {
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
-                    div class="rack-tile" data-tile-id=(id) width="58px" height="64px"
-                        background=#f2d79b color=#2e291f border="2px solid #d1b36f" border-radius="6px"
+                    div class="rack-tile" data-tile-id=(id) width="50px" height="56px"
+                        background=#f2d79b color=#2e291f border=(("#d1b36f", 2)) border-radius="6px"
                         align-items="center" justify-content="center" position="relative" font-weight=bold {
-                        span font-size="28px" { (face) }
+                        span font-size="24px" { (face) }
                         span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
                     }
                 }
@@ -416,12 +432,12 @@ pub fn status_component(view: &GameView, viewer: PlayerId) -> Container {
         .find(|(player, _)| *player != viewer)
         .map_or(0, |(_, score)| *score);
     container! {
-        section id="game-status" direction="row" gap="12px" {
-            div background=#ffffff border="1px solid #ded8c9" border-radius="12px" padding="14px 18px" gap="4px" {
+        section id="game-status" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
+            div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
                 span color=#777b73 { "You" }
                 span font-size="26px" font-weight=bold { (viewer_score) }
             }
-            div background=#ffffff border="1px solid #ded8c9" border-radius="12px" padding="14px 18px" gap="4px" {
+            div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
                 span color=#777b73 { "Opponent" }
                 span font-size="26px" font-weight=bold { (opponent_score) }
             }
@@ -442,7 +458,7 @@ pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
     };
     container! {
         span id="viewer-turn-status" background=(if status == "Your turn" { "#e8f1e3" } else { "#f0ede5" })
-            color=#3f5735 border-radius="999px" padding="8px 13px" font-weight=bold { (status) }
+            color=#3f5735 border-radius="999px" padding-y=8 padding-x=13 font-weight=bold { (status) }
     }
     .into()
 }
