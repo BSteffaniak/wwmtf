@@ -434,6 +434,10 @@ pub struct GameSummary {
     pub last_score: Option<u32>,
     pub winner_user_id: Option<String>,
     pub updated_at_ms: i64,
+    pub opponent_username: String,
+    pub viewer_score: u32,
+    pub opponent_score: u32,
+    pub latest_activity: String,
 }
 
 /// Loads one user's active/completed games ordered by most recent activity.
@@ -455,10 +459,50 @@ pub async fn user_game_summaries(
         let game_id = string_column(&membership, "game_id")?;
         let rows = db
             .select("game_summaries")
-            .where_eq("game_id", game_id)
+            .where_eq("game_id", game_id.clone())
             .execute(db)
             .await?;
         if let Some(row) = rows.first() {
+            let players = db
+                .select("game_players")
+                .where_eq("game_id", game_id.clone())
+                .execute(db)
+                .await?;
+            let opponent_user_id = players
+                .iter()
+                .filter_map(|player| optional_string(player, "user_id"))
+                .find(|candidate| candidate != user_id)
+                .ok_or(ProjectionError::Malformed)?;
+            let opponent_username = username_for_user(db, &opponent_user_id)
+                .await?
+                .ok_or(ProjectionError::Malformed)?;
+            let scores = db
+                .select("game_scores")
+                .where_eq("game_id", game_id.clone())
+                .execute(db)
+                .await?;
+            let score_for = |target: &str| {
+                scores
+                    .iter()
+                    .find(|score| optional_string(score, "user_id").as_deref() == Some(target))
+                    .and_then(|score| score.get("score"))
+                    .and_then(|value| value.as_i64())
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or_default()
+            };
+            let history =
+                game_history(db, game_id.parse().map_err(|_| ProjectionError::Malformed)?).await?;
+            let latest_activity = history.last().map_or_else(
+                || "Game started".to_string(),
+                |entry| match entry.event_kind.as_str() {
+                    "TILES_PLAYED" => format!("Last play: {} points", entry.score_delta),
+                    "TILES_EXCHANGED" => "Tiles exchanged".to_string(),
+                    "TURN_PASSED" => "Turn passed".to_string(),
+                    "GAME_RESIGNED" => "Game resigned".to_string(),
+                    "GAME_COMPLETED" => "Game completed".to_string(),
+                    _ => "Game started".to_string(),
+                },
+            );
             summaries.push(GameSummary {
                 game_id: string_column(row, "game_id")?,
                 status: string_column(row, "status")?,
@@ -467,6 +511,10 @@ pub async fn user_game_summaries(
                 last_score: optional_unsigned(row, "last_score")?,
                 winner_user_id: optional_string(row, "winner_user_id"),
                 updated_at_ms: signed_column(row, "updated_at_ms")?,
+                opponent_username,
+                viewer_score: score_for(user_id),
+                opponent_score: score_for(&opponent_user_id),
+                latest_activity,
             });
         }
     }

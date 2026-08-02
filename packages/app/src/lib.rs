@@ -14,6 +14,7 @@ mod migrations;
 mod observability;
 mod presentation;
 mod projections;
+mod rack_preferences;
 mod routes;
 mod sessions;
 mod shared_state_security;
@@ -54,6 +55,9 @@ pub use projections::{
     UserScoreTotals, dashboard_projection, game_history, projected_revision,
     rebuild_all_user_score_totals, rebuild_game_projections, user_game_summaries,
     user_score_totals,
+};
+pub use rack_preferences::{
+    RackPreferenceError, load_rack_order, move_tile_to_slot, reconcile_rack_order, save_rack_order,
 };
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,

@@ -16,7 +16,10 @@ use hyperchad::{
 use serde::Deserialize;
 use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
-use words_with_spouses_game_domain::{Coordinate, GameCommand, Placement, PremiumSquare, TileId};
+use words_with_spouses_game_domain::{
+    Coordinate, GameCommand, GameError, Placement, PlacementGuidance, PlayAnalysis, PremiumSquare,
+    TileId,
+};
 
 use crate::{
     AccountWorkflowError, AuthenticatedDashboard, AuthorizedGamePage, PresentationError,
@@ -24,8 +27,7 @@ use crate::{
     challenge_username, create_shareable_invitation, decline_pending_challenge, error_component,
     load_authenticated_dashboard, load_authorized_game_page, login_and_create_session,
     logout_session, move_history_component, redeem_shareable_invitation,
-    register_and_create_session, revoke_shareable_invitation, status_component,
-    viewer_turn_component,
+    register_and_create_session, revoke_shareable_invitation, viewer_turn_component,
 };
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +161,42 @@ struct TurnDraft {
     selected_tile: Option<u16>,
     selected_blank_letter: Option<char>,
     placements: Vec<DraftPlacement>,
+    #[serde(default)]
+    rack_tile: Option<u16>,
+    #[serde(default)]
+    exchange_tiles: Vec<u16>,
+    #[serde(default)]
+    mode: TurnMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+enum TurnMode {
+    #[default]
+    Play,
+    Exchange,
+    ConfirmExchange,
+    ConfirmPass,
+    ConfirmResign,
+}
+
+impl TurnDraft {
+    fn domain_placements(&self) -> Vec<Placement> {
+        self.placements
+            .iter()
+            .map(|placement| Placement {
+                tile_id: TileId::new(placement.tile_id),
+                coordinate: Coordinate::new(placement.x, placement.y),
+                blank_letter: placement.blank_letter,
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DraftFeedback {
+    analysis: Option<PlayAnalysis>,
+    guidance: PlacementGuidance,
+    message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -182,6 +220,8 @@ struct ComposeTurnForm {
     y: Option<u8>,
     #[serde(default)]
     letter: Option<char>,
+    #[serde(default)]
+    slot: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,6 +576,88 @@ fn parse_draft(token: &str) -> Option<TurnDraft> {
     serde_json::from_slice(&bytes).ok()
 }
 
+fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback {
+    let placements = draft.domain_placements();
+    let guidance = game
+        .placement_guidance(&placements)
+        .unwrap_or(PlacementGuidance {
+            required: std::collections::BTreeSet::new(),
+            eligible: std::collections::BTreeSet::new(),
+        });
+    if placements.is_empty() {
+        let message = if game.view.board.is_empty() {
+            "Start by covering the starred center square."
+        } else {
+            "Choose a rack tile, then place it on a highlighted connecting square."
+        };
+        return DraftFeedback {
+            analysis: None,
+            guidance,
+            message: message.to_string(),
+        };
+    }
+    match game.analyze_play(&placements) {
+        Ok(analysis) => DraftFeedback {
+            analysis: Some(analysis),
+            guidance,
+            message: "This draft is ready to play.".to_string(),
+        },
+        Err(error) => DraftFeedback {
+            analysis: None,
+            guidance,
+            message: draft_analysis_message(&error),
+        },
+    }
+}
+
+fn draft_analysis_message(error: &GameError) -> String {
+    match error {
+        GameError::EmptyTileSelection => "Choose at least one rack tile.".to_string(),
+        GameError::NotLinear => "Keep all drafted tiles in one row or one column.".to_string(),
+        GameError::Gap => "Fill the highlighted gap before playing this word.".to_string(),
+        GameError::FirstMoveMustCoverStart => {
+            "The first word must cover the highlighted center square.".to_string()
+        }
+        GameError::Disconnected => "Connect this draft to a tile already on the board.".to_string(),
+        GameError::InvalidWord(word) => format!("The dictionary does not accept {word}."),
+        GameError::InvalidBlankLetter => {
+            "Choose a letter for every drafted blank tile.".to_string()
+        }
+        error => error.to_string(),
+    }
+}
+
+fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
+    let formed_words = feedback.analysis.as_ref().map(|analysis| {
+        analysis
+            .words
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
+    container! {
+        section id="draft-preview" background=#ffffff border=(("#ded8c9", 1))
+            border-radius="16px" padding="18px" gap="8px" {
+            h2 { "Draft preview" }
+            @if let Some(analysis) = &feedback.analysis {
+                span color=#3f5735 font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
+                span font-size="22px" font-weight=bold { (analysis.score) " points" }
+                span color=#3f5735 { (feedback.message.as_str()) }
+                @if analysis.full_rack_bonus > 0 {
+                    span color=#5d6258 { "Includes a " (analysis.full_rack_bonus) "-point full-rack bonus." }
+                }
+            } @else {
+                span color=#5d6258 { (feedback.message.as_str()) }
+                @if !feedback.guidance.required.is_empty() {
+                    span color=#7a3f16 font-weight=bold { "Required squares are highlighted on the board." }
+                }
+            }
+        }
+    }
+    .into()
+}
+
 fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &str) -> Container {
     visual_game_page(game, draft, Some(message))
 }
@@ -552,12 +674,8 @@ async fn game_compose_route(
         Err(PresentationError::Unauthenticated) => return signed_out_page(),
         Err(error) => return product_error_page("Unable to compose turn", &error.to_string()),
     };
-    if game.completed || game.view.active_player != game.viewer_player {
-        return visual_game_page(
-            &game,
-            &TurnDraft::default(),
-            Some("It is not your turn. The board will update when your opponent plays."),
-        );
+    if game.completed {
+        return visual_game_page(&game, &TurnDraft::default(), Some("This game is complete."));
     }
     let form: ComposeTurnForm = match request.parse_form() {
         Ok(form) => form,
@@ -577,6 +695,19 @@ async fn game_compose_route(
         );
     }
     let mut draft = parse_draft(&form.draft).unwrap_or_default();
+    let viewer_turn = game.view.active_player == game.viewer_player;
+    if !viewer_turn
+        && !matches!(
+            form.action.as_str(),
+            "PICK_RACK_TILE" | "MOVE_RACK_TILE" | "CANCEL_MODE"
+        )
+    {
+        return draft_error_page(
+            &game,
+            &draft,
+            "It is not your turn. You can still arrange your rack while you wait.",
+        );
+    }
     match form.action.as_str() {
         "CHOOSE_TILE" => {
             let Some(tile_id) = form.tile_id else {
@@ -669,6 +800,71 @@ async fn game_compose_route(
             draft.placements.retain(|placed| placed.tile_id != tile_id);
             draft.selected_tile = Some(tile_id);
             draft.selected_blank_letter = None;
+        }
+        "PICK_RACK_TILE" => {
+            let Some(tile_id) = form.tile_id else {
+                return draft_error_page(&game, &draft, "Choose a rack tile to reposition.");
+            };
+            if !game.rack_order.contains(&tile_id) {
+                return draft_error_page(&game, &draft, "That tile is not in your rack.");
+            }
+            draft.rack_tile = Some(tile_id);
+        }
+        "MOVE_RACK_TILE" => {
+            let (Some(tile_id), Some(slot)) = (draft.rack_tile, form.slot) else {
+                return draft_error_page(&game, &draft, "Choose a tile and a rack position.");
+            };
+            let order = crate::move_tile_to_slot(&game.rack_order, TileId::new(tile_id), slot);
+            if crate::save_rack_order(
+                database,
+                game.game_id,
+                &game.user_id,
+                &order,
+                now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX),
+            )
+            .await
+            .is_err()
+            {
+                return draft_error_page(&game, &draft, "Your rack order could not be saved.");
+            }
+            draft.rack_tile = None;
+            let game =
+                match load_authorized_game_page(database, &request.cookies, game_id, now).await {
+                    Ok(game) => game,
+                    Err(error) => {
+                        return product_error_page("Unable to arrange rack", &error.to_string());
+                    }
+                };
+            return visual_game_page(&game, &draft, None);
+        }
+        "BEGIN_EXCHANGE" => {
+            draft.mode = TurnMode::Exchange;
+            draft.selected_tile = None;
+            draft.placements.clear();
+        }
+        "TOGGLE_EXCHANGE" => {
+            let Some(tile_id) = form.tile_id else {
+                return draft_error_page(&game, &draft, "Choose a tile to exchange.");
+            };
+            if !game.view.rack.iter().any(|(id, _, _)| *id == tile_id) {
+                return draft_error_page(&game, &draft, "That tile is not in your rack.");
+            }
+            if let Some(index) = draft.exchange_tiles.iter().position(|id| *id == tile_id) {
+                draft.exchange_tiles.remove(index);
+            } else {
+                draft.exchange_tiles.push(tile_id);
+                draft.exchange_tiles.sort_unstable();
+            }
+        }
+        "REVIEW_EXCHANGE" if draft.exchange_tiles.is_empty() => {
+            return draft_error_page(&game, &draft, "Select at least one tile to exchange.");
+        }
+        "REVIEW_EXCHANGE" => draft.mode = TurnMode::ConfirmExchange,
+        "CONFIRM_PASS" => draft.mode = TurnMode::ConfirmPass,
+        "CONFIRM_RESIGN" => draft.mode = TurnMode::ConfirmResign,
+        "CANCEL_MODE" => {
+            draft.mode = TurnMode::Play;
+            draft.exchange_tiles.clear();
         }
         "CLEAR" => draft = TurnDraft::default(),
         _ => return draft_error_page(&game, &draft, "That turn action is unavailable."),
@@ -1335,25 +1531,36 @@ fn dashboard_page_content(
                     border-radius="18px" padding="24px" gap="14px" {
                     h2 { "Games" }
                     @if dashboard.projection.games.is_empty() {
-                        span color=#777b73 { "No games yet. Start one above." }
+                        div gap="8px" {
+                            h3 { "Your first game starts here" }
+                            span color=#777b73 { "Challenge someone by username or create a private link to send them." }
+                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a private game" }
+                        }
                     }
                     @for game in &dashboard.projection.games {
                         @let href = format!("/games/{}", game.game_id);
-                        @let turn = if game.active_player_user_id.as_deref() == Some(user_id) {
+                        @let state = if game.status == "COMPLETED" {
+                            if game.winner_user_id.as_deref() == Some(user_id) {
+                                "You won"
+                            } else if game.winner_user_id.is_none() {
+                                "Tie game"
+                            } else {
+                                "You lost"
+                            }
+                        } else if game.active_player_user_id.as_deref() == Some(user_id) {
                             "Your turn"
                         } else {
-                            game.status.as_str()
+                            "Waiting for opponent"
                         };
-                        @let short_game_id = game.game_id.chars().take(8).collect::<String>();
-                        @let score = game.last_score.map(|score| format!("Last play: {score} points"));
                         div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
                             border=(("#e3ded2", 1)) border-radius="12px" padding-y=14 padding-x=16 gap="12px" {
                             div gap="3px" {
-                                anchor href=(href) color=#526243 font-weight=bold { "Game " (short_game_id) }
-                                span color=#777b73 { (turn) }
+                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_username.as_str()) }
+                                span color=#3f5735 font-weight=bold { (state) }
+                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_username.as_str()) }
                             }
-                            @if let Some(score) = score { span color=#777b73 { (score) } }
+                            span color=#777b73 { (game.latest_activity.as_str()) }
                         }
                     }
                 }
@@ -1418,7 +1625,11 @@ fn compose_form_fields(game: &AuthorizedGamePage, draft: &TurnDraft, action: &st
     .into()
 }
 
-fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
+fn visual_board(
+    game: &AuthorizedGamePage,
+    draft: &TurnDraft,
+    feedback: &DraftFeedback,
+) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
     let occupied = game
         .view
@@ -1447,12 +1658,19 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                                 @let committed = occupied.get(&coordinate).copied();
                                 @let drafted = pending.get(&coordinate).copied();
                                 @let premium = game.rules.premiums.get(&coordinate).copied();
+                                @let required = feedback.guidance.required.contains(&coordinate);
+                                @let eligible = feedback.guidance.eligible.contains(&coordinate);
+                                @let latest = game.latest_play_coordinates.contains(&coordinate);
                                 @let (background, label, color) = if let Some(letter) = committed {
                                     ("#f2d79b", letter.to_string(), "#2e291f")
                                 } else if let Some((tile_id, blank_letter)) = drafted {
                                     let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
                                         .map(|(_, letter, _)| blank_letter.unwrap_or(*letter)).unwrap_or('?');
                                     ("#f7e4ae", letter.to_string(), "#2e291f")
+                                } else if required {
+                                    ("#f3c78b", "!".to_string(), "#6b4018")
+                                } else if eligible {
+                                    ("#dce9d6", "·".to_string(), "#3f5735")
                                 } else if coordinate == game.rules.start {
                                     ("#e79b9b", "★".to_string(), "#6b3535")
                                 } else {
@@ -1475,8 +1693,8 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                                         }
                                     }
                                 } @else if committed.is_some() {
-                                    div class="board-square committed-square" width="44px" height="44px"
-                                        background=(background) color=(color) border=(("#aa9e85", 1))
+                                    div class=(if latest { "board-square committed-square latest-move-square" } else { "board-square committed-square" }) width="44px" height="44px"
+                                        background=(background) color=(color) border=((if latest { "#526243" } else { "#aa9e85" }, if latest { 3 } else { 1 }))
                                         align-items="center" justify-content="center" font-weight=bold {
                                         span font-size="20px" { (label) }
                                     }
@@ -1506,19 +1724,37 @@ fn visual_board(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
 fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
     let can_compose = !game.completed && game.view.active_player == game.viewer_player;
+    let rack = game
+        .rack_order
+        .iter()
+        .filter_map(|ordered| {
+            game.view
+                .rack
+                .iter()
+                .find(|(tile_id, _, _)| tile_id == ordered)
+        })
+        .collect::<Vec<_>>();
     container! {
         section id="player-rack" gap="10px" {
             h2 { "Your rack" }
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" background=#7c6547 border-radius="8px" padding="8px" {
-                @for (tile_id, letter, points) in &game.view.rack {
+                @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id);
+                    @let exchange_selected = draft.exchange_tiles.contains(tile_id);
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
-                    @if can_compose {
+                    @if can_compose || draft.mode == TurnMode::Play {
+                        @let rack_action = if draft.mode == TurnMode::Exchange {
+                            "TOGGLE_EXCHANGE"
+                        } else if can_compose {
+                            "CHOOSE_TILE"
+                        } else {
+                            "PICK_RACK_TILE"
+                        };
                         form hx-post=(action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "CHOOSE_TILE"))
+                            (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="50px" height="56px"
+                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="50px" height="56px"
                                 background=(if placed { "#c8b88f" } else { "#f2d79b" }) color=#2e291f
                                 border=(("#d1b36f", 2)) border-radius="6px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
@@ -1532,6 +1768,31 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
                             span font-size="24px" { (face) }
                             span position="absolute" right="5px" bottom="3px" font-size="12px" { (points) }
+                        }
+                    }
+                }
+            }
+            @if draft.rack_tile.is_some() {
+                span color=#3f5735 font-weight=bold { "Choose the exact position for the selected rack tile:" }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="5px" {
+                    @for slot in 0..game.rack_order.len() {
+                        form hx-post=(action.as_str()) hx-target="#app-page" {
+                            (compose_form_fields(game, draft, "MOVE_RACK_TILE"))
+                            input type=hidden name="slot" value=(slot);
+                            button type=submit padding-y=6 padding-x=9 background=#ffffff color=#526243
+                                border=(("#839276", 1)) border-radius="7px" cursor=pointer { (slot + 1) }
+                        }
+                    }
+                }
+            } @else if draft.mode == TurnMode::Play {
+                span color=#777b73 { "Arrange any tile into an exact rack position:" }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="5px" {
+                    @for tile_id in &game.rack_order {
+                        form hx-post=(action.as_str()) hx-target="#app-page" {
+                            (compose_form_fields(game, draft, "PICK_RACK_TILE"))
+                            input type=hidden name="tile_id" value=(tile_id);
+                            button type=submit padding-y=5 padding-x=8 background=#ffffff color=#526243
+                                border=(("#839276", 1)) border-radius="7px" cursor=pointer { "Tile " (tile_id) }
                         }
                     }
                 }
@@ -1555,10 +1816,8 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                         }
                     }
                 }
-            } @else if can_compose {
+            } @else if draft.rack_tile.is_none() {
                 span color=#777b73 { "Choose a tile, then choose its square on the board." }
-            } @else {
-                span color=#777b73 { "Your rack is ready for your next turn." }
             }
         }
     }
@@ -1571,9 +1830,53 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     container! {
-        section id="turn-actions" background=#ffffff border=(("#ded8c9", 1))
+        section id="turn-actions" class="turn-composer" background=#ffffff border=(("#ded8c9", 1))
             border-radius="16px" padding="18px" gap="12px" {
-            @if !draft.placements.is_empty() {
+            @if draft.mode == TurnMode::Exchange {
+                span font-weight=bold { (draft.exchange_tiles.len()) " tile(s) selected for exchange." }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        (compose_form_fields(game, draft, "REVIEW_EXCHANGE"))
+                        button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
+                            border=(("#526243", 1)) border-radius="9px" cursor=pointer { "Review exchange" }
+                    }
+                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        (compose_form_fields(game, draft, "CANCEL_MODE"))
+                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
+                    }
+                }
+            } @else if draft.mode == TurnMode::ConfirmExchange {
+                span font-weight=bold { "Exchange " (draft.exchange_tiles.len()) " selected tile(s)?" }
+                span color=#5d6258 { "This ends your turn and draws the same number of replacements." }
+                div direction="row" gap="10px" {
+                    form hx-post=(turn_action.as_str()) hx-target="#app-page" {
+                        input type=hidden name="command" value="EXCHANGE";
+                        input type=hidden name="command_id" value=(command_id.as_str());
+                        input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
+                        input type=hidden name="expected_revision" value=(game.view.revision);
+                        @for (index, tile_id) in draft.exchange_tiles.iter().enumerate() {
+                            input type=hidden name=(format!("tile_{index}")) value=(tile_id);
+                        }
+                        button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
+                            border=(("#526243", 1)) border-radius="9px" cursor=pointer { "Confirm exchange" }
+                    }
+                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        (compose_form_fields(game, draft, "CANCEL_MODE"))
+                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
+                    }
+                }
+            } @else if draft.mode == TurnMode::ConfirmPass {
+                span font-weight=bold { "Pass this turn?" }
+                span color=#5d6258 { "You will score no points and your opponent will play next." }
+                (confirmed_command_forms(game, draft, "PASS", "Confirm pass", &command_id, &idempotency_key))
+            } @else if draft.mode == TurnMode::ConfirmResign {
+                span font-weight=bold color=#814434 { "Resign this game?" }
+                span color=#5d6258 { "The game ends immediately and your opponent wins." }
+                (confirmed_command_forms(game, draft, "RESIGN", "Confirm resignation", &command_id, &idempotency_key))
+            } @else {
+                @if !draft.placements.is_empty() {
                 form hx-post=(turn_action.as_str()) hx-target="#app-page" gap="8px" {
                     input type=hidden name="command" value="PLAY";
                     input type=hidden name="command_id" value=(command_id.as_str());
@@ -1595,8 +1898,149 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                     button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
                         border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall tiles" }
                 }
+                }
+                @if game.exchange_available {
+                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
+                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange tiles" }
+                    }
+                } @else {
+                    span color=#777b73 { "Tile exchange is not available now." }
+                }
+                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                    (compose_form_fields(game, draft, "CONFIRM_PASS"))
+                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
+                }
+                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                    (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
+                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#814434
+                        border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
+                }
             }
-            (turn_composer(game))
+        }
+    }
+    .into()
+}
+
+fn confirmed_command_forms(
+    game: &AuthorizedGamePage,
+    draft: &TurnDraft,
+    command: &str,
+    label: &str,
+    command_id: &str,
+    idempotency_key: &str,
+) -> Container {
+    let turn_action = format!("/games/{}/turn", game.game_id);
+    let compose_action = format!("/games/{}/compose", game.game_id);
+    container! {
+        div direction="row" gap="10px" {
+            form hx-post=(turn_action.as_str()) hx-target="#app-page" {
+                input type=hidden name="command" value=(command);
+                input type=hidden name="command_id" value=(command_id);
+                input type=hidden name="idempotency_key" value=(idempotency_key);
+                input type=hidden name="expected_revision" value=(game.view.revision);
+                button type=submit padding-y=10 padding-x=14 background=#526243 color=#ffffff
+                    border=(("#526243", 1)) border-radius="9px" cursor=pointer { (label) }
+            }
+            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                (compose_form_fields(game, draft, "CANCEL_MODE"))
+                button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
+                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
+            }
+        }
+    }
+    .into()
+}
+
+fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
+    let viewer_score = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player == game.viewer_player)
+        .map_or(0, |(_, score)| *score);
+    let opponent_score = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player != game.viewer_player)
+        .map_or(0, |(_, score)| *score);
+    let turn = if game.completed {
+        "Game complete".to_string()
+    } else if game.view.active_player == game.viewer_player {
+        format!("{}’s turn (you)", game.viewer_username)
+    } else {
+        format!("{}’s turn", game.opponent_username)
+    };
+    container! {
+        section id="game-awareness" gap="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
+                div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
+                    span color=#777b73 { (game.viewer_username.as_str()) " (you)" }
+                    span font-size="26px" font-weight=bold { (viewer_score) }
+                }
+                div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
+                    span color=#777b73 { (game.opponent_username.as_str()) }
+                    span font-size="26px" font-weight=bold { (opponent_score) }
+                }
+            }
+            span id="named-turn-status" color=#3f5735 font-weight=bold { (turn) }
+            @if let Some(latest) = &game.latest_action {
+                span id="latest-game-action" color=#5d6258 { "Latest: " (latest.as_str()) }
+            }
+        }
+    }
+    .into()
+}
+
+fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
+    let viewer_score = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player == game.viewer_player)
+        .map_or(0, |(_, score)| *score);
+    let opponent = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player != game.viewer_player)
+        .copied();
+    let opponent_score = opponent.map_or(0, |(_, score)| score);
+    let outcome = match game.view.winner {
+        None => "Tie game".to_string(),
+        Some(winner) if winner == game.viewer_player => {
+            format!("{} won", game.viewer_username)
+        }
+        Some(_) => format!("{} won", game.opponent_username),
+    };
+    let viewer_adjustment = game
+        .final_score_adjustments
+        .get(&game.viewer_player)
+        .copied()
+        .unwrap_or_default();
+    let opponent_adjustment = opponent
+        .and_then(|(player, _)| game.final_score_adjustments.get(&player).copied())
+        .unwrap_or_default();
+    container! {
+        section id="completed-game-summary" background=#ffffff border=(("#c8b88f", 2))
+            border-radius="16px" padding="20px" gap="9px" {
+            h2 { (outcome) }
+            @if let Some(reason) = &game.completion_reason {
+                span color=#5d6258 { "Completed by: " (reason.as_str()) }
+            }
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="16px" {
+                span font-weight=bold { (game.viewer_username.as_str()) ": " (viewer_score) }
+                span font-weight=bold { (game.opponent_username.as_str()) ": " (opponent_score) }
+            }
+            @if viewer_adjustment != 0 || opponent_adjustment != 0 {
+                span color=#5d6258 {
+                    "Final adjustments — " (game.viewer_username.as_str()) ": " (format!("{viewer_adjustment:+}"))
+                    ", " (game.opponent_username.as_str()) ": " (format!("{opponent_adjustment:+}"))
+                }
+            }
         }
     }
     .into()
@@ -1609,8 +2053,11 @@ fn visual_game_page(
 ) -> Container {
     let game_id = game.game_id.to_string();
     let short_game_id = game_id.chars().take(8).collect::<String>();
-    let board = visual_board(game, draft);
-    let status = status_component(&game.view, game.viewer_player);
+    let feedback = draft_feedback(game, draft);
+    let board = visual_board(game, draft, &feedback);
+    let draft_preview = draft_feedback_component(&feedback);
+    let awareness = game_awareness_component(game);
+    let completed_summary = game.completed.then(|| completed_game_summary(game));
     let viewer_turn = viewer_turn_component(&game.view, game.viewer_player);
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
@@ -1618,7 +2065,7 @@ fn visual_game_page(
     let game_channel = format!("game:{}", game.game_id);
     let game_path = format!("/games/{game_id}");
     let refresh_game = ActionType::Navigate { url: game_path };
-    let feedback = turn_feedback(error);
+    let turn_feedback_view = turn_feedback(error);
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-update=(refresh_game)
@@ -1635,9 +2082,11 @@ fn visual_game_page(
                 }
                 (viewer_turn)
             }
-            (feedback)
+            (turn_feedback_view)
             main id="game-layout" width="100%" max-width="760px" gap="16px" {
-                (status)
+                (awareness)
+                @if let Some(completed_summary) = completed_summary { (completed_summary) }
+                @if !game.completed && game.view.active_player == game.viewer_player { (draft_preview) }
                 section id="board-card" width="100%" background=#ffffff
                     border=(("#ded8c9", 1)) border-radius="18px" padding="14px" { (board) }
                 (rack)
@@ -1723,6 +2172,7 @@ mod tests {
     use futures_lite::future::block_on;
     use hyperchad::router::RequestInfo;
     use time::Duration;
+    use words_with_spouses_game_domain::Dictionary as _;
 
     use super::*;
     use crate::{
@@ -1840,6 +2290,7 @@ mod tests {
                 y: 7,
                 blank_letter: None,
             }],
+            ..TurnDraft::default()
         };
         assert_eq!(parse_draft(&draft_token(&draft)), Some(draft));
     }
@@ -2041,6 +2492,8 @@ mod tests {
                 .display_to_string(false, false)
                 .expect("dashboard renders");
             assert!(dashboard.contains(&game_id.to_string()));
+            assert!(dashboard.contains("Game with bob"));
+            assert!(dashboard.contains("You 0 – 0 bob"));
             assert!(dashboard.contains("Signed in as"));
             assert!(dashboard.contains("new-game-actions"));
             assert!(dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
@@ -2061,9 +2514,17 @@ mod tests {
             assert!(!page.contains("data-shared-state-refresh-"));
             assert!(page.contains("id=\"turn-feedback\""));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
-            assert!(page.contains("turn-composer"));
-            assert!(page.contains("value=\"PASS\""));
-            assert!(page.contains("value=\"RESIGN\""));
+            assert!(page.contains("turn-actions"));
+            assert!(page.contains("game-awareness"));
+            assert!(page.contains("alice"));
+            assert!(page.contains("bob"));
+            assert!(page.contains("named-turn-status"));
+            assert!(page.contains("draft-preview"));
+            assert!(page.contains("Start by covering the starred center square."));
+            assert!(page.contains("value=\"CONFIRM_PASS\""));
+            assert!(page.contains("value=\"CONFIRM_RESIGN\""));
+            assert!(!page.contains("name=\"command\" value=\"PASS\""));
+            assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
             assert!(page.contains("rack-tile"));
             assert!(page.contains("DL"));
@@ -2072,6 +2533,196 @@ mod tests {
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));
             assert!(!page.contains("bag"));
+        });
+    }
+
+    #[test]
+    fn compose_route_renders_server_derived_ready_preview() {
+        block_on(async {
+            let database: Arc<dyn Database> = Arc::from(
+                switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("Turso opens"),
+            );
+            migrate_app(&*database).await.expect("migrations run");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let alice_session = create_session(&*database, &alice, now, Duration::days(1))
+                .await
+                .expect("Alice session creates");
+            let bob_session = create_session(&*database, &bob, now, Duration::days(1))
+                .await
+                .expect("Bob session creates");
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("game loads");
+            let alice_player = crate::player_for_user(&*database, game_id, &alice)
+                .await
+                .expect("Alice is seated");
+            let (active_player, session) = if state.active_player == alice_player {
+                (alice_player, alice_session)
+            } else {
+                let bob_player = crate::player_for_user(&*database, game_id, &bob)
+                    .await
+                    .expect("Bob is seated");
+                (bob_player, bob_session)
+            };
+            let rack = &state.racks[&active_player];
+            let (first, second, word) = rack
+                .iter()
+                .enumerate()
+                .find_map(|(first_index, first)| {
+                    rack.iter().enumerate().find_map(|(second_index, second)| {
+                        (first_index != second_index).then(|| {
+                            let first_letter = match first.face {
+                                words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
+                                words_with_spouses_game_domain::TileFace::Blank => return None,
+                            };
+                            let second_letter = match second.face {
+                                words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
+                                words_with_spouses_game_domain::TileFace::Blank => return None,
+                            };
+                            let word = format!("{first_letter}{second_letter}");
+                            words_with_spouses_game_domain::bundled_dictionary()
+                                .contains(&word)
+                                .then_some((first, second, word))
+                        })?
+                    })
+                })
+                .expect("seeded rack has a two-letter dictionary word");
+            let draft = TurnDraft {
+                selected_tile: None,
+                selected_blank_letter: None,
+                placements: vec![
+                    DraftPlacement {
+                        tile_id: first.id.get(),
+                        x: 7,
+                        y: 7,
+                        blank_letter: None,
+                    },
+                    DraftPlacement {
+                        tile_id: second.id.get(),
+                        x: 8,
+                        y: 7,
+                        blank_letter: None,
+                    },
+                ],
+                ..TurnDraft::default()
+            };
+            let cookies = std::collections::BTreeMap::from([(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            )]);
+            let game = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
+                .await
+                .expect("active player's game loads");
+            let rendered = visual_game_page(&game, &draft, None)
+                .display_to_string(false, false)
+                .expect("compose response renders");
+
+            assert!(rendered.contains("draft-preview"));
+            assert!(rendered.contains(&word));
+            assert!(rendered.contains("points"));
+            assert!(rendered.contains("This draft is ready to play."));
+        });
+    }
+
+    #[test]
+    fn turn_action_controls_require_review_before_destructive_commands() {
+        block_on(async {
+            let database: Arc<dyn Database> = Arc::from(
+                switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("Turso opens"),
+            );
+            migrate_app(&*database).await.expect("migrations run");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("game loads");
+            let active_user = if crate::player_for_user(&*database, game_id, &alice)
+                .await
+                .expect("Alice is seated")
+                == state.active_player
+            {
+                alice
+            } else {
+                bob
+            };
+            let session = create_session(&*database, &active_user, now, Duration::days(1))
+                .await
+                .expect("active session creates");
+            let cookies = std::collections::BTreeMap::from([(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            )]);
+            let game = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
+                .await
+                .expect("game loads");
+
+            let initial = visual_turn_actions(&game, &TurnDraft::default())
+                .display_to_string(false, false)
+                .expect("actions render");
+            assert!(initial.contains("value=\"CONFIRM_PASS\""));
+            assert!(initial.contains("value=\"CONFIRM_RESIGN\""));
+            assert!(!initial.contains("name=\"command\" value=\"PASS\""));
+            assert!(!initial.contains("name=\"command\" value=\"RESIGN\""));
+
+            let pass = visual_turn_actions(
+                &game,
+                &TurnDraft {
+                    mode: TurnMode::ConfirmPass,
+                    ..TurnDraft::default()
+                },
+            )
+            .display_to_string(false, false)
+            .expect("confirmation renders");
+            assert!(pass.contains("name=\"command\" value=\"PASS\""));
+            assert!(pass.contains("Confirm pass"));
+            assert!(pass.contains("value=\"CANCEL_MODE\""));
+
+            let exchange = visual_turn_actions(
+                &game,
+                &TurnDraft {
+                    exchange_tiles: game.rack_order[..2].to_vec(),
+                    mode: TurnMode::ConfirmExchange,
+                    ..TurnDraft::default()
+                },
+            )
+            .display_to_string(false, false)
+            .expect("exchange confirmation renders");
+            assert!(exchange.contains("name=\"command\" value=\"EXCHANGE\""));
+            assert!(exchange.contains("Confirm exchange"));
+            assert!(!exchange.contains("blank_0"));
         });
     }
 

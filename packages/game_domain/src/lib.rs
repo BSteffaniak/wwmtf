@@ -17,10 +17,10 @@ pub use dictionary::{
 pub use engine::{
     InitializationError, ReplayError, apply_event, build_bag, initialize_game, replay, shuffle_bag,
 };
-pub use gameplay::decide_command;
+pub use gameplay::{analyze_play, decide_command, placement_guidance};
 pub use model::{
-    BoardTile, Coordinate, GameCommand, GameError, GameEvent, GameState, GameStatus, MoveResult,
-    Placement, PlayerId, Tile, TileFace, TileId,
+    AnalyzedWord, BoardTile, Coordinate, GameCommand, GameError, GameEvent, GameState, GameStatus,
+    MoveResult, Placement, PlacementGuidance, PlayAnalysis, PlayerId, Tile, TileFace, TileId,
 };
 pub use rules::{
     INITIAL_RULE_PROFILE_ID, INITIAL_RULE_PROFILE_VERSION, PremiumSquare, RuleProfile,

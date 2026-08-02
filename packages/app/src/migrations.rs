@@ -300,6 +300,25 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["user_id"],
         false,
     ));
+    source.add_migration(table_migration(
+        "032_rack_preferences",
+        "rack_preferences",
+        vec![
+            text("rack_preference_id"),
+            text("game_id"),
+            text("user_id"),
+            text("tile_order"),
+            bigint("updated_at_ms"),
+        ],
+        "rack_preference_id",
+    ));
+    source.add_migration(index_migration(
+        "033_rack_preferences_game_user_unique",
+        "idx_rack_preferences_game_user",
+        "rack_preferences",
+        vec!["game_id", "user_id"],
+        true,
+    ));
     source
 }
 
@@ -393,9 +412,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 27);
+        assert_eq!(migrations.len(), 29);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[26].id(), "031_game_scores_user");
+        assert_eq!(migrations[28].id(), "033_rack_preferences_game_user_unique");
     }
 
     #[test]
@@ -438,6 +457,7 @@ mod tests {
                     "game_commands",
                     "game_snapshots",
                     "game_scores",
+                    "rack_preferences",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -469,6 +489,7 @@ mod tests {
                 "game_snapshots",
                 "projection_checkpoints",
                 "game_scores",
+                "rack_preferences",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }

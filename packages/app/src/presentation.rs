@@ -5,7 +5,10 @@ use std::str::FromStr as _;
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use time::OffsetDateTime;
-use words_with_spouses_game_domain::{GameId, GameStatus};
+use words_with_spouses_game_domain::{
+    GameError, GameId, GameStatus, Placement, PlacementGuidance, PlayAnalysis, analyze_play,
+    dictionary, placement_guidance,
+};
 
 use crate::{
     DashboardProjection, GameView, MoveHistoryView, UserScoreTotals, dashboard_projection,
@@ -40,7 +43,46 @@ pub struct AuthorizedGamePage {
     pub history: Vec<MoveHistoryView>,
     pub final_score_adjustments:
         std::collections::BTreeMap<words_with_spouses_game_domain::PlayerId, i64>,
+    pub rack_order: Vec<u16>,
+    pub exchange_available: bool,
+    pub viewer_username: String,
+    pub opponent_username: String,
+    pub latest_action: Option<String>,
+    pub latest_play_coordinates:
+        std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
+    pub completion_reason: Option<String>,
+    state: words_with_spouses_game_domain::GameState,
+    dictionary: words_with_spouses_game_domain::WordSetDictionary,
     pub completed: bool,
+}
+
+impl AuthorizedGamePage {
+    /// Analyzes a candidate play against this authorized viewer's canonical game state.
+    ///
+    /// # Errors
+    ///
+    /// * Returns deterministic gameplay validation failures for the candidate placement.
+    pub fn analyze_play(&self, placements: &[Placement]) -> Result<PlayAnalysis, GameError> {
+        analyze_play(
+            &self.state,
+            self.viewer_player,
+            placements,
+            &self.rules,
+            &self.dictionary,
+        )
+    }
+
+    /// Returns safe structural guidance for a partial candidate placement.
+    ///
+    /// # Errors
+    ///
+    /// * Returns deterministic actor, rack, blank, or coordinate validation failures.
+    pub fn placement_guidance(
+        &self,
+        placements: &[Placement],
+    ) -> Result<PlacementGuidance, GameError> {
+        placement_guidance(&self.state, self.viewer_player, placements, &self.rules)
+    }
 }
 
 /// Resolves the durable opaque session cookie to a user.
@@ -129,6 +171,8 @@ pub async fn load_authorized_game_page(
     let state = recover_game(db, game_id).await?;
     let rules = words_with_spouses_game_domain::rule_profile(state.metadata.rules())
         .ok_or(PresentationError::UnsupportedRules)?;
+    let dictionary =
+        dictionary(state.metadata.dictionary()).ok_or(PresentationError::UnsupportedDictionary)?;
     let view = game_view(&state, player).ok_or(PresentationError::Forbidden)?;
     let events = load_events(db, game_id, 0)
         .await?
@@ -137,6 +181,24 @@ pub async fn load_authorized_game_page(
         .collect::<Vec<_>>();
     let history = move_history_view(&events)?;
     let final_score_adjustments = final_score_adjustments(&events)?;
+    let viewer_username = username_for_user(db, &user_id).await?;
+    let opponent_user_id = db
+        .select("game_players")
+        .where_eq("game_id", game_id.to_string())
+        .execute(db)
+        .await?
+        .iter()
+        .filter_map(|row| row.get("user_id"))
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .find(|candidate| candidate != &user_id)
+        .ok_or(PresentationError::Malformed)?;
+    let opponent_username = username_for_user(db, &opponent_user_id).await?;
+    let (latest_action, latest_play_coordinates) =
+        latest_public_action(&events, &viewer_username, &opponent_username, player);
+    let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
+    let rack_order = crate::load_rack_order(db, game_id, &user_id).await?;
+    let exchange_available = state.bag.len() >= usize::from(rules.minimum_tiles_for_exchange);
+    let completed = view.status == GameStatus::Completed;
     Ok(AuthorizedGamePage {
         user_id,
         viewer_player: player,
@@ -145,8 +207,123 @@ pub async fn load_authorized_game_page(
         rules,
         history,
         final_score_adjustments,
-        completed: state.status == GameStatus::Completed,
+        rack_order,
+        exchange_available,
+        viewer_username,
+        opponent_username,
+        latest_action,
+        latest_play_coordinates,
+        completion_reason,
+        state,
+        dictionary,
+        completed,
     })
+}
+
+async fn username_for_user(db: &dyn Database, user_id: &str) -> Result<String, PresentationError> {
+    db.select("users")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?
+        .first()
+        .and_then(|row| row.get("username_display"))
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or(PresentationError::Malformed)
+}
+
+fn latest_public_action(
+    events: &[words_with_spouses_game_domain::GameEvent],
+    viewer_username: &str,
+    opponent_username: &str,
+    viewer: words_with_spouses_game_domain::PlayerId,
+) -> (
+    Option<String>,
+    std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
+) {
+    use words_with_spouses_game_domain::GameEvent;
+
+    let name = |player| {
+        if player == viewer {
+            viewer_username
+        } else {
+            opponent_username
+        }
+    };
+    for event in events.iter().rev() {
+        match event {
+            GameEvent::TilesPlayed {
+                player_id,
+                placements,
+                score,
+                ..
+            } => {
+                return (
+                    Some(format!("{} played for {score} points.", name(*player_id))),
+                    placements.keys().copied().collect(),
+                );
+            }
+            GameEvent::TilesExchanged {
+                player_id,
+                returned,
+                ..
+            } => {
+                return (
+                    Some(format!(
+                        "{} exchanged {} tile(s).",
+                        name(*player_id),
+                        returned.len()
+                    )),
+                    std::collections::BTreeSet::new(),
+                );
+            }
+            GameEvent::TurnPassed { player_id } => {
+                return (
+                    Some(format!("{} passed.", name(*player_id))),
+                    std::collections::BTreeSet::new(),
+                );
+            }
+            GameEvent::GameResigned { player_id, .. } => {
+                return (
+                    Some(format!("{} resigned.", name(*player_id))),
+                    std::collections::BTreeSet::new(),
+                );
+            }
+            GameEvent::GameCompleted { .. } | GameEvent::GameStarted { .. } => {}
+        }
+    }
+    (None, std::collections::BTreeSet::new())
+}
+
+fn completion_reason(
+    events: &[words_with_spouses_game_domain::GameEvent],
+    scoreless_turn_limit: u8,
+) -> Option<String> {
+    use words_with_spouses_game_domain::GameEvent;
+
+    if events
+        .iter()
+        .any(|event| matches!(event, GameEvent::GameResigned { .. }))
+    {
+        return Some("Resignation".to_string());
+    }
+    let completion_index = events
+        .iter()
+        .rposition(|event| matches!(event, GameEvent::GameCompleted { .. }))?;
+    let scoreless_turns = events[..completion_index]
+        .iter()
+        .rev()
+        .take_while(|event| {
+            matches!(
+                event,
+                GameEvent::TurnPassed { .. } | GameEvent::TilesExchanged { .. }
+            ) || matches!(event, GameEvent::TilesPlayed { score: 0, .. })
+        })
+        .count();
+    if scoreless_turns >= usize::from(scoreless_turn_limit) {
+        Some("Scoreless-turn limit".to_string())
+    } else {
+        Some("A player emptied their rack".to_string())
+    }
 }
 
 /// Authenticated presentation failure mapped to recoverable product states by routes.
@@ -158,6 +335,8 @@ pub enum PresentationError {
     Malformed,
     #[error("this game uses an unsupported rules profile")]
     UnsupportedRules,
+    #[error("this game uses an unsupported dictionary")]
+    UnsupportedDictionary,
     #[error("this game is unavailable")]
     UnknownGame,
     #[error("you are not authorized to view this game")]
@@ -168,6 +347,8 @@ pub enum PresentationError {
     Journal(#[from] crate::JournalError),
     #[error(transparent)]
     Projection(#[from] crate::ProjectionError),
+    #[error(transparent)]
+    RackPreference(#[from] crate::RackPreferenceError),
     #[error(transparent)]
     Replay(#[from] words_with_spouses_game_domain::ReplayError),
     #[error(transparent)]

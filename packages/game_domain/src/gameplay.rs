@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BoardTile, Coordinate, Dictionary, GameCommand, GameError, GameEvent, GameState, GameStatus,
-    MoveResult, Placement, PlayerId, PremiumSquare, RuleProfile, Tile, TileFace, TileId,
+    AnalyzedWord, BoardTile, Coordinate, Dictionary, GameCommand, GameError, GameEvent, GameState,
+    GameStatus, MoveResult, Placement, PlacementGuidance, PlayAnalysis, PlayerId, PremiumSquare,
+    RuleProfile, Tile, TileFace, TileId,
 };
 
 /// Validates a gameplay command and produces canonical events without mutating state.
@@ -60,39 +61,65 @@ fn decide_play(
     profile: &RuleProfile,
     dictionary: &impl Dictionary,
 ) -> Result<Vec<GameEvent>, GameError> {
-    if placements.is_empty() {
-        return Err(GameError::EmptyTileSelection);
+    let prepared = prepare_play(state, actor, placements, profile, dictionary)?;
+    let drawn: Vec<Tile> = state
+        .bag
+        .iter()
+        .rev()
+        .take(placements.len())
+        .copied()
+        .collect();
+    let drawn_count = drawn.len();
+    let play_event = GameEvent::TilesPlayed {
+        player_id: actor,
+        placements: prepared.placed,
+        score: prepared.analysis.score,
+        drawn,
+    };
+    let mut events = vec![play_event];
+    let remaining_rack = state.racks[&actor].len() - placements.len() + drawn_count;
+    if state.bag.len() <= placements.len() && remaining_rack == 0 {
+        events.push(completion_event_after_rack_out(
+            state,
+            actor,
+            prepared.analysis.score,
+        ));
     }
-    let rack = &state.racks[&actor];
-    let mut selected = BTreeSet::new();
-    let mut placed = BTreeMap::new();
-    for placement in placements {
-        if !selected.insert(placement.tile_id) {
-            return Err(GameError::DuplicateTile);
-        }
-        if !profile.contains(placement.coordinate) {
-            return Err(GameError::CoordinateOutOfBounds {
-                coordinate_x: placement.coordinate.x,
-                coordinate_y: placement.coordinate.y,
-                board_size: profile.board_size,
-            });
-        }
-        if state.board.contains_key(&placement.coordinate) {
-            return Err(GameError::OccupiedCoordinate);
-        }
-        let tile = rack
-            .iter()
-            .find(|tile| tile.id == placement.tile_id)
-            .copied()
-            .ok_or(GameError::TileNotInRack(placement.tile_id))?;
-        let letter = placement_letter(tile, placement.blank_letter)?;
-        if placed
-            .insert(placement.coordinate, BoardTile { tile, letter })
-            .is_some()
-        {
-            return Err(GameError::DuplicateCoordinate);
-        }
-    }
+    Ok(events)
+}
+
+struct PreparedPlay {
+    placed: BTreeMap<Coordinate, BoardTile>,
+    analysis: PlayAnalysis,
+}
+
+/// Analyzes a candidate play with the same deterministic rules used to accept it.
+///
+/// This function never mutates canonical state, draws tiles, or produces events.
+///
+/// # Errors
+///
+/// * Returns [`GameError`] for the same membership, turn, rack, geometry, dictionary, and lifecycle
+///   failures as a submitted play command.
+pub fn analyze_play(
+    state: &GameState,
+    actor: PlayerId,
+    placements: &[Placement],
+    profile: &RuleProfile,
+    dictionary: &impl Dictionary,
+) -> Result<PlayAnalysis, GameError> {
+    ensure_actor(state, actor)?;
+    Ok(prepare_play(state, actor, placements, profile, dictionary)?.analysis)
+}
+
+fn prepare_play(
+    state: &GameState,
+    actor: PlayerId,
+    placements: &[Placement],
+    profile: &RuleProfile,
+    dictionary: &impl Dictionary,
+) -> Result<PreparedPlay, GameError> {
+    let placed = candidate_tiles(state, actor, placements, profile)?;
 
     let axis = placement_axis(&placed)?;
     let board = combined_board(&state.board, &placed);
@@ -108,27 +135,26 @@ fn decide_play(
     } else {
         0
     };
-    let score = score_words(&words, &board, &placed, profile) + u32::from(full_rack_bonus);
-    let drawn: Vec<Tile> = state
-        .bag
-        .iter()
-        .rev()
-        .take(placements.len())
-        .copied()
-        .collect();
-    let drawn_count = drawn.len();
-    let play_event = GameEvent::TilesPlayed {
-        player_id: actor,
-        placements: placed,
-        score,
-        drawn,
-    };
-    let mut events = vec![play_event];
-    let remaining_rack = state.racks[&actor].len() - placements.len() + drawn_count;
-    if state.bag.len() <= placements.len() && remaining_rack == 0 {
-        events.push(completion_event_after_rack_out(state, actor, score));
-    }
-    Ok(events)
+    let words = words
+        .into_iter()
+        .map(|word| {
+            let score = score_word(&word, &board, &placed, profile);
+            AnalyzedWord {
+                text: word.text,
+                coordinates: word.coordinates,
+                score,
+            }
+        })
+        .collect::<Vec<_>>();
+    let score = words.iter().map(|word| word.score).sum::<u32>() + u32::from(full_rack_bonus);
+    Ok(PreparedPlay {
+        placed,
+        analysis: PlayAnalysis {
+            words,
+            score,
+            full_rack_bonus,
+        },
+    })
 }
 
 fn decide_pass(state: &GameState, actor: PlayerId, profile: &RuleProfile) -> Vec<GameEvent> {
@@ -228,6 +254,168 @@ fn decide_exchange(
         returned,
         drawn,
     })
+}
+
+fn candidate_tiles(
+    state: &GameState,
+    actor: PlayerId,
+    placements: &[Placement],
+    profile: &RuleProfile,
+) -> Result<BTreeMap<Coordinate, BoardTile>, GameError> {
+    if placements.is_empty() {
+        return Err(GameError::EmptyTileSelection);
+    }
+    let rack = &state.racks[&actor];
+    let mut selected = BTreeSet::new();
+    let mut placed = BTreeMap::new();
+    for placement in placements {
+        if !selected.insert(placement.tile_id) {
+            return Err(GameError::DuplicateTile);
+        }
+        if !profile.contains(placement.coordinate) {
+            return Err(GameError::CoordinateOutOfBounds {
+                coordinate_x: placement.coordinate.x,
+                coordinate_y: placement.coordinate.y,
+                board_size: profile.board_size,
+            });
+        }
+        if state.board.contains_key(&placement.coordinate) {
+            return Err(GameError::OccupiedCoordinate);
+        }
+        let tile = rack
+            .iter()
+            .find(|tile| tile.id == placement.tile_id)
+            .copied()
+            .ok_or(GameError::TileNotInRack(placement.tile_id))?;
+        let letter = placement_letter(tile, placement.blank_letter)?;
+        if placed
+            .insert(placement.coordinate, BoardTile { tile, letter })
+            .is_some()
+        {
+            return Err(GameError::DuplicateCoordinate);
+        }
+    }
+    Ok(placed)
+}
+
+/// Derives structural guidance for a partial candidate placement without consulting the dictionary.
+///
+/// The result contains no word suggestions and never mutates canonical state. Invalid tile or
+/// coordinate operands still return their normal deterministic errors.
+///
+/// # Errors
+///
+/// * Returns [`GameError`] when the actor, rack operands, blank assignment, or coordinates are
+///   invalid for the current canonical state.
+pub fn placement_guidance(
+    state: &GameState,
+    actor: PlayerId,
+    placements: &[Placement],
+    profile: &RuleProfile,
+) -> Result<PlacementGuidance, GameError> {
+    ensure_actor(state, actor)?;
+    if placements.is_empty() {
+        return Ok(PlacementGuidance {
+            required: BTreeSet::new(),
+            eligible: if state.board.is_empty() {
+                std::iter::once(profile.start).collect()
+            } else {
+                adjacent_open_squares(&state.board, profile)
+            },
+        });
+    }
+    let placed = candidate_tiles(state, actor, placements, profile)?;
+    let guide_tile = *placed
+        .values()
+        .next()
+        .ok_or(GameError::EmptyTileSelection)?;
+    let required = required_gap_squares(state, &placed, profile);
+    let mut eligible = BTreeSet::new();
+    for y in 0..profile.board_size {
+        for x in 0..profile.board_size {
+            let coordinate = Coordinate::new(x, y);
+            if state.board.contains_key(&coordinate) || placed.contains_key(&coordinate) {
+                continue;
+            }
+            let mut candidate = placed.clone();
+            candidate.insert(coordinate, guide_tile);
+            if let Ok(axis) = placement_axis(&candidate) {
+                let board = combined_board(&state.board, &candidate);
+                if validate_connection(state, &candidate, &board, profile, axis).is_ok() {
+                    eligible.insert(coordinate);
+                }
+            }
+        }
+    }
+    Ok(PlacementGuidance { required, eligible })
+}
+
+fn adjacent_open_squares(
+    board: &BTreeMap<Coordinate, BoardTile>,
+    profile: &RuleProfile,
+) -> BTreeSet<Coordinate> {
+    board
+        .keys()
+        .flat_map(|&coordinate| neighbors(coordinate).into_iter().flatten())
+        .filter(|coordinate| profile.contains(*coordinate) && !board.contains_key(coordinate))
+        .collect()
+}
+
+fn required_gap_squares(
+    state: &GameState,
+    placed: &BTreeMap<Coordinate, BoardTile>,
+    profile: &RuleProfile,
+) -> BTreeSet<Coordinate> {
+    if state.board.is_empty() && !placed.contains_key(&profile.start) {
+        return std::iter::once(profile.start).collect();
+    }
+    let mut required = BTreeSet::new();
+    let same_row = placed
+        .keys()
+        .all(|coordinate| coordinate.y == placed.keys().next().expect("non-empty").y);
+    let same_column = placed
+        .keys()
+        .all(|coordinate| coordinate.x == placed.keys().next().expect("non-empty").x);
+    if same_row {
+        let y = placed.keys().next().expect("non-empty").y;
+        let min = placed
+            .keys()
+            .map(|coordinate| coordinate.x)
+            .min()
+            .expect("non-empty");
+        let max = placed
+            .keys()
+            .map(|coordinate| coordinate.x)
+            .max()
+            .expect("non-empty");
+        required.extend(
+            (min..=max)
+                .map(|x| Coordinate::new(x, y))
+                .filter(|coordinate| {
+                    !state.board.contains_key(coordinate) && !placed.contains_key(coordinate)
+                }),
+        );
+    } else if same_column {
+        let x = placed.keys().next().expect("non-empty").x;
+        let min = placed
+            .keys()
+            .map(|coordinate| coordinate.y)
+            .min()
+            .expect("non-empty");
+        let max = placed
+            .keys()
+            .map(|coordinate| coordinate.y)
+            .max()
+            .expect("non-empty");
+        required.extend(
+            (min..=max)
+                .map(|y| Coordinate::new(x, y))
+                .filter(|coordinate| {
+                    !state.board.contains_key(coordinate) && !placed.contains_key(coordinate)
+                }),
+        );
+    }
+    required
 }
 
 const fn placement_letter(tile: Tile, blank_letter: Option<char>) -> Result<char, GameError> {
@@ -349,41 +537,36 @@ fn collect_word(board: &BTreeMap<Coordinate, BoardTile>, origin: Coordinate, axi
     Word { text, coordinates }
 }
 
-fn score_words(
-    words: &[Word],
+fn score_word(
+    word: &Word,
     board: &BTreeMap<Coordinate, BoardTile>,
     placed: &BTreeMap<Coordinate, BoardTile>,
     profile: &RuleProfile,
 ) -> u32 {
-    words
+    let mut word_multiplier = 1_u32;
+    let letters = word
+        .coordinates
         .iter()
-        .map(|word| {
-            let mut word_multiplier = 1_u32;
-            let letters = word
-                .coordinates
-                .iter()
-                .map(|coordinate| {
-                    let points = u32::from(board[coordinate].tile.points);
-                    if let Some(premium) = placed
-                        .contains_key(coordinate)
-                        .then(|| profile.premiums.get(coordinate))
-                        .flatten()
-                    {
-                        match premium {
-                            PremiumSquare::Letter(multiplier) => {
-                                return points * u32::from(*multiplier);
-                            }
-                            PremiumSquare::Word(multiplier) => {
-                                word_multiplier *= u32::from(*multiplier);
-                            }
-                        }
+        .map(|coordinate| {
+            let points = u32::from(board[coordinate].tile.points);
+            if let Some(premium) = placed
+                .contains_key(coordinate)
+                .then(|| profile.premiums.get(coordinate))
+                .flatten()
+            {
+                match premium {
+                    PremiumSquare::Letter(multiplier) => {
+                        return points * u32::from(*multiplier);
                     }
-                    points
-                })
-                .sum::<u32>();
-            letters * word_multiplier
+                    PremiumSquare::Word(multiplier) => {
+                        word_multiplier *= u32::from(*multiplier);
+                    }
+                }
+            }
+            points
         })
-        .sum()
+        .sum::<u32>();
+    letters * word_multiplier
 }
 
 fn neighbors(coordinate: Coordinate) -> [Option<Coordinate>; 4] {
@@ -477,6 +660,97 @@ mod tests {
             coordinate: Coordinate::new(x, y),
             blank_letter: None,
         }
+    }
+
+    #[test]
+    fn analysis_matches_accepted_play_words_score_and_bonus() {
+        let (mut state, mut profile, dictionary) = state();
+        let actor = state.active_player;
+        profile.premiums.clear();
+        profile.full_rack_bonus = 11;
+        profile.rack_size = 2;
+        set_rack(
+            &mut state,
+            actor,
+            &[
+                (200, TileFace::Letter('A'), 1),
+                (201, TileFace::Letter('T'), 2),
+            ],
+        );
+        let placements = vec![play(200, 7, 7), play(201, 8, 7)];
+        let before = state.clone();
+
+        let analysis = analyze_play(&state, actor, &placements, &profile, &dictionary)
+            .expect("fixture play analyzes");
+        let accepted = decide_command(
+            &state,
+            actor,
+            &GameCommand::Play { placements },
+            &profile,
+            &dictionary,
+        )
+        .expect("analyzed play is accepted");
+
+        assert_eq!(analysis.words.len(), 1);
+        assert_eq!(analysis.words[0].text, "AT");
+        assert_eq!(analysis.words[0].score, 3);
+        assert_eq!(analysis.full_rack_bonus, 11);
+        assert_eq!(analysis.score, 14);
+        assert!(matches!(
+            accepted.events.first(),
+            Some(GameEvent::TilesPlayed { score: 14, .. })
+        ));
+        assert_eq!(state, before, "analysis must not mutate canonical state");
+    }
+
+    #[test]
+    fn placement_guidance_covers_opening_connection_and_gaps() {
+        let (mut state, profile, _dictionary) = state();
+        let actor = state.active_player;
+        set_rack(
+            &mut state,
+            actor,
+            &[
+                (200, TileFace::Letter('A'), 1),
+                (201, TileFace::Letter('T'), 1),
+            ],
+        );
+
+        let opening = placement_guidance(&state, actor, &[], &profile)
+            .expect("empty opening draft has guidance");
+        assert_eq!(opening.eligible, std::iter::once(profile.start).collect());
+
+        let missing_start = placement_guidance(&state, actor, &[play(200, 8, 7)], &profile)
+            .expect("partial opening draft has guidance");
+        assert_eq!(
+            missing_start.required,
+            std::iter::once(profile.start).collect()
+        );
+        assert!(missing_start.eligible.contains(&profile.start));
+
+        let gap = placement_guidance(&state, actor, &[play(200, 7, 7), play(201, 9, 7)], &profile)
+            .expect("gapped draft has guidance");
+        assert_eq!(
+            gap.required,
+            std::iter::once(Coordinate::new(8, 7)).collect()
+        );
+        assert!(gap.eligible.contains(&Coordinate::new(8, 7)));
+
+        state.board.insert(
+            profile.start,
+            BoardTile {
+                tile: Tile {
+                    id: TileId::new(300),
+                    face: TileFace::Letter('A'),
+                    points: 1,
+                },
+                letter: 'A',
+            },
+        );
+        let connected =
+            placement_guidance(&state, actor, &[], &profile).expect("active board has guidance");
+        assert!(connected.eligible.contains(&Coordinate::new(8, 7)));
+        assert!(!connected.eligible.contains(&Coordinate::new(0, 0)));
     }
 
     #[test]
@@ -610,6 +884,40 @@ mod tests {
             prop_assert_eq!(result.events, vec![GameEvent::TurnPassed { player_id: actor }]);
             prop_assert_eq!(result.resulting_revision, state.revision + 1);
             prop_assert_eq!(state.scores, before);
+        }
+
+        #[test]
+        fn analysis_and_accepted_play_always_have_the_same_score(
+            first_points in 0_u8..11,
+            second_points in 0_u8..11,
+        ) {
+            let (mut state, profile, dictionary) = state();
+            let actor = state.active_player;
+            state.racks.insert(actor, vec![
+                Tile { id: TileId::new(200), face: TileFace::Letter('A'), points: first_points },
+                Tile { id: TileId::new(201), face: TileFace::Letter('T'), points: second_points },
+            ]);
+            let placements = vec![
+                Placement { tile_id: TileId::new(200), coordinate: profile.start, blank_letter: None },
+                Placement { tile_id: TileId::new(201), coordinate: Coordinate::new(8, 7), blank_letter: None },
+            ];
+            let analysis = analyze_play(&state, actor, &placements, &profile, &dictionary)
+                .expect("fixture word analyzes");
+            let result = decide_command(
+                &state,
+                actor,
+                &GameCommand::Play { placements },
+                &profile,
+                &dictionary,
+            )
+            .expect("analyzed fixture word is valid");
+            let accepted_score = match result.events.first() {
+                Some(GameEvent::TilesPlayed { score, .. }) => *score,
+                event => panic!("expected play event, got {event:?}"),
+            };
+
+            prop_assert_eq!(analysis.score, accepted_score);
+            prop_assert_eq!(analysis.words.iter().map(|word| word.score).sum::<u32>() + u32::from(analysis.full_rack_bonus), accepted_score);
         }
 
         #[test]

@@ -204,6 +204,37 @@ pub struct GameState {
     pub revision: u64,
 }
 
+/// One server-derived word formed by a candidate play.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalyzedWord {
+    /// Normalized uppercase word text.
+    pub text: String,
+    /// Ordered board coordinates occupied by the word.
+    pub coordinates: Vec<Coordinate>,
+    /// Score contributed by this word before any full-rack bonus.
+    pub score: u32,
+}
+
+/// Deterministic, non-mutating analysis of a legal candidate play.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayAnalysis {
+    /// Main word and any cross-words formed by the candidate play.
+    pub words: Vec<AnalyzedWord>,
+    /// Total score including the full-rack bonus when earned.
+    pub score: u32,
+    /// Full-rack bonus included in `score`.
+    pub full_rack_bonus: u16,
+}
+
+/// Structural board guidance for extending a candidate placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementGuidance {
+    /// Empty squares which must be filled to close gaps or cover the opening square.
+    pub required: BTreeSet<Coordinate>,
+    /// Empty squares which would make or preserve a structurally legal placement when added next.
+    pub eligible: BTreeSet<Coordinate>,
+}
+
 /// Result of accepting a command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveResult {
