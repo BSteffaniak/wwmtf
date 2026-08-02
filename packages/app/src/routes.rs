@@ -1689,6 +1689,7 @@ fn compose_form_fields(game: &AuthorizedGamePage, draft: &TurnDraft, action: &st
     .into()
 }
 
+#[allow(clippy::too_many_lines)]
 fn visual_board(
     game: &AuthorizedGamePage,
     draft: &TurnDraft,
@@ -1743,14 +1744,21 @@ fn visual_board(
                                         None => ("#ede6d4", String::new(), "#756f64"),
                                     }
                                 };
+                                @let draft_points = drafted.and_then(|(tile_id, _)| {
+                                    game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
+                                        .map(|(_, _, points)| *points)
+                                });
                                 @if let Some((tile_id, _)) = drafted {
                                     form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square" width="44px" height="44px"
                                             background=#dce8f5 color=#2e291f border=(("#4f7298", 3))
-                                            align-items="center" justify-content="center" font-weight=bold cursor=pointer {
+                                            align-items="center" justify-content="center" font-weight=bold position="relative" cursor=pointer {
                                             span font-size="20px" { (label) }
+                                            @if let Some(points) = draft_points {
+                                                span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
+                                            }
                                         }
                                     }
                                 } @else if committed.is_some() {
@@ -2624,6 +2632,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn database_backed_routes_render_dashboard_and_private_game() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -2832,6 +2841,7 @@ mod tests {
             assert!(rendered.contains(&word));
             assert!(rendered.contains("points"));
             assert!(rendered.contains("This draft is ready to play."));
+            assert!(rendered.contains("board-tile-points"));
             assert!(rendered.contains("draft_stale=1"));
         });
     }
