@@ -125,6 +125,7 @@ pub fn move_tile_to_slot(order: &[u16], tile_id: TileId, slot: usize) -> Vec<u16
 #[cfg(test)]
 mod tests {
     use switchy_database::query::FilterableQuery as _;
+    use words_with_spouses_game_domain::GameCommand;
 
     use super::*;
 
@@ -176,6 +177,47 @@ mod tests {
                     .expect("Alice order reloads"),
                 preferred
             );
+            let alice_player = crate::player_for_user(&*db, game_id, &alice)
+                .await
+                .expect("Alice is seated");
+            let before_exchange = crate::recover_game(&*db, game_id)
+                .await
+                .expect("game recovers");
+            let exchanged_tile = before_exchange.racks[&alice_player][0];
+            let expected_new_tiles = before_exchange
+                .bag
+                .iter()
+                .rev()
+                .take(1)
+                .map(|tile| tile.id.get())
+                .collect::<Vec<_>>();
+            crate::submit_game_command(
+                &*db,
+                game_id,
+                &alice,
+                "rack-order-exchange",
+                "rack-order-exchange-idempotency",
+                before_exchange.revision,
+                &GameCommand::Exchange {
+                    tile_ids: std::iter::once(exchanged_tile.id).collect(),
+                },
+                2,
+            )
+            .await
+            .expect("Alice exchanges");
+            let after_exchange = load_rack_order(&*db, game_id, &alice)
+                .await
+                .expect("order reconciles after an exchange");
+            assert_eq!(
+                after_exchange,
+                preferred
+                    .iter()
+                    .copied()
+                    .filter(|tile_id| *tile_id != exchanged_tile.id.get())
+                    .chain(expected_new_tiles)
+                    .collect::<Vec<_>>()
+            );
+
             assert_ne!(
                 load_rack_order(&*db, game_id, &bob)
                     .await

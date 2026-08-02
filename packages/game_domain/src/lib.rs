@@ -17,7 +17,7 @@ pub use dictionary::{
 pub use engine::{
     InitializationError, ReplayError, apply_event, build_bag, initialize_game, replay, shuffle_bag,
 };
-pub use gameplay::{analyze_play, decide_command, placement_guidance};
+pub use gameplay::{analyze_committed_play, analyze_play, decide_command, placement_guidance};
 pub use model::{
     AnalyzedWord, BoardTile, Coordinate, GameCommand, GameError, GameEvent, GameState, GameStatus,
     MoveResult, Placement, PlacementGuidance, PlayAnalysis, PlayerId, Tile, TileFace, TileId,

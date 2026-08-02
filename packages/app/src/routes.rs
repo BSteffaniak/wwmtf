@@ -1228,8 +1228,12 @@ pub async fn game_route(
     now: OffsetDateTime,
 ) -> Container {
     let game_id = request.path.strip_prefix("/games/").unwrap_or_default();
+    let stale_message = request
+        .query
+        .contains_key("draft_stale")
+        .then_some("The board changed while you were composing. Your unsubmitted tiles were cleared; your rack order was preserved.");
     match load_authorized_game_page(database, &request.cookies, game_id, now).await {
-        Ok(game) => game_page(&game),
+        Ok(game) => visual_game_page(&game, &TurnDraft::default(), stale_message),
         Err(PresentationError::Unauthenticated) => signed_out_page(),
         Err(error @ (PresentationError::Forbidden | PresentationError::UnknownGame)) => {
             product_error_page("Game unavailable", &error.to_string())
@@ -1387,6 +1391,66 @@ fn dashboard_page_with_invitation(
     dashboard_page_content(dashboard, Some((invitation_id, token, public_base_url)))
 }
 
+fn dashboard_request_before() -> ActionType {
+    ActionType::Multi(vec![
+        ActionType::display_by_id("dashboard-action-progress"),
+        ActionType::no_display_by_id("dashboard-action-error"),
+    ])
+}
+
+fn dashboard_request_after() -> ActionType {
+    ActionType::no_display_by_id("dashboard-action-progress")
+}
+
+fn dashboard_request_error() -> ActionType {
+    ActionType::display_by_id("dashboard-action-error")
+}
+
+fn start_game_component() -> Container {
+    container! {
+        section id="new-game-actions" width="100%" background=#ffffff
+            border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="18px" {
+            div gap="5px" {
+                h2 { "Start a game" }
+                span color=#5d6258 { "Challenge a username or make a one-time private invite." }
+            }
+            div id="dashboard-action-progress" hidden background=#e8f1e3 border=(("#a9bf9c", 1))
+                border-radius="10px" padding="12px" { span { "Working…" } }
+            div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
+                border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
+            form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
+                fx-http-before-request=(dashboard_request_before())
+                fx-http-after-request=(dashboard_request_after())
+                fx-http-error=(dashboard_request_error()) {
+                input type=hidden name="action" value="CHALLENGE";
+                input type=text name="username" placeholder="Opponent username" padding-y=13 padding-x=14
+                    border=(("#cfc8b8", 1)) border-radius="10px";
+                button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
+                    border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Send challenge" }
+            }
+            form hx-post="/dashboard/action" hx-target="#app-page" gap="8px"
+                fx-http-before-request=(dashboard_request_before())
+                fx-http-after-request=(dashboard_request_after())
+                fx-http-error=(dashboard_request_error()) {
+                input type=hidden name="action" value="CREATE_INVITATION";
+                button type=submit padding-y=12 padding-x=16 background=#f4ead7 color=#664f2e
+                    border=(("#cfb98e", 1)) border-radius="10px" cursor=pointer { "Create private invite link" }
+            }
+            form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
+                fx-http-before-request=(dashboard_request_before())
+                fx-http-after-request=(dashboard_request_after())
+                fx-http-error=(dashboard_request_error()) {
+                input type=hidden name="action" value="REDEEM_INVITATION";
+                input type=text name="invitation_token" placeholder="Paste an invite token" padding-y=13 padding-x=14
+                    border=(("#cfc8b8", 1)) border-radius="10px";
+                button type=submit padding-y=12 padding-x=16 background=#ffffff color=#526243
+                    border=(("#839276", 1)) border-radius="10px" cursor=pointer { "Join game" }
+            }
+        }
+    }
+    .into()
+}
+
 #[allow(clippy::too_many_lines)]
 fn dashboard_page_content(
     dashboard: &AuthenticatedDashboard,
@@ -1433,32 +1497,7 @@ fn dashboard_page_content(
                     }
                 }
                 main id="dashboard-main" direction="column" gap="24px" align-items="start" {
-                    section id="new-game-actions" width="100%" background=#ffffff
-                        border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="18px" {
-                        div gap="5px" {
-                            h2 { "Start a game" }
-                            span color=#5d6258 { "Challenge a username or make a one-time private invite." }
-                        }
-                        form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
-                            input type=hidden name="action" value="CHALLENGE";
-                            input type=text name="username" placeholder="Opponent username" padding-y=13 padding-x=14
-                                border=(("#cfc8b8", 1)) border-radius="10px";
-                            button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
-                                border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Send challenge" }
-                        }
-                        form hx-post="/dashboard/action" hx-target="#app-page" gap="8px" {
-                            input type=hidden name="action" value="CREATE_INVITATION";
-                            button type=submit padding-y=12 padding-x=16 background=#f4ead7 color=#664f2e
-                                border=(("#cfb98e", 1)) border-radius="10px" cursor=pointer { "Create private invite link" }
-                        }
-                        form hx-post="/dashboard/action" hx-target="#app-page" gap="10px" {
-                            input type=hidden name="action" value="REDEEM_INVITATION";
-                            input type=text name="invitation_token" placeholder="Paste an invite token" padding-y=13 padding-x=14
-                                border=(("#cfc8b8", 1)) border-radius="10px";
-                            button type=submit padding-y=12 padding-x=16 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="10px" cursor=pointer { "Join game" }
-                        }
-                    }
+                    (start_game_component())
                     section id="score-totals" width="100%" background=#ffffff
                         border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="10px" {
                         h2 { "Score history" }
@@ -1472,7 +1511,10 @@ fn dashboard_page_content(
                         span color=#5d6258 { "Invitations are private and single-use. Old invite secrets cannot be displayed again." }
                     }
                     @if dashboard.projection.pending.is_empty() {
-                        span color=#777b73 { "Nothing waiting right now." }
+                        div gap="6px" {
+                            span color=#777b73 { "No challenges or invitations are waiting." }
+                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a game" }
+                        }
                     }
                     @for item in &dashboard.projection.pending {
                         @let counterparty = item.counterparty_username.as_deref().unwrap_or("Private invite");
@@ -1649,6 +1691,7 @@ fn visual_board(
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
+            span color=#5d6258 { "Board key: gold tiles are committed; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
             div overflow-x="auto" {
                 div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1687,7 +1730,7 @@ fn visual_board(
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square" width="44px" height="44px"
-                                            background=(background) color=(color) border=(("#526243", 2))
+                                            background=#dce8f5 color=#2e291f border=(("#4f7298", 3))
                                             align-items="center" justify-content="center" font-weight=bold cursor=pointer {
                                             span font-size="20px" { (label) }
                                         }
@@ -1990,6 +2033,12 @@ fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
             @if let Some(latest) = &game.latest_action {
                 span id="latest-game-action" color=#5d6258 { "Latest: " (latest.as_str()) }
             }
+            div id="live-status" color=#5d6258 {
+                span id="live-status-connecting" { "Live updates: connecting…" }
+                span id="live-status-connected" hidden { "Live updates: connected" }
+                span id="live-status-reconnecting" hidden { "Live updates: reconnecting…" }
+                span id="live-status-disconnected" hidden { "Live updates: disconnected. Retrying automatically." }
+            }
         }
     }
     .into()
@@ -2046,6 +2095,38 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
     .into()
 }
 
+fn rules_component(game: &AuthorizedGamePage) -> Container {
+    let exchange_requirement = game.rules.minimum_tiles_for_exchange;
+    let rack_size = game.rules.rack_size;
+    let full_rack_bonus = game.rules.full_rack_bonus;
+    let scoreless_turn_limit = game.rules.scoreless_turn_limit;
+    container! {
+        details id="game-rules" width="100%" background=#ffffff border=(("#ded8c9", 1))
+            border-radius="14px" padding="16px" {
+            summary cursor="pointer" font-weight=bold { "Rules and board key" }
+            div padding-top="12px" gap="9px" color=#5d6258 {
+                span { "Place tiles in one row or column to form connected words. The opening play must cover the center star. All formed words must be accepted by this game’s pinned dictionary." }
+                span { "A tile scores its printed value. DL and TL multiply a newly placed tile; DW and TW multiply the whole word. Premium squares apply only when first covered." }
+                span { "Playing all " (rack_size) " rack tiles adds a " (full_rack_bonus) "-point full-rack bonus." }
+                span { "Exchange replaces selected tiles and ends your turn. It is available only while at least " (exchange_requirement) " tiles remain in the reserve; exchanged tile identities stay private." }
+                span { "Passing ends your turn without playing. " (scoreless_turn_limit) " consecutive scoreless turns complete the game." }
+                span { "Resigning immediately completes the game for your opponent. Otherwise, emptying a rack after the reserve is exhausted completes the game and applies the remaining-tile score adjustments." }
+            }
+        }
+    }
+    .into()
+}
+
+fn live_status_action(visible_id: &str) -> ActionType {
+    ActionType::Multi(vec![
+        ActionType::no_display_by_id("live-status-connecting"),
+        ActionType::no_display_by_id("live-status-connected"),
+        ActionType::no_display_by_id("live-status-reconnecting"),
+        ActionType::no_display_by_id("live-status-disconnected"),
+        ActionType::display_by_id(visible_id),
+    ])
+}
+
 fn visual_game_page(
     game: &AuthorizedGamePage,
     draft: &TurnDraft,
@@ -2063,12 +2144,17 @@ fn visual_game_page(
     let actions = visual_turn_actions(game, draft);
     let history = move_history_component(&game.history);
     let game_channel = format!("game:{}", game.game_id);
-    let game_path = format!("/games/{game_id}");
+    let game_path = format!("/games/{game_id}?draft_stale=1");
     let refresh_game = ActionType::Navigate { url: game_path };
     let turn_feedback_view = turn_feedback(error);
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-update=(refresh_game)
+            fx-global-shared-state-connecting=(live_status_action("live-status-connecting"))
+            fx-global-shared-state-connected=(live_status_action("live-status-connected"))
+            fx-global-shared-state-subscribed=(live_status_action("live-status-connected"))
+            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting"))
+            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected"))
             direction="column" align-items="center"
             min-height="100vh" background=#f4f1e8 color=#293126
             padding-y=20 padding-x=10 gap="18px" {
@@ -2102,6 +2188,7 @@ fn visual_game_page(
                     summary cursor="pointer" font-weight=bold { "Move history" }
                     (history)
                 }
+                (rules_component(game))
             }
         }
     }
@@ -2499,6 +2586,8 @@ mod tests {
             assert!(dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
             assert!(dashboard.contains("name=\"action\" value=\"CREATE_INVITATION\""));
             assert!(dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
+            assert!(dashboard.contains("dashboard-action-progress"));
+            assert!(dashboard.contains("dashboard-action-error"));
             assert!(!dashboard.contains("data-shared-state-refresh-"));
 
             let mut game_request =
@@ -2513,12 +2602,27 @@ mod tests {
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
             assert!(page.contains("id=\"turn-feedback\""));
+            let mut stale_request = RouteRequest::from_path(
+                &format!("/games/{game_id}?draft_stale=1"),
+                RequestInfo::default(),
+            );
+            stale_request.cookies = game_request.cookies.clone();
+            let stale_page = game_route(&*database, &stale_request, now)
+                .await
+                .display_to_string(false, false)
+                .expect("stale game renders");
+            assert!(stale_page.contains("The board changed while you were composing"));
+            assert!(stale_page.contains("your rack order was preserved"));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
             assert!(page.contains("alice"));
             assert!(page.contains("bob"));
             assert!(page.contains("named-turn-status"));
+            assert!(page.contains("live-status-connecting"));
+            assert!(page.contains("live-status-connected"));
+            assert!(page.contains("live-status-reconnecting"));
+            assert!(page.contains("live-status-disconnected"));
             assert!(page.contains("draft-preview"));
             assert!(page.contains("Start by covering the starred center square."));
             assert!(page.contains("value=\"CONFIRM_PASS\""));
@@ -2526,9 +2630,13 @@ mod tests {
             assert!(!page.contains("name=\"command\" value=\"PASS\""));
             assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
+            assert!(page.contains("Board key: gold tiles are committed"));
             assert!(page.contains("rack-tile"));
             assert!(page.contains("DL"));
             assert!(page.contains("TW"));
+            assert!(page.contains("game-rules"));
+            assert!(page.contains("50-point full-rack bonus"));
+            assert!(page.contains("6 consecutive scoreless turns"));
             assert!(page.contains("Choose a tile, then choose its square on the board."));
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));
@@ -2889,7 +2997,10 @@ mod tests {
             .display_to_string(false, false)
             .expect("dashboard renders");
             assert!(accepted.contains("class=\"game-summary\""));
-            assert!(accepted.contains("Your turn") || accepted.contains("ACTIVE"));
+            assert!(
+                accepted.contains("Your turn") || accepted.contains("Waiting for opponent"),
+                "{accepted}"
+            );
         });
     }
 

@@ -179,8 +179,6 @@ pub async fn load_authorized_game_page(
         .into_iter()
         .map(|event| event.event)
         .collect::<Vec<_>>();
-    let history = move_history_view(&events)?;
-    let final_score_adjustments = final_score_adjustments(&events)?;
     let viewer_username = username_for_user(db, &user_id).await?;
     let opponent_user_id = db
         .select("game_players")
@@ -193,6 +191,15 @@ pub async fn load_authorized_game_page(
         .find(|candidate| candidate != &user_id)
         .ok_or(PresentationError::Malformed)?;
     let opponent_username = username_for_user(db, &opponent_user_id).await?;
+    let name = |event_player| {
+        if event_player == player {
+            viewer_username.clone()
+        } else {
+            opponent_username.clone()
+        }
+    };
+    let history = move_history_view(&events, &rules, name)?;
+    let final_score_adjustments = final_score_adjustments(&events)?;
     let (latest_action, latest_play_coordinates) =
         latest_public_action(&events, &viewer_username, &opponent_username, player);
     let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
@@ -347,6 +354,8 @@ pub enum PresentationError {
     Journal(#[from] crate::JournalError),
     #[error(transparent)]
     Projection(#[from] crate::ProjectionError),
+    #[error(transparent)]
+    MoveHistory(#[from] crate::MoveHistoryError),
     #[error(transparent)]
     RackPreference(#[from] crate::RackPreferenceError),
     #[error(transparent)]

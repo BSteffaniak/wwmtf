@@ -28,10 +28,10 @@ pub use challenges::{
     create_game_in_transaction, decline_challenge, find_user_by_username,
 };
 pub use components::{
-    GameView, MoveHistoryView, PendingMoveError, PendingMoveView, PremiumView, board_component,
-    error_component, final_score_adjustments, game_view, move_history_component, move_history_view,
-    pending_move_component, premium_square_component, rack_component, status_component,
-    tile_component, viewer_turn_component,
+    GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PremiumView,
+    board_component, error_component, final_score_adjustments, game_view, move_history_component,
+    move_history_view, pending_move_component, premium_square_component, rack_component,
+    status_component, tile_component, viewer_turn_component,
 };
 pub use game_service::{GameServiceError, player_for_user, submit_game_command};
 pub use invitations::{

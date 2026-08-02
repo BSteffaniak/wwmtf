@@ -11,7 +11,8 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use words_with_spouses_app::{
     GameSharedStateDispatcher, accept_challenge, create_challenge, create_session, game_channel,
-    load_authorized_game_page, migrate_app, recover_game, register,
+    game_page, load_authorized_game_page, load_rack_order, migrate_app, recover_game, register,
+    save_rack_order, user_game_summaries,
 };
 use words_with_spouses_game_domain::GameCommand;
 
@@ -169,6 +170,25 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
             assert_eq!(alice_view.revision, bob_view.revision);
             assert_eq!(alice_view.board, bob_view.board);
             assert_ne!(alice_view.rack, bob_view.rack);
+            let alice_tiles = alice_view
+                .rack
+                .iter()
+                .map(|(tile_id, _, _)| *tile_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            let bob_tiles = bob_view
+                .rack
+                .iter()
+                .map(|(tile_id, _, _)| *tile_id)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(alice_tiles.is_disjoint(&bob_tiles));
+            let alice_payload = serde_json::to_string(&alice_view).expect("Alice view encodes");
+            let bob_payload = serde_json::to_string(&bob_view).expect("Bob view encodes");
+            for tile_id in &bob_tiles {
+                assert!(!alice_payload.contains(&format!("[{tile_id},")));
+            }
+            for tile_id in &alice_tiles {
+                assert!(!bob_payload.contains(&format!("[{tile_id},")));
+            }
             sequence += 1;
         }
 
@@ -189,15 +209,57 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
                 .expect("completed game page loads");
             assert!(page.completed);
             assert_eq!(page.user_id, *expected_user);
+            assert!(page.completion_reason.is_some());
+            let rendered = game_page(&page)
+                .display_to_string(false, false)
+                .expect("completed page renders");
+            assert!(rendered.contains("completed-game-summary"));
+            assert!(rendered.contains("Scoreless-turn limit"));
+            assert!(rendered.contains("Tie game"));
+            assert!(rendered.contains("alice: 0"));
+            assert!(rendered.contains("bob: 0"));
+            assert!(rendered.contains("move-history"));
+            let opponent_player = completed
+                .players
+                .iter()
+                .copied()
+                .find(|player| *player != page.viewer_player)
+                .expect("opponent is seated");
+            for tile in &completed.racks[&opponent_player] {
+                assert!(!rendered.contains(&format!("data-tile-id=\"{}\"", tile.id.get())));
+            }
+            assert!(!rendered.contains("rack_preferences"));
+            assert!(!rendered.contains("tile_order"));
+            assert_eq!(
+                page.history.len(),
+                usize::try_from(page.view.revision).expect("revision fits")
+            );
+            assert_eq!(
+                page.history.last().map(|entry| entry.kind.as_str()),
+                Some("GAME_COMPLETED")
+            );
             assert!(
                 page.history
                     .iter()
-                    .any(|entry| entry.kind == "GAME_COMPLETED")
+                    .all(|entry| !entry.description.contains("Game updated"))
             );
             assert_eq!(
                 page.view.status,
                 words_with_spouses_game_domain::GameStatus::Completed
             );
+        }
+        for user in [&alice, &bob] {
+            let summaries = user_game_summaries(&*database, user)
+                .await
+                .expect("completed summary loads");
+            let summary = summaries
+                .iter()
+                .find(|summary| summary.game_id == game_id.to_string())
+                .expect("completed game remains on dashboard");
+            assert_eq!(summary.status, "COMPLETED");
+            assert_eq!(summary.canonical_revision, completed.revision);
+            assert!(summary.winner_user_id.is_none());
+            assert_eq!(summary.latest_activity, "Game completed");
         }
     });
 }
@@ -207,7 +269,7 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
     block_on(async {
         let path = database_path();
         let now = OffsetDateTime::UNIX_EPOCH;
-        let (game_id, alice, bob, alice_session, bob_session, expected_revision) = {
+        let (game_id, alice, bob, alice_session, bob_session, expected_revision, preferred_order) = {
             let database = open_database(&path).await;
             migrate_app(&*database).await.expect("migrations run");
             let alice = register(&*database, "alice", "correct horse battery staple", now)
@@ -246,6 +308,17 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
             let _ = alice_events.recv_async().await.expect("Alice initial view");
             let _ = bob_events.recv_async().await.expect("Bob initial view");
             let state = recover_game(&*database, game_id).await.expect("game loads");
+            let preferred_order =
+                state.racks[&words_with_spouses_app::player_for_user(&*database, game_id, &alice)
+                    .await
+                    .expect("Alice is seated")]
+                    .iter()
+                    .rev()
+                    .map(|tile| tile.id.get())
+                    .collect::<Vec<_>>();
+            save_rack_order(&*database, game_id, &alice, &preferred_order, 1)
+                .await
+                .expect("private rack order saves");
             let command = command(game_id, &alice, 1, state.revision, &GameCommand::Pass);
             let result = dispatcher
                 .ingest_outbound(&alice_context, TransportOutbound::Command(command))
@@ -274,6 +347,7 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
                 alice_session,
                 bob_session,
                 state.revision + 1,
+                preferred_order,
             )
         };
 
@@ -282,6 +356,12 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
             .await
             .expect("migrations remain idempotent after restart");
         let dispatcher = GameSharedStateDispatcher::new(database.clone());
+        assert_eq!(
+            load_rack_order(&*database, game_id, &alice)
+                .await
+                .expect("private order survives restart"),
+            preferred_order
+        );
         for (user, binding) in [
             (&alice, "alice-tab-2"),
             (&alice, "alice-tab-3"),

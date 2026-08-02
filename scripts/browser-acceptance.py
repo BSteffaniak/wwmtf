@@ -316,7 +316,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
     layout = browser.evaluate(
         """(() => {
             const board = document.querySelector('#game-board');
-            const scroller = board?.firstElementChild;
+            const scroller = board?.querySelector(':scope > div');
             const rack = document.querySelector('#player-rack');
             const boardRect = board?.getBoundingClientRect();
             const scrollerRect = scroller?.getBoundingClientRect();
@@ -328,6 +328,10 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 boardOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : null,
                 boardRight: scrollerRect?.right ?? null,
                 rackBelowBoard: Boolean(boardRect && rackRect && rackRect.top >= boardRect.bottom),
+                hasRack: Boolean(rack),
+                hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
+                hasPreview: Boolean(document.querySelector('#draft-preview')) || document.body.innerText.includes('Waiting for opponent') || document.body.innerText.includes('Game complete'),
+                hasAwareness: Boolean(document.querySelector('#game-awareness')),
                 duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
             };
         })()"""
@@ -338,6 +342,8 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game page overflows the viewport at {width}px: {layout!r}")
     if not layout["rackBelowBoard"]:
         raise AcceptanceError(f"rack is not below the board at {width}px: {layout!r}")
+    if not all(layout[key] for key in ["hasRack", "hasActions", "hasPreview", "hasAwareness"]):
+        raise AcceptanceError(f"game interaction state is missing at {width}px: {layout!r}")
     if layout["duplicateIds"]:
         raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
     if width >= 800 and layout["boardOverflow"] != 0:
@@ -360,6 +366,12 @@ def install_readiness_probe(browser: Browser) -> None:
     source = """(() => {
         window.__acceptanceSubscriptions = [];
         window.__acceptanceUpdates = [];
+        window.__acceptanceLifecycle = [];
+        for (const name of ['connecting', 'connected', 'reconnecting', 'disconnected']) {
+            window.addEventListener(`v-shared-state-${name}`, () => {
+                window.__acceptanceLifecycle.push(name);
+            });
+        }
         window.addEventListener('v-shared-state-subscribed', event => {
             window.__acceptanceSubscriptions.push(JSON.parse(event.detail).channel_id);
         });
@@ -434,9 +446,12 @@ def compose_word(actor: Browser, selected: list[dict[str, str]]) -> None:
                 f'getComputedStyle(document.querySelector(\'[data-blank-letter="{tile["blank"]}"]\')).backgroundColor === "rgb(232, 241, 227)"'
             )
         x = 7 + index
+        actor.wait(
+            f'Boolean(document.querySelector(\'.open-square[data-x="{x}"][data-y="7"]\'))'
+        )
         actor.submit(f'form:has(.open-square[data-x="{x}"][data-y="7"])')
         actor.wait(
-            f'document.querySelectorAll(\'form[hx-post$="/turn"] input[name^="tile_"]\').length === {index + 1}'
+            f'document.querySelectorAll(\'#turn-actions form input[name^="tile_"]\').length === {index + 1}'
         )
 
 
@@ -446,6 +461,11 @@ def play_valid_word(actor: Browser, observer: Browser) -> None:
     )
     selected = word_from_rack(rack, accepted=True)
     compose_word(actor, selected)
+    preview = actor.evaluate(
+        "document.querySelector('#draft-preview')?.innerText ?? ''"
+    )
+    if "points" not in preview or not any(tile["blank"] or tile["id"] for tile in selected):
+        raise AcceptanceError(f"server-derived play preview is missing: {preview!r}")
 
     observer_revision = observer.evaluate(
         "document.querySelector('#game-board')?.getAttribute('data-revision')"
@@ -455,16 +475,20 @@ def play_valid_word(actor: Browser, observer: Browser) -> None:
     )
     observer_update_count = observer.evaluate("window.__acceptanceUpdates.length")
 
-    actor.submit('form[hx-post$="/turn"]')
+    actor.submit('#turn-actions form:has(input[value="PLAY"])')
     actor.wait(
         f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(observer_revision)}'
     )
+    if not actor.evaluate("Boolean(document.querySelector('#game-board .latest-move-square'))"):
+        raise AcceptanceError("accepted play was not highlighted as the latest move")
     observer.wait(
         f'window.__acceptanceUpdates.length > {observer_update_count}'
     )
     observer.wait(
         f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(observer_revision)}'
     )
+    if not observer.evaluate("Boolean(document.querySelector('#game-board .latest-move-square'))"):
+        raise AcceptanceError("opponent did not receive latest-move highlighting")
     observer.wait(
         f'document.querySelectorAll(\'#game-board .open-square\').length < {observer_open_squares}'
     )
@@ -482,7 +506,7 @@ def submit_invalid_word(browser: Browser) -> None:
         "document.querySelectorAll('#player-rack .rack-tile').length"
     )
     compose_word(browser, selected)
-    browser.submit('form[hx-post$="/turn"]')
+    browser.submit('#turn-actions form:has(input[value="PLAY"])')
     browser.wait("document.body.innerText.includes('dictionary rejected')")
     if browser.evaluate(
         "document.querySelector('#game-board')?.getAttribute('data-revision')"
@@ -493,16 +517,51 @@ def submit_invalid_word(browser: Browser) -> None:
     ) != rack_count:
         raise AcceptanceError("invalid word replaced or changed the current game view")
     browser.submit('form:has(button[type="submit"]):has(input[value="CLEAR"])')
-    browser.wait('!document.querySelector(\'form[hx-post$="/turn"] input[value="PLAY"]\')')
+    browser.wait("document.body.innerText.includes('Start by covering the starred center square.')")
 
 
 def pass_turn(browser: Browser) -> None:
     revision = browser.evaluate("document.querySelector('[name=expected_revision]')?.value")
-    browser.submit('form[hx-post$="/turn"]', {"command": "PASS"})
+    browser.submit('#turn-actions form:has(input[value="CONFIRM_PASS"])')
+    browser.wait('Boolean(document.querySelector(\'#turn-actions input[value="PASS"]\'))')
+    browser.submit('#turn-actions form:has(input[value="PASS"])')
     browser.wait(
         f"Number(document.querySelector('[name=expected_revision]')?.value ?? {revision}) > Number({json.dumps(revision)})"
         " || document.body.innerText.includes('Game complete')"
     )
+
+
+def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange: bool) -> None:
+    set_viewport(browser, width)
+    browser.navigate(browser.evaluate("location.pathname"))
+    browser.wait("Boolean(document.querySelector('#turn-actions'))")
+    first_tile = browser.evaluate(
+        "document.querySelector('#player-rack [data-tile-id]')?.getAttribute('data-tile-id')"
+    )
+    original_order = browser.evaluate(
+        "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',')"
+    )
+    browser.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{first_tile}"])')
+    browser.wait("document.body.innerText.includes('Choose the exact position')")
+    browser.submit('form:has(input[value="MOVE_RACK_TILE"]):has(input[name="slot"][value="6"])')
+    browser.wait(
+        f"Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',') !== {json.dumps(original_order)}"
+    )
+    browser.submit('#turn-actions form:has(input[value="BEGIN_EXCHANGE"])')
+    browser.wait("document.body.innerText.includes('0 tile(s) selected for exchange')")
+    browser.submit('#player-rack form:has(input[value="TOGGLE_EXCHANGE"])')
+    browser.wait("document.body.innerText.includes('1 tile(s) selected for exchange')")
+    browser.submit('#turn-actions form:has(input[value="REVIEW_EXCHANGE"])')
+    browser.wait("document.body.innerText.includes('Exchange 1 selected tile(s)?')")
+    if submit_exchange:
+        revision = browser.evaluate("document.querySelector('#game-board')?.getAttribute('data-revision')")
+        browser.submit('#turn-actions form:has(input[value="EXCHANGE"])')
+        browser.wait(
+            f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(revision)}'
+        )
+    else:
+        browser.submit('#turn-actions form:has(input[value="CANCEL_MODE"])')
+        browser.wait('Boolean(document.querySelector(\'#turn-actions input[value="CONFIRM_PASS"]\'))')
 
 
 def run() -> None:
@@ -590,8 +649,18 @@ def run() -> None:
             )
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+            alice.wait("window.__acceptanceLifecycle?.includes('connected')")
+            bob.wait("window.__acceptanceLifecycle?.includes('connected')")
+            alice.wait("!document.querySelector('#live-status-connected')?.hidden")
+            bob.wait("!document.querySelector('#live-status-connected')?.hidden")
             assert_responsive_game_layout(alice, 1440)
             assert_responsive_game_layout(alice, 390)
+            set_viewport(alice, 1440)
+            alice.navigate(game_path)
+            alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+            exercise_rack_and_exchange(alice, 1440, submit_exchange=False)
+            exercise_rack_and_exchange(alice, 390, submit_exchange=True)
+            bob.wait("document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'")
             set_viewport(alice, 1440)
             alice.navigate(game_path)
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
@@ -611,6 +680,8 @@ def run() -> None:
             except subprocess.TimeoutExpired:
                 server.kill()
                 server.communicate()
+            alice.wait("window.__acceptanceLifecycle?.includes('disconnected') || window.__acceptanceLifecycle?.includes('reconnecting')")
+            alice.wait("!document.querySelector('#live-status-disconnected')?.hidden || !document.querySelector('#live-status-reconnecting')?.hidden")
             server = subprocess.Popen(
                 command,
                 cwd=ROOT,
@@ -654,6 +725,13 @@ def run() -> None:
             )
             valid_observer = bob if valid_actor is alice else alice
             play_valid_word(valid_actor, valid_observer)
+            for width in [1440, 390]:
+                assert_responsive_game_layout(valid_actor, width)
+                assert_responsive_game_layout(valid_observer, width)
+            set_viewport(alice, 1440)
+            set_viewport(bob, 1440)
+            alice.navigate(game_path)
+            bob.navigate(game_path)
 
             for _ in range(12):
                 if alice.evaluate("document.body.innerText.includes('Game complete')"):
@@ -681,6 +759,10 @@ def run() -> None:
             bob.navigate(game_path)
             bob.wait("document.body.innerText.includes('Game complete')")
             bob.wait("Boolean(document.querySelector('section[id=\"move-history\"]'))")
+            for width in [1440, 390]:
+                assert_responsive_game_layout(bob, width)
+                if not bob.evaluate("Boolean(document.querySelector('#completed-game-summary'))"):
+                    raise AcceptanceError(f"completed summary is missing at {width}px")
             print("two-browser acceptance passed")
         except Exception:
             if server.stdout:

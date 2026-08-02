@@ -475,7 +475,7 @@ pub async fn user_game_summaries(
                 .ok_or(ProjectionError::Malformed)?;
             let opponent_username = username_for_user(db, &opponent_user_id)
                 .await?
-                .ok_or(ProjectionError::Malformed)?;
+                .unwrap_or_else(|| "Opponent".to_string());
             let scores = db
                 .select("game_scores")
                 .where_eq("game_id", game_id.clone())

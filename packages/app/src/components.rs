@@ -6,7 +6,8 @@ use hyperchad::{
 };
 use serde::{Deserialize, Serialize};
 use words_with_spouses_game_domain::{
-    Coordinate, GameEvent, GameState, GameStatus, PlayerId, apply_event,
+    Coordinate, GameEvent, GameState, GameStatus, PlayerId, RuleProfile, analyze_committed_play,
+    apply_event,
 };
 
 /// Premium kind rendered on one board square.
@@ -193,40 +194,117 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
     })
 }
 
+/// Failure while deriving public presentation from canonical history.
+#[derive(Debug, thiserror::Error)]
+pub enum MoveHistoryError {
+    #[error(transparent)]
+    Replay(#[from] words_with_spouses_game_domain::ReplayError),
+    #[error(transparent)]
+    Analysis(#[from] words_with_spouses_game_domain::GameError),
+}
+
 /// Renderer-neutral move-history row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoveHistoryView {
     pub revision: u64,
     pub kind: String,
-    pub score_delta: u32,
+    pub description: String,
+    pub score_summary: String,
 }
 
-/// Derives chronological renderer-neutral history directly from canonical events.
+/// Derives chronological renderer-neutral public history directly from canonical events.
+///
+/// `player_name` must return only an authorized public display label.
 ///
 /// # Errors
 ///
-/// * Returns replay errors when the event sequence is not a valid canonical journal.
+/// Returns replay or canonical-play analysis errors when the event sequence is invalid.
 pub fn move_history_view(
     events: &[GameEvent],
-) -> Result<Vec<MoveHistoryView>, words_with_spouses_game_domain::ReplayError> {
+    profile: &RuleProfile,
+    player_name: impl Fn(PlayerId) -> String,
+) -> Result<Vec<MoveHistoryView>, MoveHistoryError> {
     let mut state = None;
     let mut history = Vec::with_capacity(events.len());
     for event in events {
+        let (kind, description) = match (state.as_ref(), event) {
+            (None, GameEvent::GameStarted { .. }) => ("GAME_STARTED", "Game started.".to_string()),
+            (
+                Some(previous),
+                GameEvent::TilesPlayed {
+                    player_id,
+                    placements,
+                    score,
+                    ..
+                },
+            ) => {
+                let analysis = analyze_committed_play(previous, placements, profile)?;
+                debug_assert_eq!(analysis.score, *score);
+                let words = analysis
+                    .words
+                    .iter()
+                    .map(|word| word.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    "TILES_PLAYED",
+                    format!(
+                        "{} played {words} for {score} points.",
+                        player_name(*player_id)
+                    ),
+                )
+            }
+            (
+                Some(_),
+                GameEvent::TilesExchanged {
+                    player_id,
+                    returned,
+                    ..
+                },
+            ) => (
+                "TILES_EXCHANGED",
+                format!(
+                    "{} exchanged {} tile{}.",
+                    player_name(*player_id),
+                    returned.len(),
+                    if returned.len() == 1 { "" } else { "s" }
+                ),
+            ),
+            (Some(_), GameEvent::TurnPassed { player_id }) => (
+                "TURN_PASSED",
+                format!("{} passed.", player_name(*player_id)),
+            ),
+            (Some(_), GameEvent::GameResigned { player_id, winner }) => (
+                "GAME_RESIGNED",
+                format!(
+                    "{} resigned; {} won.",
+                    player_name(*player_id),
+                    player_name(*winner)
+                ),
+            ),
+            (Some(_), GameEvent::GameCompleted { winner, .. }) => (
+                "GAME_COMPLETED",
+                winner.as_ref().map_or_else(
+                    || "Game completed in a tie.".to_string(),
+                    |winner| format!("Game completed; {} won.", player_name(*winner)),
+                ),
+            ),
+            _ => return Err(words_with_spouses_game_domain::ReplayError::MissingStart.into()),
+        };
         let next_state = apply_event(state, event)?;
         let revision = next_state.revision;
+        let score_summary = next_state
+            .players
+            .iter()
+            .map(|player| format!("{} {}", player_name(*player), next_state.scores[player]))
+            .collect::<Vec<_>>()
+            .join(" – ");
         state = Some(next_state);
-        let (kind, score_delta) = match event {
-            GameEvent::GameStarted { .. } => ("GAME_STARTED", 0),
-            GameEvent::TilesPlayed { score, .. } => ("TILES_PLAYED", *score),
-            GameEvent::TilesExchanged { .. } => ("TILES_EXCHANGED", 0),
-            GameEvent::TurnPassed { .. } => ("TURN_PASSED", 0),
-            GameEvent::GameResigned { .. } => ("GAME_RESIGNED", 0),
-            GameEvent::GameCompleted { .. } => ("GAME_COMPLETED", 0),
-        };
         history.push(MoveHistoryView {
             revision,
             kind: kind.to_string(),
-            score_delta,
+            description,
+            score_summary,
         });
     }
     Ok(history)
@@ -272,20 +350,9 @@ pub fn move_history_component(history: &[MoveHistoryView]) -> Container {
                 span color=#777b73 { "No moves yet." }
             }
             @for entry in history {
-                @let label = match entry.kind.as_str() {
-                    "GAME_STARTED" => "Game started",
-                    "TILES_PLAYED" => "Word played",
-                    "TILES_EXCHANGED" => "Tiles exchanged",
-                    "TURN_PASSED" => "Turn passed",
-                    "GAME_RESIGNED" => "Game resigned",
-                    "GAME_COMPLETED" => "Game completed",
-                    _ => "Game updated",
-                };
                 div direction="row" justify-content="space-between" gap=12 {
-                    span { (label) }
-                    @if entry.score_delta > 0 {
-                        span color=#3f5735 font-weight=bold { "+" (entry.score_delta) }
-                    }
+                    span { (entry.description.as_str()) }
+                    span color=#5d6258 { (entry.score_summary.as_str()) }
                 }
             }
         }
@@ -514,6 +581,40 @@ mod tests {
             vec![(4, 'B', 3), (5, 'C', 3), (3, 'A', 1)]
         );
         assert_eq!(PendingMoveView::reorder_rack(&rack, 99), rack);
+    }
+
+    #[test]
+    fn history_describes_public_actions_without_private_tiles() {
+        let players = [PlayerId::new(), PlayerId::new()];
+        let metadata = GameMetadata::new(
+            GameId::new(),
+            RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+            DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        let profile = initial_rule_profile();
+        let started =
+            initialize_game(metadata, players, players[0], &profile, 4).expect("game starts");
+        let passed = GameEvent::TurnPassed {
+            player_id: players[0],
+        };
+        let resigned = GameEvent::GameResigned {
+            player_id: players[1],
+            winner: players[0],
+        };
+        let names = |player| {
+            if player == players[0] {
+                "Alice".to_string()
+            } else {
+                "Bob".to_string()
+            }
+        };
+        let history = move_history_view(&[started, passed, resigned], &profile, names)
+            .expect("history derives");
+
+        assert_eq!(history[1].description, "Alice passed.");
+        assert_eq!(history[1].score_summary, "Alice 0 – Bob 0");
+        assert_eq!(history[2].description, "Bob resigned; Alice won.");
     }
 
     #[test]

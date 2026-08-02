@@ -112,6 +112,71 @@ pub fn analyze_play(
     Ok(prepare_play(state, actor, placements, profile, dictionary)?.analysis)
 }
 
+/// Derives the public words and score of an already accepted placement map.
+///
+/// This is intended for replay-derived presentation such as move history. It does not consult a
+/// rack, dictionary, bag, or mutable state because canonical acceptance already established those
+/// facts.
+///
+/// # Errors
+///
+/// Returns [`GameError`] when the placement map cannot be interpreted against the pre-move board
+/// and pinned rule profile.
+pub fn analyze_committed_play(
+    state: &GameState,
+    placements: &BTreeMap<Coordinate, BoardTile>,
+    profile: &RuleProfile,
+) -> Result<PlayAnalysis, GameError> {
+    if placements.is_empty() {
+        return Err(GameError::EmptyTileSelection);
+    }
+    if let Some(coordinate) = placements
+        .keys()
+        .find(|coordinate| !profile.contains(**coordinate))
+    {
+        return Err(GameError::CoordinateOutOfBounds {
+            coordinate_x: coordinate.x,
+            coordinate_y: coordinate.y,
+            board_size: profile.board_size,
+        });
+    }
+    if placements
+        .keys()
+        .any(|coordinate| state.board.contains_key(coordinate))
+    {
+        return Err(GameError::OccupiedCoordinate);
+    }
+    let axis = placement_axis(placements)?;
+    let board = combined_board(&state.board, placements);
+    validate_connection(state, placements, &board, profile, axis)?;
+    let words = formed_words(&board, placements, axis)
+        .into_iter()
+        .map(|word| {
+            let score = score_word(&word, &board, placements, profile);
+            AnalyzedWord {
+                text: word.text,
+                coordinates: word.coordinates,
+                score,
+            }
+        })
+        .collect::<Vec<_>>();
+    let full_rack_bonus = if placements.len() == usize::from(profile.rack_size) {
+        profile.full_rack_bonus
+    } else {
+        0
+    };
+    let score = words
+        .iter()
+        .map(|word| word.score)
+        .sum::<u32>()
+        .saturating_add(u32::from(full_rack_bonus));
+    Ok(PlayAnalysis {
+        words,
+        score,
+        full_rack_bonus,
+    })
+}
+
 fn prepare_play(
     state: &GameState,
     actor: PlayerId,
