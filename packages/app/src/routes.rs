@@ -1065,7 +1065,7 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                     h1 { "Welcome back" }
                     span color=#5d6258 { "Sign in to continue your private games." }
                 }
-                form hx-post="/login" hx-target="#app-page" gap="12px" {
+                form action="/login" method="post" gap="12px" {
                     input type=hidden name="invitation_token" value=(invitation_token);
                     span font-weight=bold { "Username" }
                     input type=text name="username" placeholder="Username" padding-y=13 padding-x=14
@@ -1110,7 +1110,7 @@ fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) ->
                     h1 { "Create your account" }
                     span color=#5d6258 { "Choose a username your opponent will recognize." }
                 }
-                form hx-post="/register" hx-target="#app-page" gap="12px" {
+                form action="/register" method="post" gap="12px" {
                     input type=hidden name="invitation_token" value=(invitation_token);
                     span font-weight=bold { "Username" }
                     input type=text name="username" placeholder="Username" padding-y=13 padding-x=14
@@ -2329,15 +2329,20 @@ mod tests {
 
     #[test]
     fn account_pages_expose_renderer_neutral_forms() {
-        for (page, route) in [
-            (login_page(None), "/login"),
-            (register_page(None), "/register"),
-            (logout_page(), "/logout"),
+        for (page, route, progressive) in [
+            (login_page(None), "/login", true),
+            (register_page(None), "/register", true),
+            (logout_page(), "/logout", false),
         ] {
             let rendered = page
                 .display_to_string(false, false)
                 .expect("account page renders");
-            assert!(rendered.contains(&format!("hx-post=\"{route}\"")));
+            if progressive {
+                assert!(rendered.contains(&format!("action=\"{route}\"")));
+                assert!(rendered.contains("method=\"post\""));
+            } else {
+                assert!(rendered.contains(&format!("hx-post=\"{route}\"")));
+            }
             assert!(!rendered.contains("script"));
         }
     }
