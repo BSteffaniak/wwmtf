@@ -1714,7 +1714,7 @@ fn visual_board(
         .collect::<std::collections::BTreeMap<_, _>>();
     container! {
         section id="game-board" data-revision=(game.view.revision) gap="10px" {
-            span color=#5d6258 { "Board key: gold tiles are committed; blue corner marks tiles you played; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
+            span color=#5d6258 { "Board key: gold tiles are committed; faint blue dots mark tiles you played; green outlines mark the latest move; blue tiles are your current draft; orange squares are required; green squares are eligible." }
             div overflow-x="auto" {
                 div width="720px" background=#7c6547 border=(("#7c6547", 5)) gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1764,11 +1764,11 @@ fn visual_board(
                                     }
                                 } @else if committed.is_some() {
                                     div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width="44px" height="44px"
-                                        background=(background) color=(color) border=((if latest { "#526243" } else if viewer_owned { "#617f9f" } else { "#aa9e85" }, if latest { 3 } else if viewer_owned { 2 } else { 1 }))
+                                        background=(background) color=(color) border=((if latest { "#526243" } else { "#aa9e85" }, if latest { 3 } else { 1 }))
                                         align-items="center" justify-content="center" font-weight=bold position="relative" {
                                         @if viewer_owned {
-                                            span class="viewer-tile-marker" position="absolute" top="3px" left="3px"
-                                                width="7px" height="7px" background=#617f9f border-radius="999px" { }
+                                            span class="viewer-tile-marker" position="absolute" top="4px" left="4px"
+                                                width="5px" height="5px" background=#7f93a8 opacity=0.55 border-radius="999px" { }
                                         }
                                         span font-size="20px" { (label) }
                                         @if let Some((_, points)) = committed {
@@ -2728,7 +2728,7 @@ mod tests {
             assert!(!page.contains("name=\"command\" value=\"RESIGN\""));
             assert!(page.contains("open-square"));
             assert!(page.contains("Board key: gold tiles are committed"));
-            assert!(page.contains("blue corner marks tiles you played"));
+            assert!(page.contains("faint blue dots mark tiles you played"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
             assert!(page.contains("DL"));
