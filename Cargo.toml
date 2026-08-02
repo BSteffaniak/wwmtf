@@ -25,7 +25,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures-lite = { version = "2.6.1", default-features = false, features = [
     "std",
 ] }
-hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "f2424a016bc106824809535d2568f6d16497a16b", default-features = false }
+hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "2dcedf2a70efecfe659ff0ce54d9800b7647dfc2", default-features = false }
 log = { version = "0.4.33", default-features = false, features = [
     "release_max_level_trace",
 ] }

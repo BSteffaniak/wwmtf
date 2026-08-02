@@ -2046,10 +2046,24 @@ fn game_awareness_component(game: &AuthorizedGamePage) -> Container {
                 span id="latest-game-action" color=#5d6258 { "Latest: " (latest.as_str()) }
             }
             div id="live-status" color=#5d6258 {
-                span id="live-status-connecting" { "Live updates: connecting…" }
-                span id="live-status-connected" hidden { "Live updates: connected" }
-                span id="live-status-reconnecting" hidden { "Live updates: reconnecting…" }
-                span id="live-status-disconnected" hidden { "Live updates: disconnected. Retrying automatically." }
+                span id="live-status-connecting"
+                    fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
+                    "Live updates: connecting…"
+                }
+                span id="live-status-connected" hidden
+                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
+                    "Live updates: connected"
+                }
+                span hidden
+                    fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                span id="live-status-reconnecting" hidden
+                    fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
+                    "Live updates: reconnecting…"
+                }
+                span id="live-status-disconnected" hidden
+                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
+                    "Live updates: disconnected. Retrying automatically."
+                }
             }
         }
     }
@@ -2166,11 +2180,6 @@ fn visual_game_page(
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-event=(refresh_game)
-            fx-global-shared-state-connecting=(live_status_action("live-status-connecting"))
-            fx-global-shared-state-connected=(live_status_action("live-status-connected"))
-            fx-global-shared-state-subscribed=(live_status_action("live-status-connected"))
-            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting"))
-            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected"))
             direction="column" align-items="center"
             min-height="100vh" background=#f4f1e8 color=#293126
             padding-y=20 padding-x=10 gap="18px" {
