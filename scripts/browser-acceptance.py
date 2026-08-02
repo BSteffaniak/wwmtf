@@ -352,7 +352,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
 
 def register(browser: Browser, username: str) -> None:
     browser.navigate("/register")
-    browser.submit('form[action="/register"]', {"username": username, "password": "correct horse battery staple"})
+    browser.submit('form[hx-post="/register"]', {"username": username, "password": "correct horse battery staple"})
     browser.wait("document.body.innerText.includes('Signed in as ')")
 
 
@@ -676,7 +676,7 @@ def run() -> None:
             bob.close()
             bob = Browser.launch(chrome, 19222, temp / "bob-reconnected-profile")
             bob.navigate("/login")
-            bob.submit('form[action="/login"]', {"username": "acceptance-bob", "password": "correct horse battery staple"})
+            bob.submit('form[hx-post="/login"]', {"username": "acceptance-bob", "password": "correct horse battery staple"})
             bob.wait("document.body.innerText.includes('Signed in as ')")
             bob.navigate(game_path)
             bob.wait("document.body.innerText.includes('Game complete')")
