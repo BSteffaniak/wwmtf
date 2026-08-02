@@ -535,6 +535,10 @@ mod tests {
     };
     use time::OffsetDateTime;
 
+    use words_with_spouses_game_domain::{
+        Coordinate, Dictionary as _, Placement, TileFace, bundled_dictionary,
+    };
+
     use super::*;
     use crate::{accept_challenge, create_challenge, migrate_app, register};
 
@@ -872,6 +876,111 @@ mod tests {
                 serde_json::to_string(alice_snapshot).expect("private snapshot serializes");
             for forbidden in ["\"bag\"", "password", "session", "invitation"] {
                 assert!(!alice_payload.contains(forbidden));
+            }
+        });
+    }
+
+    #[test]
+    fn accepted_play_fans_out_the_new_board_to_both_members() {
+        block_on(async {
+            let (database, game_id, alice, bob, _) = fixture().await;
+            let dispatcher = GameSharedStateDispatcher::new(database);
+            let state = recover_game(&*dispatcher.database, game_id)
+                .await
+                .expect("state loads");
+            let (actor, observer) = if dispatcher
+                .authorize(&context(&alice), &game_channel(game_id))
+                .await
+                .expect("Alice is authorized")
+                .1
+                == state.active_player
+            {
+                (&alice, &bob)
+            } else {
+                (&bob, &alice)
+            };
+            let actor_player = dispatcher
+                .authorize(&context(actor), &game_channel(game_id))
+                .await
+                .expect("actor is authorized")
+                .1;
+            let dictionary = bundled_dictionary();
+            let rack = &state.racks[&actor_player];
+            let mut play = None;
+            'words: for first in rack {
+                let TileFace::Letter(first_letter) = first.face else {
+                    continue;
+                };
+                for second in rack {
+                    if first.id == second.id {
+                        continue;
+                    }
+                    let TileFace::Letter(second_letter) = second.face else {
+                        continue;
+                    };
+                    let word = format!("{first_letter}{second_letter}");
+                    if dictionary.contains(&word) {
+                        play = Some(GameCommand::Play {
+                            placements: vec![
+                                Placement {
+                                    tile_id: first.id,
+                                    coordinate: Coordinate::new(7, 7),
+                                    blank_letter: None,
+                                },
+                                Placement {
+                                    tile_id: second.id,
+                                    coordinate: Coordinate::new(8, 7),
+                                    blank_letter: None,
+                                },
+                            ],
+                        });
+                        break 'words;
+                    }
+                }
+            }
+            let play = play.expect("fixture rack contains a valid two-letter word");
+            let actor_events = dispatcher
+                .subscribe_channel(&context(actor), &game_channel(game_id))
+                .await
+                .expect("actor subscribes");
+            let observer_events = dispatcher
+                .subscribe_channel(&context(observer), &game_channel(game_id))
+                .await
+                .expect("observer subscribes");
+            actor_events.recv_async().await.expect("actor initial view");
+            observer_events
+                .recv_async()
+                .await
+                .expect("observer initial view");
+
+            let response = dispatcher
+                .ingest_outbound(
+                    &context(actor),
+                    TransportOutbound::Command(gameplay_command(
+                        game_id,
+                        actor,
+                        "play-command",
+                        state.revision,
+                        &play,
+                    )),
+                )
+                .await
+                .expect("play dispatches");
+            assert!(matches!(
+                response.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ));
+
+            for (user, receiver) in [(actor, actor_events), (observer, observer_events)] {
+                let event = receiver.recv_async().await.expect("play update arrives");
+                let view: crate::GameView = dispatcher
+                    .project_event(&context(user), &event)
+                    .expect("member update projects")
+                    .payload
+                    .deserialize()
+                    .expect("view decodes");
+                assert_eq!(view.revision, state.revision + 1);
+                assert_eq!(view.board.len(), 2);
             }
         });
     }

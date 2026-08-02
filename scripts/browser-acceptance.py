@@ -29,6 +29,15 @@ BASE_URL = f"http://{HOST}:{PORT}"
 TIMEOUT = 20.0
 
 
+BUNDLED_WORDS = frozenset(
+    (ROOT / "packages/game_domain/data/enable1.txt").read_text().splitlines()
+)
+
+
+def bundled_dictionary_contains(word: str) -> bool:
+    return word.lower() in BUNDLED_WORDS
+
+
 class AcceptanceError(RuntimeError):
     pass
 
@@ -265,8 +274,12 @@ def register(browser: Browser, username: str) -> None:
 def install_readiness_probe(browser: Browser) -> None:
     source = """(() => {
         window.__acceptanceSubscriptions = [];
+        window.__acceptanceUpdates = [];
         window.addEventListener('v-shared-state-subscribed', event => {
             window.__acceptanceSubscriptions.push(JSON.parse(event.detail).channel_id);
+        });
+        window.addEventListener('v-shared-state-update', event => {
+            window.__acceptanceUpdates.push(JSON.parse(event.detail).channel_id);
         });
     })();"""
     browser.tools.call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
@@ -283,13 +296,124 @@ def wait_for_turn(browser: Browser) -> None:
     browser.wait("document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'")
 
 
+def word_from_rack(
+    rack: list[dict[str, str]], *, accepted: bool
+) -> list[dict[str, str]]:
+    letter_tiles: dict[str, list[str]] = {}
+    blank_tiles = []
+    for tile in rack:
+        letter = tile["letter"]
+        if letter == "?":
+            blank_tiles.append(tile["id"])
+        elif letter:
+            letter_tiles.setdefault(letter.lower(), []).append(tile["id"])
+
+    candidates = BUNDLED_WORDS if accepted else (
+        f"{first}{second}"
+        for first in "abcdefghijklmnopqrstuvwxyz"
+        for second in "abcdefghijklmnopqrstuvwxyz"
+        if not bundled_dictionary_contains(f"{first}{second}")
+    )
+    for word in sorted(candidates, key=lambda candidate: (len(candidate), candidate)):
+        if not 2 <= len(word) <= 7 or not word.isascii() or not word.isalpha():
+            continue
+        available = {letter: ids.copy() for letter, ids in letter_tiles.items()}
+        blanks = blank_tiles.copy()
+        selected = []
+        for letter in word.lower():
+            ids = available.get(letter)
+            if ids:
+                selected.append({"id": ids.pop(), "blank": ""})
+            elif blanks:
+                selected.append({"id": blanks.pop(), "blank": letter.upper()})
+            else:
+                break
+        else:
+            return selected
+    kind = "valid" if accepted else "invalid"
+    raise AcceptanceError(f"rack has no deterministic {kind} word")
+
+
+def compose_word(actor: Browser, selected: list[dict[str, str]]) -> None:
+    for index, tile in enumerate(selected):
+        tile_selector = f'form:has([data-tile-id="{tile["id"]}"])'
+        actor.submit(tile_selector)
+        actor.wait(
+            f'document.querySelector(\'[data-tile-id="{tile["id"]}"]\')?.classList.contains("rack-tile-selected")'
+        )
+        if tile["blank"]:
+            actor.submit(
+                f'form:has([data-blank-letter="{tile["blank"]}"])'
+            )
+            actor.wait(
+                f'getComputedStyle(document.querySelector(\'[data-blank-letter="{tile["blank"]}"]\')).backgroundColor === "rgb(232, 241, 227)"'
+            )
+        x = 7 + index
+        actor.submit(f'form:has(.open-square[data-x="{x}"][data-y="7"])')
+        actor.wait(
+            f'document.querySelectorAll(\'form[hx-post$="/turn"] input[name^="tile_"]\').length === {index + 1}'
+        )
+
+
+def play_valid_word(actor: Browser, observer: Browser) -> None:
+    rack = actor.evaluate(
+        "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => ({ id: tile.getAttribute('data-tile-id'), letter: tile.querySelector('span')?.textContent?.trim() }))"
+    )
+    selected = word_from_rack(rack, accepted=True)
+    compose_word(actor, selected)
+
+    observer_revision = observer.evaluate(
+        "document.querySelector('#game-board')?.getAttribute('data-revision')"
+    )
+    observer_open_squares = observer.evaluate(
+        "document.querySelectorAll('#game-board .open-square').length"
+    )
+    observer_update_count = observer.evaluate("window.__acceptanceUpdates.length")
+
+    actor.submit('form[hx-post$="/turn"]')
+    actor.wait(
+        f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(observer_revision)}'
+    )
+    observer.wait(
+        f'window.__acceptanceUpdates.length > {observer_update_count}'
+    )
+    observer.wait(
+        f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(observer_revision)}'
+    )
+    observer.wait(
+        f'document.querySelectorAll(\'#game-board .open-square\').length < {observer_open_squares}'
+    )
+
+
+def submit_invalid_word(browser: Browser) -> None:
+    rack = browser.evaluate(
+        "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => ({ id: tile.getAttribute('data-tile-id'), letter: tile.querySelector('span')?.textContent?.trim() }))"
+    )
+    selected = word_from_rack(rack, accepted=False)
+    revision = browser.evaluate(
+        "document.querySelector('#game-board')?.getAttribute('data-revision')"
+    )
+    rack_count = browser.evaluate(
+        "document.querySelectorAll('#player-rack .rack-tile').length"
+    )
+    compose_word(browser, selected)
+    browser.submit('form[hx-post$="/turn"]')
+    browser.wait("document.body.innerText.includes('dictionary rejected')")
+    if browser.evaluate(
+        "document.querySelector('#game-board')?.getAttribute('data-revision')"
+    ) != revision:
+        raise AcceptanceError("invalid word changed the authoritative game revision")
+    if browser.evaluate(
+        "document.querySelectorAll('#player-rack .rack-tile').length"
+    ) != rack_count:
+        raise AcceptanceError("invalid word replaced or changed the current game view")
+    browser.submit('form:has(button[type="submit"]):has(input[value="CLEAR"])')
+    browser.wait('!document.querySelector(\'form[hx-post$="/turn"] input[value="PLAY"]\')')
+
+
 def pass_turn(browser: Browser) -> None:
     revision = browser.evaluate("document.querySelector('[name=expected_revision]')?.value")
-    path = browser.evaluate("location.pathname")
     browser.submit('form[hx-post$="/turn"]', {"command": "PASS"})
-    time.sleep(0.2)
-    if browser.evaluate("document.body.innerText.includes('updated game could not be rendered')"):
-        browser.navigate(path)
     browser.wait(
         f"Number(document.querySelector('[name=expected_revision]')?.value ?? {revision}) > Number({json.dumps(revision)})"
         " || document.body.innerText.includes('Game complete')"
@@ -352,31 +476,89 @@ def run() -> None:
             )
             if not alice.evaluate(readiness_expression) or not bob.evaluate(readiness_expression):
                 raise AcceptanceError(
-                    "authenticated dashboard subscription readiness was not emitted; "
-                    "upstream and pin the adjacent HyperChad change"
+                    "authenticated dashboard subscription readiness was not emitted by HyperChad"
                 )
-
             alice.submit('form[hx-post="/dashboard/action"]', {"action": "CHALLENGE", "username": "acceptance-bob"})
-            alice.wait("document.body.innerText.includes('CHALLENGE OUTGOING')")
-            if not bob.evaluate("document.body.innerText.includes('CHALLENGE INCOMING')"):
-                bob.navigate("/")
-            bob.wait("document.body.innerText.includes('CHALLENGE INCOMING')")
+            alice.wait("document.body.innerText.includes('Challenge sent to acceptance-bob')")
+            bob.wait("window.__acceptanceUpdates?.some?.(channel => channel.startsWith('dashboard:'))")
+            bob.wait("document.body.innerText.includes('Challenge from acceptance-alice')")
             bob.submit('form:has(input[value="ACCEPT_CHALLENGE"])', {})
             bob.wait(
                 "Array.from(document.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('/games/'))"
             )
             game_path = active_game_path(bob)
-            if not alice.evaluate(
-                "Array.from(document.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('/games/'))"
-            ):
-                alice.navigate("/")
             alice.wait(
                 "Array.from(document.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('/games/'))"
             )
             alice.navigate(game_path)
             bob.navigate(game_path)
+            alice.wait(
+                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-update:')"
+            )
+            bob.wait(
+                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-update:')"
+            )
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+
+            stale_csrf_token = alice.evaluate(
+                "document.querySelector('meta[name=\"hyperchad-shared-state-csrf\"]')?.content"
+            )
+            stale_csrf_cookie = alice.evaluate(
+                "document.cookie.split('; ').find(value => value.startsWith('words-with-spouses-csrf='))?.split('=').slice(1).join('=')"
+            )
+            if stale_csrf_cookie != stale_csrf_token:
+                raise AcceptanceError("initial CSRF cookie did not match rendered metadata")
+
+            server.terminate()
+            try:
+                server.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.communicate()
+            server = subprocess.Popen(
+                command,
+                cwd=ROOT,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            wait_for_server(server)
+
+            alice.navigate(game_path)
+            bob.navigate(game_path)
+            alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+            bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
+            refreshed_csrf_token = alice.evaluate(
+                "document.querySelector('meta[name=\"hyperchad-shared-state-csrf\"]')?.content"
+            )
+            refreshed_csrf_cookie = alice.evaluate(
+                "document.cookie.split('; ').find(value => value.startsWith('words-with-spouses-csrf='))?.split('=').slice(1).join('=')"
+            )
+            if refreshed_csrf_token == stale_csrf_token:
+                raise AcceptanceError("server restart did not rotate the CSRF token")
+            if refreshed_csrf_cookie != refreshed_csrf_token:
+                raise AcceptanceError("full-page reload did not synchronize the rotated CSRF cookie")
+
+            invalid_actor = (
+                alice
+                if alice.evaluate(
+                    "document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'"
+                )
+                else bob
+            )
+            submit_invalid_word(invalid_actor)
+
+            valid_actor = (
+                alice
+                if alice.evaluate(
+                    "document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'"
+                )
+                else bob
+            )
+            valid_observer = bob if valid_actor is alice else alice
+            play_valid_word(valid_actor, valid_observer)
 
             for _ in range(12):
                 if alice.evaluate("document.body.innerText.includes('Game complete')"):
@@ -388,12 +570,6 @@ def run() -> None:
                     "document.querySelector('#game-board')?.getAttribute('data-revision')"
                 )
                 pass_turn(actor)
-                if not observer.evaluate(
-                    "document.querySelector('#game-board')?.getAttribute('data-revision') !== "
-                    + json.dumps(old_revision)
-                    + " || document.body.innerText.includes('Game complete')"
-                ):
-                    observer.navigate(game_path)
                 observer.wait(
                     "document.querySelector('#game-board')?.getAttribute('data-revision') !== "
                     + json.dumps(old_revision)

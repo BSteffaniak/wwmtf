@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .app
             .set_shared_state_csrf_token(csrf_token.clone());
         app.renderer.app.set_html_csrf_token(csrf_token);
+        app.renderer.app.set_html_csrf_cookie_name(CSRF_COOKIE_NAME);
         app.renderer
             .app
             .set_shared_state_transport_dispatcher(dispatcher, web_security);

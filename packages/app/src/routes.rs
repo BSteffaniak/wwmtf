@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use hyperchad::{
+    actions::ActionType,
     renderer::{ResponseCookie, ResponseMetadata, View},
     router::{Container, RoutePath, RouteRequest, Router},
     shared_state_models::{
@@ -670,23 +671,25 @@ async fn game_turn_route(
     request: &RouteRequest,
     game_id: &str,
     now: OffsetDateTime,
-) -> Container {
+) -> View {
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return error_component("Your session expired. Sign in and review the game again.");
+        return View::from(error_component(
+            "Your session expired. Sign in and review the game again.",
+        ));
     };
     let Ok(game_id) = game_id.parse() else {
-        return error_component("The game route is invalid.");
+        return View::from(error_component("The game route is invalid."));
     };
     let form: PendingMoveForm = match request.parse_form() {
         Ok(form) => form,
-        Err(_) => return error_component("Select tiles and provide valid coordinates."),
+        Err(_) => return turn_rejection("Select tiles and provide valid coordinates."),
     };
     let command = match form.game_command() {
         Ok(command) => command,
-        Err(message) => return error_component(message),
+        Err(message) => return turn_rejection(message),
     };
     let Ok(payload) = PayloadBlob::from_serializable(&command) else {
-        return error_component("The turn could not be encoded. Try again.");
+        return turn_rejection("The turn could not be encoded. Try again.");
     };
     let context = AuthenticatedTransportContext {
         participant_id: ParticipantId::new(&user_id),
@@ -720,13 +723,13 @@ async fn game_turn_route(
             match load_authorized_game_page(database, &request.cookies, &game_id.to_string(), now)
                 .await
             {
-                Ok(game) => game_page(&game),
-                Err(PresentationError::Unauthenticated) => {
-                    error_component("Your session expired. Sign in and review the accepted turn.")
-                }
-                Err(_) => error_component(
+                Ok(game) => View::from(game_page(&game)),
+                Err(PresentationError::Unauthenticated) => View::from(error_component(
+                    "Your session expired. Sign in and review the accepted turn.",
+                )),
+                Err(_) => View::from(error_component(
                     "The turn was accepted, but the updated game could not be rendered. Reload the game.",
-                ),
+                )),
             }
         }
         Ok(result) => {
@@ -736,11 +739,26 @@ async fn game_turn_route(
             });
             turn_rejection(reason.unwrap_or("The turn was not accepted."))
         }
-        Err(_) => error_component("The turn could not be persisted. Try again."),
+        Err(_) => turn_rejection("The turn could not be persisted. Try again."),
     }
 }
 
-fn turn_rejection(reason: &str) -> Container {
+fn turn_feedback(message: Option<&str>) -> Container {
+    container! {
+        section id="turn-feedback" width="100%" max-width="1120px"
+            margin-left="auto" margin-right="auto" {
+            @if let Some(message) = message {
+                div id="game-error" background=#fff3e8 border="1px solid #e2b98f"
+                    border-radius="12px" padding="14px" {
+                    span color=#7a3f16 { (message) }
+                }
+            }
+        }
+    }
+    .into()
+}
+
+fn turn_rejection(reason: &str) -> View {
     let message = if reason.contains("revision") {
         "This game changed in another tab. Review the latest board and resubmit."
     } else if reason.contains("authorized") || reason.contains("member") {
@@ -748,7 +766,7 @@ fn turn_rejection(reason: &str) -> Container {
     } else if reason.contains("rules") || reason.contains("dictionary version") {
         "This game requires an unsupported rules or dictionary version."
     } else if reason.contains("dictionary rejected") {
-        "The dictionary rejected a word in this move. Adjust the placement and resubmit."
+        reason
     } else if reason.contains("coordinate")
         || reason.contains("row or one column")
         || reason.contains("gap")
@@ -764,7 +782,9 @@ fn turn_rejection(reason: &str) -> Container {
     } else {
         reason
     };
-    error_component(message)
+    View::builder()
+        .with_fragment(turn_feedback(Some(message)))
+        .build()
 }
 
 fn invitation_joined_page(game_id: words_with_spouses_game_domain::GameId) -> Container {
@@ -944,7 +964,7 @@ pub fn create_product_router(
             async move {
                 let game_path = request.path.strip_prefix("/games/").unwrap_or_default();
                 if let Some(game_id) = game_path.strip_suffix("/compose") {
-                    Ok(
+                    Ok(View::from(
                         game_compose_route(
                             &*database,
                             &request,
@@ -952,7 +972,7 @@ pub fn create_product_router(
                             OffsetDateTime::now_utc(),
                         )
                         .await,
-                    ) as Result<Container, Box<dyn std::error::Error>>
+                    )) as Result<View, Box<dyn std::error::Error>>
                 } else if let Some(game_id) = game_path.strip_suffix("/turn") {
                     Ok(game_turn_route(
                         &dispatcher,
@@ -961,10 +981,11 @@ pub fn create_product_router(
                         game_id,
                         OffsetDateTime::now_utc(),
                     )
-                    .await) as Result<Container, Box<dyn std::error::Error>>
+                    .await) as Result<View, Box<dyn std::error::Error>>
                 } else {
-                    Ok(game_route(&*database, &request, OffsetDateTime::now_utc()).await)
-                        as Result<Container, Box<dyn std::error::Error>>
+                    Ok(View::from(
+                        game_route(&*database, &request, OffsetDateTime::now_utc()).await,
+                    )) as Result<View, Box<dyn std::error::Error>>
                 }
             }
         },
@@ -1155,9 +1176,12 @@ fn dashboard_page_content(
     let created_invitation_path = created_invitation
         .map(|(_, token, base_url)| format!("{base_url}/join?invite={token}"))
         .unwrap_or_default();
+    let refresh_dashboard = ActionType::Navigate {
+        url: "/".to_string(),
+    };
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            data-shared-state-refresh-path="/" data-shared-state-refresh-target="#app-page"
+            fx-global-shared-state-update=(refresh_dashboard)
             min-height="100vh" background=#f4f1e8 color=#293126 padding="40px 24px" {
             div width="100%" max-width="1080px" margin-left="auto" margin-right="auto" gap="28px" {
                 header direction="row" justify-content="space-between" align-items="center"
@@ -1488,7 +1512,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                                 form hx-post=(action.as_str()) hx-target="#app-page" {
                                     (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
                                     input type=hidden name="letter" value=(letter.to_string());
-                                    button type=submit width="30px" height="30px" border="1px solid #aa9e85"
+                                    button type=submit data-blank-letter=(letter.to_string()) width="30px" height="30px" border="1px solid #aa9e85"
                                         background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
                                         border-radius="5px" cursor=pointer { (letter) }
                                 }
@@ -1557,10 +1581,13 @@ fn visual_game_page(
     let actions = visual_turn_actions(game, draft);
     let history = move_history_component(&game.history);
     let game_channel = format!("game:{}", game.game_id);
+    let game_path = format!("/games/{game_id}");
+    let refresh_game = ActionType::Navigate { url: game_path };
+    let feedback = turn_feedback(error);
     container! {
         div id="app-page" data-shared-state-channel=(game_channel.as_str())
-            data-shared-state-refresh-path=(format!("/games/{game_id}"))
-            data-shared-state-refresh-target="#app-page" min-height="100vh" background=#f4f1e8
+            fx-global-shared-state-update=(refresh_game)
+            min-height="100vh" background=#f4f1e8
             color=#293126 padding="28px 20px" gap="22px" {
             header width="100%" max-width="1120px" margin-left="auto" margin-right="auto"
                 direction="row" justify-content="space-between" align-items="center"
@@ -1571,12 +1598,7 @@ fn visual_game_page(
                 }
                 (viewer_turn)
             }
-            @if let Some(error) = error {
-                section width="100%" max-width="1120px" margin-left="auto" margin-right="auto"
-                    background=#fff3e8 border="1px solid #e2b98f" border-radius="12px" padding="14px" {
-                    span color=#7a3f16 { (error) }
-                }
-            }
+            (feedback)
             main width="100%" max-width="1120px" margin-left="auto" margin-right="auto"
                 direction="row" align-items="start" gap="24px" {
                 section width="756px" background=#ffffff border="1px solid #ded8c9" border-radius="18px"
@@ -1591,7 +1613,7 @@ fn visual_game_page(
                     details { summary { "Move history" } (history) }
                 }
             }
-            section id="game-live-state" data-shared-state-channel=(game_channel.as_str()) {
+            section id="game-live-state" {
                 span color=#777b73 { "Private live game updates connected." }
             }
         }
@@ -1746,9 +1768,15 @@ mod tests {
             ("it is not this player's turn", "not your turn"),
             ("the game is complete", "no longer accepts turns"),
         ] {
-            let rendered = turn_rejection(reason)
+            let view = turn_rejection(reason);
+            let rendered = view
+                .fragments
+                .first()
+                .expect("rejection has a feedback fragment")
+                .container
                 .display_to_string(false, false)
                 .expect("error renders");
+            assert!(view.primary.is_none());
             assert!(rendered.contains(expected), "{rendered}");
             assert!(rendered.contains("game-error"));
         }
@@ -1971,8 +1999,7 @@ mod tests {
             assert!(dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
             assert!(dashboard.contains("name=\"action\" value=\"CREATE_INVITATION\""));
             assert!(dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
-            assert!(dashboard.contains("data-shared-state-refresh-path=\"/\""));
-            assert!(dashboard.contains("data-shared-state-refresh-target=\"#app-page\""));
+            assert!(!dashboard.contains("data-shared-state-refresh-"));
 
             let mut game_request =
                 RouteRequest::from_path(&format!("/games/{game_id}"), RequestInfo::default());
@@ -1984,10 +2011,8 @@ mod tests {
             assert!(page.contains("player-rack"));
             assert!(page.contains("move-history"));
             assert!(page.contains("data-shared-state-channel"));
-            assert!(page.contains(&format!(
-                "data-shared-state-refresh-path=\"/games/{game_id}\""
-            )));
-            assert!(page.contains("data-shared-state-refresh-target=\"#app-page\""));
+            assert!(!page.contains("data-shared-state-refresh-"));
+            assert!(page.contains("id=\"turn-feedback\""));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-composer"));
             assert!(page.contains("value=\"PASS\""));
@@ -2069,10 +2094,12 @@ mod tests {
             ));
 
             let response =
-                game_turn_route(&dispatcher, &*database, &request, &game_id.to_string(), now)
-                    .await
-                    .display_to_string(false, false)
-                    .expect("turn response renders");
+                game_turn_route(&dispatcher, &*database, &request, &game_id.to_string(), now).await;
+            let response = response
+                .primary
+                .expect("accepted turn returns the updated game")
+                .display_to_string(false, false)
+                .expect("turn response renders");
             assert!(response.contains("game-board"), "{response}");
             assert!(response.contains(&format!("data-revision=\"{}\"", state.revision + 1)));
             let update = bob_updates.recv_async().await.expect("Bob receives update");

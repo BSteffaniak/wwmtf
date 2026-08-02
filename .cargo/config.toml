@@ -2,3 +2,12 @@
 check-all = "check --workspace --all-targets"
 clippy-all = "clippy --workspace --all-targets -- -D warnings"
 test-all = "nextest run --workspace --no-fail-fast"
+
+[patch."https://github.com/MoosicBox/MoosicBox.git"]
+hyperchad = { path = "../MoosicBox/packages/hyperchad" }
+
+[patch.crates-io]
+switchy_async = { path = "../MoosicBox/packages/switchy/async" }
+switchy_database = { path = "../MoosicBox/packages/switchy/database" }
+switchy_database_connection = { path = "../MoosicBox/packages/switchy/database_connection" }
+switchy_schema = { path = "../MoosicBox/packages/switchy/schema" }
