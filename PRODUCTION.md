@@ -33,7 +33,7 @@ Deploy and test the Fly origin:
 FLY_APP_NAME=words-with-spouses ./scripts/deploy.sh deploy
 ```
 
-The container's internal nginx proxy exposes port 8080, enforces an allowlist for the canonical and Fly hosts, validates same-origin requests, limits account POSTs, applies a 64 KiB body limit, strips upstream permissive CORS headers, adds CSP/privacy/security headers, and forwards streaming traffic to the application on `127.0.0.1:8343`. Nginx logs only the URI path—not query strings—and production disables the upstream request logger target. The database is always `/data/words-with-spouses.db`; do not run more than one Machine against this volume.
+The container's internal nginx proxy exposes port 8080, enforces an allowlist for the canonical and Fly hosts, validates same-origin requests, limits account POSTs, applies a 64 KiB body limit, strips upstream permissive CORS headers, adds CSP/privacy/security headers, and forwards streaming traffic to the application on `127.0.0.1:8343`. The CSP permits `script-src 'unsafe-eval'` because HyperChad's renderer evaluates its serialized action expressions; inline scripts and third-party script origins remain blocked. Nginx logs only the URI path—not query strings—and production disables the upstream request logger target. The database is always `/data/words-with-spouses.db`; do not run more than one Machine against this volume.
 
 The default deployment keeps the Machine running (`auto_stop_machines = "off"`) so long-lived HyperChad SSE sessions remain predictable. Revisit suspension only after production reconnect testing proves it acceptable.
 

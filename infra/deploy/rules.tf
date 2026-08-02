@@ -132,7 +132,7 @@ resource "cloudflare_ruleset" "security_headers" {
         }
         "Content-Security-Policy" = {
           operation = "set"
-          value     = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+          value     = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         }
         "Permissions-Policy" = {
           operation = "set"
