@@ -124,7 +124,7 @@ pub enum PendingMoveError {
 /// Public/private game view projection supplied to rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
-    pub board: Vec<(Coordinate, char)>,
+    pub board: Vec<(Coordinate, char, u8)>,
     pub premiums: Vec<(Coordinate, PremiumView)>,
     pub board_size: u8,
     pub start: Coordinate,
@@ -147,7 +147,7 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
         board: state
             .board
             .iter()
-            .map(|(&coordinate, tile)| (coordinate, tile.letter))
+            .map(|(&coordinate, tile)| (coordinate, tile.letter, tile.tile.points))
             .collect(),
         premiums: profile
             .premiums
@@ -417,7 +417,7 @@ pub fn board_component(view: &GameView) -> Container {
     let occupied = view
         .board
         .iter()
-        .copied()
+        .map(|(coordinate, letter, points)| (*coordinate, (*letter, *points)))
         .collect::<std::collections::BTreeMap<_, _>>();
     let premiums = view
         .premiums
@@ -433,9 +433,9 @@ pub fn board_component(view: &GameView) -> Container {
                         div direction="row" gap="2px" {
                             @for x in 0..view.board_size {
                                 @let coordinate = Coordinate::new(x, y);
-                                @let letter = occupied.get(&coordinate).copied();
+                                @let tile = occupied.get(&coordinate).copied();
                                 @let premium = premiums.get(&coordinate).copied();
-                                @let (background, label, color) = if let Some(letter) = letter {
+                                @let (background, label, color) = if let Some((letter, _)) = tile {
                                     ("#f2d79b", letter.to_string(), "#2e291f")
                                 } else if coordinate == view.start {
                                     ("#e79b9b", "★".to_string(), "#6b3535")
@@ -450,8 +450,11 @@ pub fn board_component(view: &GameView) -> Container {
                                 };
                                 div class="board-square" data-x=(x) data-y=(y) width="44px" height="44px"
                                     background=(background) color=(color) align-items="center" justify-content="center"
-                                    border=(("#aa9e85", 1)) font-weight=bold {
-                                    span { (label) }
+                                    border=(("#aa9e85", 1)) font-weight=bold position="relative" {
+                                    span font-size=(if tile.is_some() { "20px" } else { "16px" }) { (label) }
+                                    @if let Some((_, points)) = tile {
+                                        span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
+                                    }
                                 }
                             }
                         }

@@ -750,7 +750,7 @@ async fn game_compose_route(
                 .view
                 .board
                 .iter()
-                .any(|(placed, _)| *placed == coordinate)
+                .any(|(placed, _, _)| *placed == coordinate)
             {
                 return draft_error_page(
                     &game,
@@ -1699,7 +1699,7 @@ fn visual_board(
         .view
         .board
         .iter()
-        .copied()
+        .map(|(coordinate, letter, points)| (*coordinate, (*letter, *points)))
         .collect::<std::collections::BTreeMap<_, _>>();
     let pending = draft
         .placements
@@ -1726,7 +1726,7 @@ fn visual_board(
                                 @let required = feedback.guidance.required.contains(&coordinate);
                                 @let eligible = feedback.guidance.eligible.contains(&coordinate);
                                 @let latest = game.latest_play_coordinates.contains(&coordinate);
-                                @let (background, label, color) = if let Some(letter) = committed {
+                                @let (background, label, color) = if let Some((letter, _)) = committed {
                                     ("#f2d79b", letter.to_string(), "#2e291f")
                                 } else if let Some((tile_id, blank_letter)) = drafted {
                                     let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
@@ -1756,8 +1756,11 @@ fn visual_board(
                                 } @else if committed.is_some() {
                                     div class=(if latest { "board-square committed-square latest-move-square" } else { "board-square committed-square" }) width="44px" height="44px"
                                         background=(background) color=(color) border=((if latest { "#526243" } else { "#aa9e85" }, if latest { 3 } else { 1 }))
-                                        align-items="center" justify-content="center" font-weight=bold {
+                                        align-items="center" justify-content="center" font-weight=bold position="relative" {
                                         span font-size="20px" { (label) }
+                                        @if let Some((_, points)) = committed {
+                                            span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
+                                        }
                                     }
                                 } @else {
                                     form hx-post=(action.as_str()) hx-target="#app-page" {
@@ -2712,6 +2715,7 @@ mod tests {
             assert!(page.contains("open-square"));
             assert!(page.contains("Board key: gold tiles are committed"));
             assert!(page.contains("rack-tile"));
+            assert!(!page.contains("board-tile-points"));
             assert!(page.contains("DL"));
             assert!(page.contains("TW"));
             assert!(page.contains("eligible-square-highlight"));
