@@ -19,7 +19,7 @@ argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "pa
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures-lite = { version = "2.6.1", default-features = false, features = ["std"] }
-hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "e6781fc0adc0f62fd9c64a28634b14bf77b22fa2", default-features = false }
+hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "c5bdfc6d1d5172f9a5e77d852218e9ee83b65ea6", default-features = false }
 log = { version = "0.4.33", default-features = false, features = ["release_max_level_trace"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 rand_core = { version = "0.6.4", default-features = false, features = ["getrandom"] }
