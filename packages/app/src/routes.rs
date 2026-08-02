@@ -1752,15 +1752,15 @@ fn visual_board(
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
                                             width="44px" height="44px" background=(background) color=(color)
-                                            border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a48", 3) } else { ("#aa9e85", 1) })
+                                            border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a4888", 3) } else { ("#aa9e85", 1) })
                                             position="relative" align-items="center" justify-content="center"
                                             font-weight=bold cursor=pointer {
                                             @if required {
                                                 span class="required-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#f3a64b opacity=0.42 { }
+                                                    width="100%" height="100%" background=#f3a64b opacity=0.3 { }
                                             } @else if eligible {
                                                 span class="eligible-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#68a85b opacity=0.32 { }
+                                                    width="100%" height="100%" background=#7f9a78 opacity=0.3 { }
                                             }
                                             span position="relative" { (label) }
                                         }
