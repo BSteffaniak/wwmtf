@@ -1,5 +1,5 @@
 resource "cloudflare_ruleset" "redirects" {
-  count       = var.manage_zone_rulesets ? 1 : 0
+  count       = var.manage_redirect_ruleset ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF redirects"
   description = "Redirect the hyperchad.dev games path to the canonical WWMTF hostname"
@@ -25,7 +25,7 @@ resource "cloudflare_ruleset" "redirects" {
 }
 
 resource "cloudflare_ruleset" "firewall" {
-  count       = var.manage_zone_rulesets ? 1 : 0
+  count       = var.manage_firewall_ruleset ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF custom firewall"
   description = "Hostname-scoped request filtering for WWMTF"
@@ -51,7 +51,7 @@ resource "cloudflare_ruleset" "firewall" {
 }
 
 resource "cloudflare_ruleset" "managed_waf" {
-  count       = var.manage_zone_rulesets && var.cloudflare_managed_ruleset_id != null ? 1 : 0
+  count       = var.manage_managed_waf_ruleset && var.cloudflare_managed_ruleset_id != null ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF managed WAF"
   description = "Execute the Cloudflare-managed WAF ruleset selected for the zone plan"
@@ -71,7 +71,7 @@ resource "cloudflare_ruleset" "managed_waf" {
 }
 
 resource "cloudflare_ruleset" "rate_limits" {
-  count       = var.manage_zone_rulesets ? 1 : 0
+  count       = var.manage_rate_limit_ruleset ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF rate limits"
   description = "Protect public account endpoints from automated abuse"
@@ -95,7 +95,7 @@ resource "cloudflare_ruleset" "rate_limits" {
 }
 
 resource "cloudflare_ruleset" "cache" {
-  count       = var.manage_zone_rulesets ? 1 : 0
+  count       = var.manage_cache_ruleset ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF cache policy"
   description = "Never cache private or dynamic application responses"
@@ -115,7 +115,7 @@ resource "cloudflare_ruleset" "cache" {
 }
 
 resource "cloudflare_ruleset" "security_headers" {
-  count       = var.manage_zone_rulesets ? 1 : 0
+  count       = var.manage_security_headers_ruleset ? 1 : 0
   zone_id     = local.zone_id
   name        = "WWMTF security headers"
   description = "Set conservative browser and privacy response headers"

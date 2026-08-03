@@ -42,6 +42,8 @@ jobs:
         run: ./scripts/test-production-infra.sh
       - name: Test Fly restart recovery
         run: ./scripts/test-deploy.sh
+      - name: Test Cloudflare redirect adoption guard
+        run: ./scripts/test-cloudflare-redirects.sh
       - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
           tofu_version: 1.10.9

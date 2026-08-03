@@ -113,6 +113,8 @@ if ! tofu -chdir="$DEPLOY_DIR" state list | grep -Fxq cloudflare_r2_bucket.state
         "${CLOUDFLARE_ACCOUNT_ID}/${STATE_BUCKET}/default"
 fi
 
+./scripts/adopt-cloudflare-redirects.sh
+
 tofu -chdir="$DEPLOY_DIR" plan -input=false -out=tfplan
 tofu -chdir="$DEPLOY_DIR" apply -input=false -auto-approve tfplan
 

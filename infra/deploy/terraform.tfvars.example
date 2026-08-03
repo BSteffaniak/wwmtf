@@ -7,9 +7,16 @@ fly_ipv6_address        = "discover-with-flyctl"
 fly_ownership_txt       = "discover-with-flyctl"
 state_bucket_name       = "words-with-spouses-opentofu-state"
 
-# Shared zone-phase rulesets are opt-in. Inventory/import or coordinate existing
-# hyperchad.dev rules before setting this to true.
-manage_zone_rulesets = false
+# The guarded preflight creates or adopts only the shared redirect phase.
+manage_redirect_ruleset = true
+
+# Other shared phases stay disabled until their existing rules are inventoried
+# and imported into this stack.
+manage_firewall_ruleset         = false
+manage_managed_waf_ruleset      = false
+manage_rate_limit_ruleset       = false
+manage_cache_ruleset            = false
+manage_security_headers_ruleset = false
 
 # Creating a widget does not integrate Turnstile into the app by itself.
 manage_turnstile = false

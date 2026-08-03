@@ -43,6 +43,8 @@ jobs:
       - name: Initialize
         run: tofu init -backend-config=backend.hcl
         working-directory: infra/deploy
+      - name: Adopt or guard shared redirect ruleset
+        run: ./scripts/adopt-cloudflare-redirects.sh
       - name: Check formatting
         run: tofu fmt -check -recursive .
         working-directory: infra/deploy

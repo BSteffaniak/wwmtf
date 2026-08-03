@@ -37,10 +37,40 @@ variable "fly_ownership_txt" {
   description = "Fly certificate ownership verification token discovered during production bootstrap"
 }
 
-variable "manage_zone_rulesets" {
+variable "manage_redirect_ruleset" {
+  type        = bool
+  default     = true
+  description = "Manage the shared dynamic redirect phase after guarded preflight adoption"
+}
+
+variable "manage_firewall_ruleset" {
   type        = bool
   default     = false
-  description = "Manage shared zone-phase rulesets after importing or coordinating existing hyperchad.dev rules"
+  description = "Manage the shared custom firewall phase after importing or coordinating existing rules"
+}
+
+variable "manage_managed_waf_ruleset" {
+  type        = bool
+  default     = false
+  description = "Manage the shared managed WAF phase after importing or coordinating existing rules"
+}
+
+variable "manage_rate_limit_ruleset" {
+  type        = bool
+  default     = false
+  description = "Manage the shared rate-limit phase after importing or coordinating existing rules"
+}
+
+variable "manage_cache_ruleset" {
+  type        = bool
+  default     = false
+  description = "Manage the shared cache phase after importing or coordinating existing rules"
+}
+
+variable "manage_security_headers_ruleset" {
+  type        = bool
+  default     = false
+  description = "Manage the shared response-header transform phase after importing or coordinating existing rules"
 }
 
 variable "manage_turnstile" {

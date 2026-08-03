@@ -16,7 +16,7 @@ The intended setup is one protected GitHub workflow after credentials are added.
 
 Create these credentials without placing their values in source control:
 
-- A Cloudflare API token for the account containing `hyperchad.dev`. It needs account R2 bucket edit plus zone read, DNS edit, and zone settings edit for `hyperchad.dev`.
+- A Cloudflare API token for the account containing `hyperchad.dev`. It needs account R2 bucket edit plus zone read, DNS edit, zone settings edit, and **Single Redirect Edit** (also labelled **Dynamic URL Redirects Write** in some Cloudflare token interfaces) for `hyperchad.dev`.
 - R2 S3 credentials with object read/write access. Because the workflow creates the state bucket, these credentials must initially be account-scoped.
 - A Fly organization-scoped token that can create the application and its resources.
 - A high-entropy OpenTofu state-encryption passphrase. Losing it makes state unreadable.
@@ -57,11 +57,20 @@ If the fixed state-bucket name is already owned by another Cloudflare account, c
 
 The state bucket has a 365-day immutable `history/` prefix and a matching expiration rule. Live state and `.tflock` objects remain writable. OpenTofu encrypts state and saved plans with AES-GCM before upload. R2 does not provide S3 object versioning, so each infrastructure apply makes a server-side encrypted-state archive first.
 
-## Cloudflare scope
+## Cloudflare shared rules
 
-The initial stack manages the app DNS records and the zone's strict TLS setting. Verify every existing proxied `hyperchad.dev` origin supports strict TLS before the first bootstrap.
+The dynamic redirect phase is independently enabled and guarded. Before every infrastructure apply, the workflow queries Cloudflare's `http_request_dynamic_redirect` entry point:
 
-Shared zone-phase rulesets remain disabled initially because `hyperchad.dev` can host unrelated services and Cloudflare has one entry-point ruleset per phase. Inventory or import existing redirect, WAF, rate-limit, cache, and response-header rules before setting `manage_zone_rulesets = true`. Until then, `https://hyperchad.dev/games/wwmtf` may not redirect to the canonical hostname.
+- If none exists, OpenTofu creates it with the WWMTF path redirect.
+- If an empty entry point exists, the workflow imports and adopts it.
+- If an unmanaged entry point contains rules, the workflow stops before planning so it cannot delete unrelated redirects.
+- If OpenTofu already owns the entry point, planning proceeds normally.
+
+After adoption, do not edit redirect rules in the Cloudflare dashboard. Add all redirects for `hyperchad.dev` to the authoritative OpenTofu ruleset.
+
+The redirect preserves query strings and maps both `/games/wwmtf` and `/games/wwmtf/*` to the equivalent path on `https://wwmtf.hyperchad.dev`.
+
+Other shared phases—custom firewall, managed WAF, rate limiting, cache settings, and response-header transforms—remain independently disabled until their existing rules are inventoried and imported. The application and nginx continue to enforce their own hostname, method, origin, body-size, caching, and security-header boundaries in the meantime.
 
 Turnstile remains disabled because registration verification is not integrated. `manage_turnstile = true` only provisions a widget and must not be enabled before application verification exists.
 
