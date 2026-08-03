@@ -16,7 +16,7 @@ use hyperchad::{
 use serde::Deserialize;
 use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     Coordinate, GameCommand, GameError, Placement, PlacementGuidance, PlayAnalysis, PremiumSquare,
     TileId,
 };
@@ -1017,7 +1017,7 @@ fn turn_rejection(reason: &str) -> View {
         .build()
 }
 
-fn invitation_joined_page(game_id: words_with_spouses_game_domain::GameId) -> Container {
+fn invitation_joined_page(game_id: wwmtf_game_domain::GameId) -> Container {
     let game_href = format!("/games/{game_id}");
     container! {
         div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
@@ -1123,9 +1123,7 @@ pub fn create_product_router(
     router.add_route_result("/health/ready", move |_request: RouteRequest| {
         let database = readiness_database.clone();
         async move {
-            if !database
-                .table_exists("__words_with_spouses_migrations")
-                .await?
+            if !database.table_exists("__wwmtf_migrations").await?
                 || !database.table_exists("game_journal").await?
             {
                 return Err("application schema is not ready".into());
@@ -1312,7 +1310,7 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                 background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
                 anchor href="/" color=#526243 { "← Home" }
                 div gap="6px" {
-                    span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                    span color=#7b6240 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
                     h1 { "Welcome back" }
                     span color=#5d6258 { "Sign in to continue your private games." }
                 }
@@ -1357,7 +1355,7 @@ fn register_page_with_invitation(error: Option<&str>, invitation_token: &str) ->
                 background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
                 anchor href="/" color=#526243 { "← Home" }
                 div gap="6px" {
-                    span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                    span color=#7b6240 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
                     h1 { "Create your account" }
                     span color=#5d6258 { "Choose a username your opponent will recognize." }
                 }
@@ -1412,7 +1410,7 @@ pub fn signed_out_page() -> Container {
             background=#f4f1e8 padding=24 {
             main width="100%" max-width="560px" background=#ffffff border=(("#ded8c9", 1))
                 border-radius=18 padding=32 gap=18 {
-                span color=#7b6240 font-weight=bold { "WORDS WITH SPOUSES" }
+                span color=#7b6240 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
                 h1 { "Sign in required" }
                 span color=#5d6258 { "A valid secure session is required to view games." }
                 div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=10 {
@@ -1529,7 +1527,7 @@ fn dashboard_page_content(
                 header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                     background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
                     div gap="4px" {
-                        span color=#2f8a57 font-weight=bold { "WORDS WITH SPOUSES" }
+                        span color=#2f8a57 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
                         h1 { "Your games" }
                         span color=#5d6258 { "Signed in as " (username) }
                     }
@@ -2455,7 +2453,7 @@ mod tests {
     use futures_lite::future::block_on;
     use hyperchad::router::RequestInfo;
     use time::Duration;
-    use words_with_spouses_game_domain::Dictionary as _;
+    use wwmtf_game_domain::Dictionary as _;
 
     use super::*;
     use crate::{
@@ -3006,15 +3004,15 @@ mod tests {
                     rack.iter().enumerate().find_map(|(second_index, second)| {
                         (first_index != second_index).then(|| {
                             let first_letter = match first.face {
-                                words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
-                                words_with_spouses_game_domain::TileFace::Blank => return None,
+                                wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                                wwmtf_game_domain::TileFace::Blank => return None,
                             };
                             let second_letter = match second.face {
-                                words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
-                                words_with_spouses_game_domain::TileFace::Blank => return None,
+                                wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                                wwmtf_game_domain::TileFace::Blank => return None,
                             };
                             let word = format!("{first_letter}{second_letter}");
-                            words_with_spouses_game_domain::bundled_dictionary()
+                            wwmtf_game_domain::bundled_dictionary()
                                 .contains(&word)
                                 .then_some((first, second, word))
                         })?

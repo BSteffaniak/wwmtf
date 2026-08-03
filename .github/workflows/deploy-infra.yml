@@ -34,12 +34,12 @@ jobs:
         run: |
           aws s3api list-objects-v2 \
             --bucket "$TOFU_STATE_BUCKET" \
-            --prefix words-with-spouses/production.tfstate \
+            --prefix wwmtf/production.tfstate \
             --max-keys 2 \
             --endpoint-url "$TOFU_STATE_S3_ENDPOINT" \
             --region auto \
             --output json \
-            | jq -e 'any(.Contents[]?; .Key == "words-with-spouses/production.tfstate")'
+            | jq -e 'any(.Contents[]?; .Key == "wwmtf/production.tfstate")'
       - name: Initialize
         run: tofu init -backend-config=backend.hcl
         working-directory: infra/deploy

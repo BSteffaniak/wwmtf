@@ -1,5 +1,5 @@
-bucket                      = "words-with-spouses-opentofu-state"
-key                         = "words-with-spouses/production.tfstate"
+bucket                      = "wwmtf-opentofu-state"
+key                         = "wwmtf/production.tfstate"
 region                      = "auto"
 endpoint                    = "https://<account-id>.r2.cloudflarestorage.com"
 use_lockfile                = true

@@ -5,7 +5,7 @@ backup_dir=/data/backups
 app_pid=
 nginx_pid=
 
-echo "$$" >/tmp/words-with-spouses-supervisor.pid
+echo "$$" >/tmp/wwmtf-supervisor.pid
 
 shutdown() {
     [[ -z "$app_pid" ]] || kill -TERM "$app_pid" 2>/dev/null || true
@@ -16,9 +16,9 @@ consistent_backup() {
     [[ -n "$app_pid" ]] || return 1
     mkdir -p "$backup_dir"
     kill -STOP "$app_pid"
-    local files=(/data/words-with-spouses.db)
-    [[ -f /data/words-with-spouses.db-wal ]] && files+=(/data/words-with-spouses.db-wal)
-    [[ -f /data/words-with-spouses.db-shm ]] && files+=(/data/words-with-spouses.db-shm)
+    local files=(/data/wwmtf.db)
+    [[ -f /data/wwmtf.db-wal ]] && files+=(/data/wwmtf.db-wal)
+    [[ -f /data/wwmtf.db-shm ]] && files+=(/data/wwmtf.db-shm)
     local temp="${backup_dir}/database.tar.gz.tmp"
     if tar -C /data -czf "$temp" "${files[@]#/data/}"; then
         mv "$temp" "${backup_dir}/database.tar.gz"
@@ -31,7 +31,7 @@ consistent_backup() {
 trap shutdown TERM INT
 trap consistent_backup USR1
 
-/app/words-with-spouses serve &
+/app/wwmtf serve &
 app_pid=$!
 nginx -g 'daemon off;' &
 nginx_pid=$!

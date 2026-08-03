@@ -1,6 +1,6 @@
 variable "state_bucket_name" {
   type        = string
-  default     = "words-with-spouses-opentofu-state"
+  default     = "wwmtf-opentofu-state"
   description = "Private R2 bucket used for encrypted OpenTofu state"
 }
 

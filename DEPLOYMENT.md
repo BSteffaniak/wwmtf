@@ -1,17 +1,17 @@
 # Deployment and Recovery
 
-Words with Spouses is designed for an internet deployment behind a TLS-terminating reverse proxy. The application remains renderer-neutral; HTML/Actix is selected only by runtime wiring.
+Words with More Than Friends is designed for an internet deployment behind a TLS-terminating reverse proxy. The application remains renderer-neutral; HTML/Actix is selected only by runtime wiring.
 
 ## Runtime configuration
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `WORDS_WITH_SPOUSES_PRODUCTION_MODE` | Production: yes (`true`) | Enables fail-closed production configuration checks. Mutually exclusive with development mode. |
-| `WORDS_WITH_SPOUSES_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
-| `WORDS_WITH_SPOUSES_PORT` | No; defaults to `8343` | Listener port. |
-| `WORDS_WITH_SPOUSES_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
-| `WORDS_WITH_SPOUSES_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
-| `WORDS_WITH_SPOUSES_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration and generated invitation links. |
+| `WWMTF_PRODUCTION_MODE` | Production: yes (`true`) | Enables fail-closed production configuration checks. Mutually exclusive with development mode. |
+| `WWMTF_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
+| `WWMTF_PORT` | No; defaults to `8343` | Listener port. |
+| `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
+| `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
+| `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration and generated invitation links. |
 | `RUST_LOG` | No | Logging filter. Logs must never include passwords, session/invitation tokens, racks, bags, or canonical event payloads. |
 
 The pinned `switchy_database_connection` Turso backend is local/file-backed and does not accept a Turso Cloud URL/token. A remote Turso deployment therefore requires a generic upstream `switchy` connection capability before this application may support `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`; do not add a backend-specific application bypass.
@@ -50,7 +50,7 @@ Restore drill:
 
 1. stop the application and retain the original database files;
 2. restore the backed-up database and sidecars to a new path;
-3. set `WORDS_WITH_SPOUSES_DATABASE_PATH` to that path;
+3. set `WWMTF_DATABASE_PATH` to that path;
 4. start the application and confirm migrations are idempotent;
 5. verify intended sessions still resolve according to expiry/revocation policy;
 6. open multiple active games and compare board, rack, score, revision, and history with pre-backup expectations;
@@ -65,10 +65,10 @@ The file-backed automated recovery tests now cover a stopped database-plus-sidec
 Use a disposable path. For plain-HTTP access from another device on the LAN, set the public base URL to this machine's reachable LAN IP or hostname:
 
 ```sh
-WORDS_WITH_SPOUSES_DEV_MODE=true \
-WORDS_WITH_SPOUSES_PUBLIC_BASE_URL=http://192.168.1.20:8343 \
-WORDS_WITH_SPOUSES_DATABASE_PATH=/tmp/words-with-spouses-dev.db \
-cargo run -p words_with_spouses_app --bin words-with-spouses --features insecure -- serve
+WWMTF_DEV_MODE=true \
+WWMTF_PUBLIC_BASE_URL=http://192.168.1.20:8343 \
+WWMTF_DATABASE_PATH=/tmp/wwmtf-dev.db \
+cargo run -p wwmtf_app --bin wwmtf --features insecure -- serve
 ```
 
 The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. The `insecure` Cargo feature selects HyperChad's development UUID generator because browser Web Crypto UUID generation is unavailable on plain-HTTP LAN origins. Development mode and the insecure renderer feature intentionally weaken transport/runtime security and must never be enabled on an internet-facing or production deployment.

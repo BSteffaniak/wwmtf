@@ -1,6 +1,6 @@
 # Persistence and Replay Compatibility
 
-Words with Spouses treats the canonical game journal as the gameplay source of truth. Snapshots and query projections are derived data.
+Words with More Than Friends treats the canonical game journal as the gameplay source of truth. Snapshots and query projections are derived data.
 
 ## Immutable game inputs
 

@@ -39,7 +39,7 @@ Create or open the protected GitHub environment named `production`, restrict it 
 
 Run the `Bootstrap Production` workflow and approve the `production` environment deployment. The workflow is idempotent and:
 
-1. Creates or adopts the private `words-with-spouses-opentofu-state` R2 bucket.
+1. Creates or adopts the private `wwmtf-opentofu-state` R2 bucket.
 2. Initializes encrypted, lock-protected OpenTofu state and imports the bootstrap-created bucket.
 3. Creates or adopts the Fly app, volume, scheduled snapshots, public IPs, and certificate attachment.
 4. Discovers Fly's actual IPv6 address and ownership TXT value.
@@ -78,7 +78,7 @@ Turnstile remains disabled because registration verification is not integrated. 
 
 ## Fly storage and snapshots
 
-The database is always `/data/words-with-spouses.db`; never run more than one Machine against this volume. The Machine remains running because long-lived HyperChad SSE sessions have not been qualified for suspension.
+The database is always `/data/wwmtf.db`; never run more than one Machine against this volume. The Machine remains running because long-lived HyperChad SSE sessions have not been qualified for suspension.
 
 Fly scheduled snapshots and pre-deploy snapshots are rollback protection, not an off-Fly backup service. The snapshot path creates `/data/backups/database.tar.gz` inside the volume so the database and sidecars are consistent when the volume snapshot is taken.
 
@@ -96,10 +96,10 @@ The container's internal nginx proxy exposes port 8080, validates host and same-
 
 Production fails closed unless configured with:
 
-- `WORDS_WITH_SPOUSES_PRODUCTION_MODE=true`
-- `WORDS_WITH_SPOUSES_DATABASE_PATH=/data/words-with-spouses.db`
-- `WORDS_WITH_SPOUSES_PUBLIC_BASE_URL=https://wwmtf.hyperchad.dev`
-- `WORDS_WITH_SPOUSES_DEV_MODE` absent or false
+- `WWMTF_PRODUCTION_MODE=true`
+- `WWMTF_DATABASE_PATH=/data/wwmtf.db`
+- `WWMTF_PUBLIC_BASE_URL=https://wwmtf.hyperchad.dev`
+- `WWMTF_DEV_MODE` absent or false
 
 ## Launch checks
 

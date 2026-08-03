@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${SNAPSHOT_ID:?Set SNAPSHOT_ID to a Fly volume snapshot ID}"
 
-APP_NAME="${FLY_APP_NAME:-words-with-spouses}"
+APP_NAME="${FLY_APP_NAME:-wwmtf}"
 REGION="${FLY_REGION:-iad}"
 VOLUME_SIZE_GB="${FLY_VOLUME_SIZE_GB:-1}"
 RESTORE_VOLUME_NAME="${RESTORE_VOLUME_NAME:-wwmtf_restore_$(date -u +%Y%m%d%H%M%S)}"

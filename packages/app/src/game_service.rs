@@ -4,7 +4,7 @@ use std::str::FromStr as _;
 
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     GameCommand, GameId, GameState, PlayerId, apply_event, decide_command, dictionary, rule_profile,
 };
 
@@ -141,9 +141,9 @@ pub enum GameServiceError {
     #[error("stale command revision: expected {expected}, actual {actual}")]
     Conflict { expected: u64, actual: u64 },
     #[error(transparent)]
-    Domain(#[from] words_with_spouses_game_domain::GameError),
+    Domain(#[from] wwmtf_game_domain::GameError),
     #[error(transparent)]
-    Replay(#[from] words_with_spouses_game_domain::ReplayError),
+    Replay(#[from] wwmtf_game_domain::ReplayError),
     #[error(transparent)]
     Journal(#[from] crate::JournalError),
     #[error(transparent)]

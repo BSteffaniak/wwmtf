@@ -2,7 +2,7 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 #![allow(clippy::multiple_crate_versions)]
 
-//! Renderer-neutral Words with Spouses routes and page components.
+//! Renderer-neutral Words with More Than Friends routes and page components.
 
 mod accounts;
 mod challenges;

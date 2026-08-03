@@ -91,7 +91,7 @@ pub async fn accept_pending_challenge(
     challenge_id: &str,
     user_id: &str,
     now: OffsetDateTime,
-) -> Result<words_with_spouses_game_domain::GameId, ProductWorkflowError> {
+) -> Result<wwmtf_game_domain::GameId, ProductWorkflowError> {
     Ok(accept_challenge(db, challenge_id, user_id, now, random_seed()).await?)
 }
 
@@ -149,7 +149,7 @@ pub async fn redeem_shareable_invitation(
     token: &str,
     user_id: &str,
     now: OffsetDateTime,
-) -> Result<words_with_spouses_game_domain::GameId, ProductWorkflowError> {
+) -> Result<wwmtf_game_domain::GameId, ProductWorkflowError> {
     Ok(redeem_invitation_and_start_game(db, token, user_id, now, random_seed()).await?)
 }
 

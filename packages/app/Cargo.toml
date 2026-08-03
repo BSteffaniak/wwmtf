@@ -1,17 +1,17 @@
 [package]
 authors     = { workspace = true }
 categories  = ["games", "web-programming"]
-description = "Renderer-neutral Words with Spouses application runtime"
+description = "Renderer-neutral Words with More Than Friends application runtime"
 edition     = { workspace = true }
 keywords    = ["asynchronous", "game", "hyperchad", "word"]
 license     = { workspace = true }
-name        = "words_with_spouses_app"
+name        = "wwmtf_app"
 readme      = { workspace = true }
 repository  = { workspace = true }
 version     = { workspace = true }
 
 [[bin]]
-name              = "words-with-spouses"
+name              = "wwmtf"
 path              = "src/main.rs"
 required-features = ["actix"]
 
@@ -56,7 +56,7 @@ switchy_schema = { workspace = true, features = ["code"] }
 thiserror = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
-words_with_spouses_game_domain = { workspace = true }
+wwmtf_game_domain = { workspace = true }
 
 [dev-dependencies]
 futures-lite = { workspace = true }

@@ -4,7 +4,7 @@ set -euo pipefail
 BUCKET="${TOFU_STATE_BUCKET:?TOFU_STATE_BUCKET is required}"
 ENDPOINT="${TOFU_STATE_S3_ENDPOINT:?TOFU_STATE_S3_ENDPOINT is required}"
 REGION="${TOFU_STATE_REGION:-auto}"
-STATE_KEY="${TOFU_STATE_KEY:-words-with-spouses/production.tfstate}"
+STATE_KEY="${TOFU_STATE_KEY:-wwmtf/production.tfstate}"
 LOCK_KEY="${STATE_KEY}.tflock"
 ACTION="${1:-archive}"
 

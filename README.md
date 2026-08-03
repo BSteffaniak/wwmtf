@@ -1,4 +1,4 @@
-# Words with Spouses
+# Words with More Than Friends
 
 A private, asynchronous two-player word-tile game built in Rust with HyperChad.
 

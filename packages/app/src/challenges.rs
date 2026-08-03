@@ -7,7 +7,7 @@ use switchy_database::{
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     DictionaryRef, GameId, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
     initialize_game,
 };
@@ -280,8 +280,7 @@ pub async fn create_game_in_transaction(
         .value("resulting_revision", 1_i64)
         .execute(tx)
         .await?;
-    let state =
-        words_with_spouses_game_domain::replay([&started]).map_err(ChallengeError::Replay)?;
+    let state = wwmtf_game_domain::replay([&started]).map_err(ChallengeError::Replay)?;
     let player_count = tx
         .select("game_players")
         .where_eq("game_id", game_id.to_string())
@@ -351,11 +350,11 @@ pub enum ChallengeError {
     #[error("pinned compatibility data is invalid")]
     Compatibility,
     #[error(transparent)]
-    Initialization(#[from] words_with_spouses_game_domain::InitializationError),
+    Initialization(#[from] wwmtf_game_domain::InitializationError),
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
     #[error(transparent)]
-    Replay(words_with_spouses_game_domain::ReplayError),
+    Replay(wwmtf_game_domain::ReplayError),
     #[error(transparent)]
     Journal(crate::JournalError),
     #[error(transparent)]
@@ -472,7 +471,7 @@ mod tests {
             let tab_two = crate::recover_game(&*db, games[1])
                 .await
                 .expect("second game loads");
-            let pass = words_with_spouses_game_domain::GameEvent::TurnPassed {
+            let pass = wwmtf_game_domain::GameEvent::TurnPassed {
                 player_id: tab_one.active_player,
             };
             crate::append_events_transactionally(

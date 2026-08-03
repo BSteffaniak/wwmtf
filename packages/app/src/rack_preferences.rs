@@ -2,7 +2,7 @@
 
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
-use words_with_spouses_game_domain::{GameId, TileId};
+use wwmtf_game_domain::{GameId, TileId};
 
 /// Reconciles a preferred order with the authoritative rack.
 ///
@@ -124,7 +124,7 @@ pub fn swap_rack_tiles(order: &[u16], first: TileId, second: TileId) -> Vec<u16>
 #[cfg(test)]
 mod tests {
     use switchy_database::query::FilterableQuery as _;
-    use words_with_spouses_game_domain::GameCommand;
+    use wwmtf_game_domain::GameCommand;
 
     use super::*;
 

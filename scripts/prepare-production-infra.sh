@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="${FLY_APP_NAME:-words-with-spouses}"
-STATE_BUCKET="${TOFU_STATE_BUCKET:-words-with-spouses-opentofu-state}"
-STATE_KEY="${TOFU_STATE_KEY:-words-with-spouses/production.tfstate}"
+APP_NAME="${FLY_APP_NAME:-wwmtf}"
+STATE_BUCKET="${TOFU_STATE_BUCKET:-wwmtf-opentofu-state}"
+STATE_KEY="${TOFU_STATE_KEY:-wwmtf/production.tfstate}"
 STATE_ENDPOINT="${TOFU_STATE_S3_ENDPOINT:-https://${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}.r2.cloudflarestorage.com}"
 DEPLOY_DIR="infra/deploy"
 GITHUB_ENV_FILE="${GITHUB_ENV:-}"

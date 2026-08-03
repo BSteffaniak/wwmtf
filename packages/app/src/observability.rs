@@ -30,13 +30,13 @@ pub fn record_authentication_failure(reason: &'static str) {
     METRICS
         .authentication_failures
         .fetch_add(1, Ordering::Relaxed);
-    log::warn!(target: "words_with_spouses::auth", "authentication_failed reason={reason}");
+    log::warn!(target: "wwmtf::auth", "authentication_failed reason={reason}");
 }
 
 pub fn record_command_conflict(expected: u64, actual: u64) {
     METRICS.command_conflicts.fetch_add(1, Ordering::Relaxed);
     log::warn!(
-        target: "words_with_spouses::gameplay",
+        target: "wwmtf::gameplay",
         "command_conflict expected_revision={expected} actual_revision={actual}"
     );
 }
@@ -44,7 +44,7 @@ pub fn record_command_conflict(expected: u64, actual: u64) {
 pub fn record_projection_rebuild(revision: u64) {
     METRICS.projection_rebuilds.fetch_add(1, Ordering::Relaxed);
     log::debug!(
-        target: "words_with_spouses::projection",
+        target: "wwmtf::projection",
         "projection_rebuilt revision={revision}"
     );
 }
@@ -53,7 +53,7 @@ pub fn set_live_subscribers(count: usize) {
     let count = u64::try_from(count).unwrap_or(u64::MAX);
     METRICS.live_subscribers.store(count, Ordering::Relaxed);
     log::debug!(
-        target: "words_with_spouses::live",
+        target: "wwmtf::live",
         "live_subscribers count={count}"
     );
 }
@@ -61,7 +61,7 @@ pub fn set_live_subscribers(count: usize) {
 pub fn record_database_failure(operation: &'static str) {
     METRICS.database_failures.fetch_add(1, Ordering::Relaxed);
     log::error!(
-        target: "words_with_spouses::database",
+        target: "wwmtf::database",
         "database_operation_failed operation={operation}"
     );
 }

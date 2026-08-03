@@ -5,7 +5,7 @@ use hyperchad::{
     template::{LayoutOverflow, container},
 };
 use serde::{Deserialize, Serialize};
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     Coordinate, GameEvent, GameState, GameStatus, PlayerId, RuleProfile, analyze_committed_play,
     apply_event,
 };
@@ -142,7 +142,7 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
     if !state.players.contains(&viewer) {
         return None;
     }
-    let profile = words_with_spouses_game_domain::rule_profile(state.metadata.rules())?;
+    let profile = wwmtf_game_domain::rule_profile(state.metadata.rules())?;
     Some(GameView {
         board: state
             .board
@@ -154,18 +154,10 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
             .iter()
             .map(|(&coordinate, premium)| {
                 let premium = match premium {
-                    words_with_spouses_game_domain::PremiumSquare::Letter(2) => {
-                        PremiumView::DoubleLetter
-                    }
-                    words_with_spouses_game_domain::PremiumSquare::Letter(_) => {
-                        PremiumView::TripleLetter
-                    }
-                    words_with_spouses_game_domain::PremiumSquare::Word(2) => {
-                        PremiumView::DoubleWord
-                    }
-                    words_with_spouses_game_domain::PremiumSquare::Word(_) => {
-                        PremiumView::TripleWord
-                    }
+                    wwmtf_game_domain::PremiumSquare::Letter(2) => PremiumView::DoubleLetter,
+                    wwmtf_game_domain::PremiumSquare::Letter(_) => PremiumView::TripleLetter,
+                    wwmtf_game_domain::PremiumSquare::Word(2) => PremiumView::DoubleWord,
+                    wwmtf_game_domain::PremiumSquare::Word(_) => PremiumView::TripleWord,
                 };
                 (coordinate, premium)
             })
@@ -176,8 +168,8 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
             .iter()
             .map(|tile| {
                 let letter = match tile.face {
-                    words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
-                    words_with_spouses_game_domain::TileFace::Blank => ' ',
+                    wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                    wwmtf_game_domain::TileFace::Blank => ' ',
                 };
                 (tile.id.get(), letter, tile.points)
             })
@@ -198,9 +190,9 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
 #[derive(Debug, thiserror::Error)]
 pub enum MoveHistoryError {
     #[error(transparent)]
-    Replay(#[from] words_with_spouses_game_domain::ReplayError),
+    Replay(#[from] wwmtf_game_domain::ReplayError),
     #[error(transparent)]
-    Analysis(#[from] words_with_spouses_game_domain::GameError),
+    Analysis(#[from] wwmtf_game_domain::GameError),
 }
 
 /// Renderer-neutral move-history row.
@@ -289,7 +281,7 @@ pub fn move_history_view(
                     |winner| format!("Game completed; {} won.", player_name(*winner)),
                 ),
             ),
-            _ => return Err(words_with_spouses_game_domain::ReplayError::MissingStart.into()),
+            _ => return Err(wwmtf_game_domain::ReplayError::MissingStart.into()),
         };
         let next_state = apply_event(state, event)?;
         let revision = next_state.revision;
@@ -320,14 +312,13 @@ pub fn move_history_view(
 /// * Returns replay errors when the canonical event sequence is invalid.
 pub fn final_score_adjustments(
     events: &[GameEvent],
-) -> Result<std::collections::BTreeMap<PlayerId, i64>, words_with_spouses_game_domain::ReplayError>
-{
+) -> Result<std::collections::BTreeMap<PlayerId, i64>, wwmtf_game_domain::ReplayError> {
     let mut state: Option<GameState> = None;
     for event in events {
         if let GameEvent::GameCompleted { scores, .. } = event {
             let before = state
                 .as_ref()
-                .ok_or(words_with_spouses_game_domain::ReplayError::EmptyJournal)?;
+                .ok_or(wwmtf_game_domain::ReplayError::EmptyJournal)?;
             return Ok(scores
                 .iter()
                 .map(|(&player, &score)| {
@@ -550,7 +541,7 @@ pub fn error_component(message: &str) -> Container {
 #[cfg(test)]
 mod tests {
     use time::OffsetDateTime;
-    use words_with_spouses_game_domain::{
+    use wwmtf_game_domain::{
         DictionaryRef, GameId, GameMetadata, RuleProfileRef, initial_rule_profile, initialize_game,
         replay,
     };

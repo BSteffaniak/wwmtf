@@ -23,7 +23,7 @@ variable "app_subdomain" {
 
 variable "fly_app_name" {
   type        = string
-  default     = "words-with-spouses"
+  default     = "wwmtf"
   description = "Fly application hostname prefix"
 }
 

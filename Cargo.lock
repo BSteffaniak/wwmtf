@@ -11419,7 +11419,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "words_with_spouses_app"
+name = "writeable"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "wwmtf_app"
 version = "0.1.0"
 dependencies = [
  "argon2",
@@ -11439,11 +11445,11 @@ dependencies = [
  "thiserror 2.0.19",
  "time 0.3.54",
  "uuid",
- "words_with_spouses_game_domain",
+ "wwmtf_game_domain",
 ]
 
 [[package]]
-name = "words_with_spouses_game_domain"
+name = "wwmtf_game_domain"
 version = "0.1.0"
 dependencies = [
  "proptest",
@@ -11453,12 +11459,6 @@ dependencies = [
  "time 0.3.54",
  "uuid",
 ]
-
-[[package]]
-name = "writeable"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wyz"

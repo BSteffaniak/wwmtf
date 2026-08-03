@@ -70,4 +70,4 @@ jobs:
         run: tofu validate
         working-directory: infra/deploy
       - name: Build production container
-        run: docker build --tag words-with-spouses:validation .
+        run: docker build --tag wwmtf:validation .

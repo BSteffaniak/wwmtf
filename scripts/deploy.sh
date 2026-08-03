@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="${FLY_APP_NAME:-words-with-spouses}"
+APP_NAME="${FLY_APP_NAME:-wwmtf}"
 FLY_ORG="${FLY_ORG:-personal}"
 FLY_REGION="${FLY_REGION:-iad}"
 VOLUME_NAME="${FLY_VOLUME_NAME:-wwmtf_data}"
 VOLUME_SIZE_GB="${FLY_VOLUME_SIZE_GB:-1}"
 SNAPSHOT_RETENTION_DAYS="${FLY_SNAPSHOT_RETENTION_DAYS:-60}"
-PUBLIC_URL="${WORDS_WITH_SPOUSES_PUBLIC_BASE_URL:-https://wwmtf.hyperchad.dev}"
+PUBLIC_URL="${WWMTF_PUBLIC_BASE_URL:-https://wwmtf.hyperchad.dev}"
 
 fly() {
     flyctl "$@"
@@ -131,7 +131,7 @@ snapshot_volume() {
 
     local snapshot
     echo "Creating an application-consistent backup before the volume snapshot"
-    fly ssh console --app "$APP_NAME" --command "sh -c 'kill -USR1 \$(cat /tmp/words-with-spouses-supervisor.pid)'"
+    fly ssh console --app "$APP_NAME" --command "sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)'"
     for _ in $(seq 1 30); do
         if fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"; then
             break

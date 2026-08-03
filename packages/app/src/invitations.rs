@@ -126,7 +126,7 @@ pub async fn redeem_invitation_and_start_game(
     redeemer_user_id: &str,
     now: OffsetDateTime,
     shuffle_seed: u64,
-) -> Result<words_with_spouses_game_domain::GameId, InvitationError> {
+) -> Result<wwmtf_game_domain::GameId, InvitationError> {
     let token_hash = token_hash(token);
     let tx = db.begin_transaction().await?;
     let rows = tx

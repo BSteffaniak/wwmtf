@@ -29,24 +29,20 @@ impl WebSessionIdentityResolver for DurableWebSessionIdentityResolver {
         &self,
         opaque_session: &str,
     ) -> Result<AuthenticatedTransportContext, WebSessionIdentityError> {
-        let user_id = words_with_spouses_app::resolve_session(
-            &*self.database,
-            opaque_session,
-            OffsetDateTime::now_utc(),
-        )
-        .await
-        .map_err(|error| match error {
-            words_with_spouses_app::SessionError::Invalid
-            | words_with_spouses_app::SessionError::Timestamp => {
-                WebSessionIdentityError::Unauthenticated
-            }
-            words_with_spouses_app::SessionError::Busy => WebSessionIdentityError::Operation(
-                "session storage is temporarily busy".to_string(),
-            ),
-            words_with_spouses_app::SessionError::Database(error) => {
-                WebSessionIdentityError::Operation(error.to_string())
-            }
-        })?;
+        let user_id =
+            wwmtf_app::resolve_session(&*self.database, opaque_session, OffsetDateTime::now_utc())
+                .await
+                .map_err(|error| match error {
+                    wwmtf_app::SessionError::Invalid | wwmtf_app::SessionError::Timestamp => {
+                        WebSessionIdentityError::Unauthenticated
+                    }
+                    wwmtf_app::SessionError::Busy => WebSessionIdentityError::Operation(
+                        "session storage is temporarily busy".to_string(),
+                    ),
+                    wwmtf_app::SessionError::Database(error) => {
+                        WebSessionIdentityError::Operation(error.to_string())
+                    }
+                })?;
         Ok(AuthenticatedTransportContext {
             participant_id: ParticipantId::new(user_id),
             identity_binding: format!("session:{}", session_binding(opaque_session)),

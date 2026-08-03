@@ -580,18 +580,18 @@ def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange:
 
 def run() -> None:
     chrome = chrome_binary()
-    with tempfile.TemporaryDirectory(prefix="words-with-spouses-browser-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="wwmtf-browser-") as temporary:
         temp = pathlib.Path(temporary)
         database = temp / "acceptance.db"
         environment = os.environ.copy()
         environment.update(
             {
-                "WORDS_WITH_SPOUSES_BIND_ADDRESS": HOST,
-                "WORDS_WITH_SPOUSES_PORT": str(PORT),
-                "WORDS_WITH_SPOUSES_DATABASE_PATH": str(database),
+                "WWMTF_BIND_ADDRESS": HOST,
+                "WWMTF_PORT": str(PORT),
+                "WWMTF_DATABASE_PATH": str(database),
             }
         )
-        application_command = os.environ.get("WORDS_WITH_SPOUSES_ACCEPTANCE_SERVER")
+        application_command = os.environ.get("WWMTF_ACCEPTANCE_SERVER")
         if application_command:
             command = application_command.split()
         else:
@@ -599,9 +599,9 @@ def run() -> None:
                 "cargo",
                 "run",
                 "-p",
-                "words_with_spouses_app",
+                "wwmtf_app",
                 "--bin",
-                "words-with-spouses",
+                "wwmtf",
                 "--",
                 "serve",
             ]
@@ -683,7 +683,7 @@ def run() -> None:
                 "document.querySelector('meta[name=\"hyperchad-shared-state-csrf\"]')?.content"
             )
             stale_csrf_cookie = alice.evaluate(
-                "document.cookie.split('; ').find(value => value.startsWith('words-with-spouses-csrf='))?.split('=').slice(1).join('=')"
+                "document.cookie.split('; ').find(value => value.startsWith('wwmtf-csrf='))?.split('=').slice(1).join('=')"
             )
             if stale_csrf_cookie != stale_csrf_token:
                 raise AcceptanceError("initial CSRF cookie did not match rendered metadata")
@@ -714,7 +714,7 @@ def run() -> None:
                 "document.querySelector('meta[name=\"hyperchad-shared-state-csrf\"]')?.content"
             )
             refreshed_csrf_cookie = alice.evaluate(
-                "document.cookie.split('; ').find(value => value.startsWith('words-with-spouses-csrf='))?.split('=').slice(1).join('=')"
+                "document.cookie.split('; ').find(value => value.startsWith('wwmtf-csrf='))?.split('=').slice(1).join('=')"
             )
             if refreshed_csrf_token == stale_csrf_token:
                 raise AcceptanceError("server restart did not rotate the CSRF token")

@@ -9,15 +9,15 @@ use hyperchad::{
 use std::{collections::BTreeMap, sync::Arc};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-use words_with_spouses_app::{
+use wwmtf_app::{
     GameSharedStateDispatcher, accept_challenge, create_challenge, create_session, game_channel,
     game_page, load_authorized_game_page, load_rack_order, migrate_app, recover_game, register,
     save_rack_order, user_game_summaries,
 };
-use words_with_spouses_game_domain::GameCommand;
+use wwmtf_game_domain::GameCommand;
 
 fn database_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("words-with-spouses-e2e-{}.db", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("wwmtf-e2e-{}.db", Uuid::new_v4()))
 }
 
 async fn open_database(path: &std::path::Path) -> Arc<dyn switchy_database::Database> {
@@ -40,7 +40,7 @@ fn context(user_id: &str, binding: &str) -> AuthenticatedTransportContext {
 }
 
 fn command(
-    game_id: words_with_spouses_game_domain::GameId,
+    game_id: wwmtf_game_domain::GameId,
     user_id: &str,
     sequence: u64,
     revision: u64,
@@ -128,7 +128,7 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
             let state = recover_game(&*database, game_id)
                 .await
                 .expect("game replays");
-            if state.status == words_with_spouses_game_domain::GameStatus::Completed {
+            if state.status == wwmtf_game_domain::GameStatus::Completed {
                 break;
             }
             let actor = if state.active_player == state.players[0] {
@@ -155,13 +155,13 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
             ));
             let alice_event = alice_events.recv_async().await.expect("Alice live update");
             let bob_event = bob_events.recv_async().await.expect("Bob live update");
-            let alice_view: words_with_spouses_app::GameView = dispatcher
+            let alice_view: wwmtf_app::GameView = dispatcher
                 .project_event(&alice_context, &alice_event)
                 .expect("Alice projection")
                 .payload
                 .deserialize()
                 .expect("Alice view decodes");
-            let bob_view: words_with_spouses_app::GameView = dispatcher
+            let bob_view: wwmtf_app::GameView = dispatcher
                 .project_event(&bob_context, &bob_event)
                 .expect("Bob projection")
                 .payload
@@ -195,15 +195,10 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
         let completed = recover_game(&*database, game_id)
             .await
             .expect("completed game replays");
-        assert_eq!(
-            completed.status,
-            words_with_spouses_game_domain::GameStatus::Completed
-        );
+        assert_eq!(completed.status, wwmtf_game_domain::GameStatus::Completed);
         for (session, expected_user) in [(&alice_session, &alice), (&bob_session, &bob)] {
-            let cookies = BTreeMap::from([(
-                words_with_spouses_app::SESSION_COOKIE_NAME.to_string(),
-                session.clone(),
-            )]);
+            let cookies =
+                BTreeMap::from([(wwmtf_app::SESSION_COOKIE_NAME.to_string(), session.clone())]);
             let page = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
                 .await
                 .expect("completed game page loads");
@@ -243,10 +238,7 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
                     .iter()
                     .all(|entry| !entry.description.contains("Game updated"))
             );
-            assert_eq!(
-                page.view.status,
-                words_with_spouses_game_domain::GameStatus::Completed
-            );
+            assert_eq!(page.view.status, wwmtf_game_domain::GameStatus::Completed);
         }
         for user in [&alice, &bob] {
             let summaries = user_game_summaries(&*database, user)
@@ -309,7 +301,7 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
             let _ = bob_events.recv_async().await.expect("Bob initial view");
             let state = recover_game(&*database, game_id).await.expect("game loads");
             let preferred_order =
-                state.racks[&words_with_spouses_app::player_for_user(&*database, game_id, &alice)
+                state.racks[&wwmtf_app::player_for_user(&*database, game_id, &alice)
                     .await
                     .expect("Alice is seated")]
                     .iter()
@@ -375,17 +367,14 @@ fn two_authenticated_clients_reconnect_across_restart_and_inspect_history() {
             let projected = dispatcher
                 .project_event(&context(user, binding), &event)
                 .expect("private update projects");
-            let view: words_with_spouses_app::GameView =
-                projected.payload.deserialize().expect("view decodes");
+            let view: wwmtf_app::GameView = projected.payload.deserialize().expect("view decodes");
             assert_eq!(view.revision, expected_revision);
             assert_eq!(view.rack.len(), 7);
         }
 
         for session in [&alice_session, &bob_session] {
-            let cookies = BTreeMap::from([(
-                words_with_spouses_app::SESSION_COOKIE_NAME.to_string(),
-                session.clone(),
-            )]);
+            let cookies =
+                BTreeMap::from([(wwmtf_app::SESSION_COOKIE_NAME.to_string(), session.clone())]);
             let page = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
                 .await
                 .expect("history loads after restart");

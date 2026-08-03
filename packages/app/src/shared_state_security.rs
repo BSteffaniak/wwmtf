@@ -20,7 +20,7 @@ use hyperchad::{
 };
 use serde::{Deserialize, Serialize};
 use switchy_database::{Database, query::FilterableQuery as _};
-use words_with_spouses_game_domain::{GameCommand, GameId, PlayerId};
+use wwmtf_game_domain::{GameCommand, GameId, PlayerId};
 
 use crate::{
     DashboardProjection, GameView, UserScoreTotals, dashboard_projection, game_view,
@@ -147,7 +147,7 @@ impl GameSharedStateDispatcher {
     async fn server_update(
         &self,
         game_id: GameId,
-        state: &words_with_spouses_game_domain::GameState,
+        state: &wwmtf_game_domain::GameState,
     ) -> SharedStateTransportDispatchResult<ServerGameUpdate> {
         let rows = self
             .database
@@ -535,9 +535,7 @@ mod tests {
     };
     use time::OffsetDateTime;
 
-    use words_with_spouses_game_domain::{
-        Coordinate, Dictionary as _, Placement, TileFace, bundled_dictionary,
-    };
+    use wwmtf_game_domain::{Coordinate, Dictionary as _, Placement, TileFace, bundled_dictionary};
 
     use super::*;
     use crate::{accept_challenge, create_challenge, migrate_app, register};

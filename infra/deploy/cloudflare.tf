@@ -5,7 +5,7 @@ resource "cloudflare_dns_record" "app" {
   content = var.fly_ipv6_address
   proxied = true
   ttl     = 1
-  comment = "Words with Spouses canonical application hostname"
+  comment = "Words with More Than Friends canonical application hostname"
 }
 
 resource "cloudflare_dns_record" "fly_ownership" {

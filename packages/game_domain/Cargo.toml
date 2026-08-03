@@ -5,7 +5,7 @@ description = "Deterministic word-tile game domain"
 edition     = { workspace = true }
 keywords    = ["board-game", "domain", "game", "word"]
 license     = { workspace = true }
-name        = "words_with_spouses_game_domain"
+name        = "wwmtf_game_domain"
 readme      = { workspace = true }
 repository  = { workspace = true }
 version     = { workspace = true }

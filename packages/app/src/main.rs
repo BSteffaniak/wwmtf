@@ -6,9 +6,7 @@ mod durable_web_session;
 
 use hyperchad::app::AppBuilder;
 use hyperchad::renderer::assets::{AssetPathTarget, StaticAssetRoute};
-use words_with_spouses_app::{
-    CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router,
-};
+use wwmtf_app::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router};
 
 struct RuntimeConfig {
     address: String,
@@ -21,18 +19,17 @@ struct RuntimeConfig {
 
 impl RuntimeConfig {
     fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
-        let production_mode = std::env::var("WORDS_WITH_SPOUSES_PRODUCTION_MODE")
+        let production_mode = std::env::var("WWMTF_PRODUCTION_MODE")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-        let development_mode = std::env::var("WORDS_WITH_SPOUSES_DEV_MODE")
+        let development_mode = std::env::var("WWMTF_DEV_MODE")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-        let address = std::env::var("WORDS_WITH_SPOUSES_BIND_ADDRESS")
-            .unwrap_or_else(|_| "0.0.0.0".to_string());
-        let port = std::env::var("WORDS_WITH_SPOUSES_PORT")
+        let address = std::env::var("WWMTF_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let port = std::env::var("WWMTF_PORT")
             .ok()
             .map(|value| value.parse::<u16>())
             .transpose()?
             .unwrap_or(8343);
-        let public_base_url = std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL")
+        let public_base_url = std::env::var("WWMTF_PUBLIC_BASE_URL")
             .unwrap_or_else(|_| format!("http://{address}:{port}"));
         if production_mode && cfg!(feature = "insecure") {
             return Err("the insecure feature may not run in production mode".into());
@@ -41,35 +38,25 @@ impl RuntimeConfig {
             return Err("production mode and development mode are mutually exclusive".into());
         }
         if development_mode && !cfg!(feature = "insecure") {
-            return Err(
-                "WORDS_WITH_SPOUSES_DEV_MODE requires building with --features insecure".into(),
-            );
+            return Err("WWMTF_DEV_MODE requires building with --features insecure".into());
         }
         if !development_mode && cfg!(feature = "insecure") {
-            return Err(
-                "the insecure feature may only run with WORDS_WITH_SPOUSES_DEV_MODE=true".into(),
-            );
+            return Err("the insecure feature may only run with WWMTF_DEV_MODE=true".into());
         }
         if production_mode {
-            if std::env::var("WORDS_WITH_SPOUSES_PUBLIC_BASE_URL").is_err() {
-                return Err(
-                    "WORDS_WITH_SPOUSES_PUBLIC_BASE_URL is required in production mode".into(),
-                );
+            if std::env::var("WWMTF_PUBLIC_BASE_URL").is_err() {
+                return Err("WWMTF_PUBLIC_BASE_URL is required in production mode".into());
             }
             if !public_base_url.starts_with("https://") {
-                return Err(
-                    "WORDS_WITH_SPOUSES_PUBLIC_BASE_URL must use https in production mode".into(),
-                );
+                return Err("WWMTF_PUBLIC_BASE_URL must use https in production mode".into());
             }
         }
-        let database_path = match std::env::var("WORDS_WITH_SPOUSES_DATABASE_PATH") {
+        let database_path = match std::env::var("WWMTF_DATABASE_PATH") {
             Ok(path) if !path.trim().is_empty() => path,
-            Ok(_) => return Err("WORDS_WITH_SPOUSES_DATABASE_PATH must not be empty".into()),
-            Err(_) if !production_mode => "words-with-spouses.db".to_string(),
+            Ok(_) => return Err("WWMTF_DATABASE_PATH must not be empty".into()),
+            Err(_) if !production_mode => "wwmtf.db".to_string(),
             Err(_) => {
-                return Err(
-                    "WORDS_WITH_SPOUSES_DATABASE_PATH is required in production mode".into(),
-                );
+                return Err("WWMTF_DATABASE_PATH is required in production mode".into());
             }
         };
         Ok(Self {
@@ -89,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RuntimeConfig::from_env()?;
     let secure_cookies = !config.development_mode;
     log::info!(
-        "starting Words with Spouses on {}:{}",
+        "starting Words with More Than Friends on {}:{}",
         config.address,
         config.port
     );
@@ -117,11 +104,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(std::sync::Arc::<dyn switchy_database::Database>::from)
     };
     let database = open_database()?;
-    futures_lite::future::block_on(words_with_spouses_app::migrate_app(&*database))?;
+    futures_lite::future::block_on(wwmtf_app::migrate_app(&*database))?;
 
-    let dispatcher = std::sync::Arc::new(words_with_spouses_app::GameSharedStateDispatcher::new(
-        database.clone(),
-    ));
+    let dispatcher =
+        std::sync::Arc::new(wwmtf_app::GameSharedStateDispatcher::new(database.clone()));
     let app = {
         use std::sync::Arc;
 
@@ -129,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use hyperchad::renderer_html_actix::{CookieCsrfWebSecurity, CookieCsrfWebSecurityConfig};
 
         let csrf_token = if config.development_mode {
-            "words-with-spouses-development-csrf".to_string()
+            "wwmtf-development-csrf".to_string()
         } else {
             format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
         };
@@ -152,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.public_base_url,
                 secure_cookies,
             ))
-            .with_title("Words with Spouses".to_string())
+            .with_title("Words with More Than Friends".to_string())
             .with_description("Private asynchronous word-tile games".to_string())
             .with_viewport("width=device-width, initial-scale=1".to_string())
             .with_actix_bind_address(config.address)

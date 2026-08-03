@@ -6,7 +6,7 @@ target
 .env.*
 !.env.example
 infra
-words-with-spouses-play-experience.md
+words-with-more-than-friends-play-experience.md
 *.db
 *.db-shm
 *.db-wal

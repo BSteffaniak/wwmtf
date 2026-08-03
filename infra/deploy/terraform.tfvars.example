@@ -2,10 +2,10 @@ cloudflare_api_token  = "use-TF_VAR_cloudflare_api_token-instead"
 cloudflare_account_id = "your-cloudflare-account-id"
 zone_name              = "hyperchad.dev"
 app_subdomain           = "wwmtf"
-fly_app_name            = "words-with-spouses"
+fly_app_name            = "wwmtf"
 fly_ipv6_address        = "discover-with-flyctl"
 fly_ownership_txt       = "discover-with-flyctl"
-state_bucket_name       = "words-with-spouses-opentofu-state"
+state_bucket_name       = "wwmtf-opentofu-state"
 
 # The guarded preflight creates or adopts only the shared redirect phase.
 manage_redirect_ruleset = true

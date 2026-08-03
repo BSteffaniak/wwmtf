@@ -5,7 +5,7 @@ use std::str::FromStr as _;
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use time::OffsetDateTime;
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     GameError, GameId, GameStatus, Placement, PlacementGuidance, PlayAnalysis, analyze_play,
     dictionary, placement_guidance,
 };
@@ -17,9 +17,9 @@ use crate::{
 };
 
 /// Cookie name used by renderer-neutral routes and the HTML transport security adapter.
-pub const SESSION_COOKIE_NAME: &str = "words-with-spouses-session";
+pub const SESSION_COOKIE_NAME: &str = "wwmtf-session";
 /// Cookie name used by `HyperChad`'s renderer-owned CSRF client.
-pub const CSRF_COOKIE_NAME: &str = "words-with-spouses-csrf";
+pub const CSRF_COOKIE_NAME: &str = "wwmtf-csrf";
 /// Header name used by `HyperChad`'s renderer-owned CSRF client.
 pub const CSRF_HEADER_NAME: &str = "x-hyperchad-csrf-token";
 
@@ -36,25 +36,22 @@ pub struct AuthenticatedDashboard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedGamePage {
     pub user_id: String,
-    pub viewer_player: words_with_spouses_game_domain::PlayerId,
+    pub viewer_player: wwmtf_game_domain::PlayerId,
     pub game_id: GameId,
     pub view: GameView,
-    pub rules: words_with_spouses_game_domain::RuleProfile,
+    pub rules: wwmtf_game_domain::RuleProfile,
     pub history: Vec<MoveHistoryView>,
-    pub final_score_adjustments:
-        std::collections::BTreeMap<words_with_spouses_game_domain::PlayerId, i64>,
+    pub final_score_adjustments: std::collections::BTreeMap<wwmtf_game_domain::PlayerId, i64>,
     pub rack_order: Vec<u16>,
     pub exchange_available: bool,
     pub viewer_username: String,
     pub opponent_username: String,
     pub latest_action: Option<String>,
-    pub latest_play_coordinates:
-        std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
-    pub viewer_play_coordinates:
-        std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
+    pub latest_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
+    pub viewer_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
     pub completion_reason: Option<String>,
-    state: words_with_spouses_game_domain::GameState,
-    dictionary: words_with_spouses_game_domain::WordSetDictionary,
+    state: wwmtf_game_domain::GameState,
+    dictionary: wwmtf_game_domain::WordSetDictionary,
     pub completed: bool,
 }
 
@@ -171,7 +168,7 @@ pub async fn load_authorized_game_page(
             _ => PresentationError::Game(error),
         })?;
     let state = recover_game(db, game_id).await?;
-    let rules = words_with_spouses_game_domain::rule_profile(state.metadata.rules())
+    let rules = wwmtf_game_domain::rule_profile(state.metadata.rules())
         .ok_or(PresentationError::UnsupportedRules)?;
     let dictionary =
         dictionary(state.metadata.dictionary()).ok_or(PresentationError::UnsupportedDictionary)?;
@@ -243,13 +240,13 @@ async fn username_for_user(db: &dyn Database, user_id: &str) -> Result<String, P
 }
 
 fn player_play_coordinates(
-    events: &[words_with_spouses_game_domain::GameEvent],
-    player: words_with_spouses_game_domain::PlayerId,
-) -> std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate> {
+    events: &[wwmtf_game_domain::GameEvent],
+    player: wwmtf_game_domain::PlayerId,
+) -> std::collections::BTreeSet<wwmtf_game_domain::Coordinate> {
     events
         .iter()
         .filter_map(|event| match event {
-            words_with_spouses_game_domain::GameEvent::TilesPlayed {
+            wwmtf_game_domain::GameEvent::TilesPlayed {
                 player_id,
                 placements,
                 ..
@@ -261,15 +258,15 @@ fn player_play_coordinates(
 }
 
 fn latest_public_action(
-    events: &[words_with_spouses_game_domain::GameEvent],
+    events: &[wwmtf_game_domain::GameEvent],
     viewer_username: &str,
     opponent_username: &str,
-    viewer: words_with_spouses_game_domain::PlayerId,
+    viewer: wwmtf_game_domain::PlayerId,
 ) -> (
     Option<String>,
-    std::collections::BTreeSet<words_with_spouses_game_domain::Coordinate>,
+    std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
 ) {
-    use words_with_spouses_game_domain::GameEvent;
+    use wwmtf_game_domain::GameEvent;
 
     let name = |player| {
         if player == viewer {
@@ -324,10 +321,10 @@ fn latest_public_action(
 }
 
 fn completion_reason(
-    events: &[words_with_spouses_game_domain::GameEvent],
+    events: &[wwmtf_game_domain::GameEvent],
     scoreless_turn_limit: u8,
 ) -> Option<String> {
-    use words_with_spouses_game_domain::GameEvent;
+    use wwmtf_game_domain::GameEvent;
 
     if events
         .iter()
@@ -381,7 +378,7 @@ pub enum PresentationError {
     #[error(transparent)]
     RackPreference(#[from] crate::RackPreferenceError),
     #[error(transparent)]
-    Replay(#[from] words_with_spouses_game_domain::ReplayError),
+    Replay(#[from] wwmtf_game_domain::ReplayError),
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
 }
@@ -391,17 +388,17 @@ mod tests {
     use futures_lite::future::block_on;
     use time::Duration;
 
-    use words_with_spouses_game_domain::{BoardTile, GameEvent, Tile, TileFace, TileId};
+    use wwmtf_game_domain::{BoardTile, GameEvent, Tile, TileFace, TileId};
 
     use super::*;
     use crate::{accept_challenge, create_challenge, create_session, migrate_app, register};
 
     #[test]
     fn player_play_coordinates_attribute_only_that_players_tiles() {
-        let viewer = words_with_spouses_game_domain::PlayerId::new();
-        let opponent = words_with_spouses_game_domain::PlayerId::new();
-        let viewer_coordinate = words_with_spouses_game_domain::Coordinate::new(7, 7);
-        let opponent_coordinate = words_with_spouses_game_domain::Coordinate::new(8, 7);
+        let viewer = wwmtf_game_domain::PlayerId::new();
+        let opponent = wwmtf_game_domain::PlayerId::new();
+        let viewer_coordinate = wwmtf_game_domain::Coordinate::new(7, 7);
+        let opponent_coordinate = wwmtf_game_domain::Coordinate::new(8, 7);
         let board_tile = |id, letter| BoardTile {
             tile: Tile {
                 id: TileId::new(id),

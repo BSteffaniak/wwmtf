@@ -1,4 +1,4 @@
-app = "words-with-spouses"
+app = "wwmtf"
 primary_region = "iad"
 kill_signal = "SIGTERM"
 kill_timeout = "30s"
@@ -7,11 +7,11 @@ kill_timeout = "30s"
   dockerfile = "Dockerfile"
 
 [env]
-  WORDS_WITH_SPOUSES_PRODUCTION_MODE = "true"
-  WORDS_WITH_SPOUSES_BIND_ADDRESS = "127.0.0.1"
-  WORDS_WITH_SPOUSES_PORT = "8343"
-  WORDS_WITH_SPOUSES_DATABASE_PATH = "/data/words-with-spouses.db"
-  WORDS_WITH_SPOUSES_PUBLIC_BASE_URL = "https://wwmtf.hyperchad.dev"
+  WWMTF_PRODUCTION_MODE = "true"
+  WWMTF_BIND_ADDRESS = "127.0.0.1"
+  WWMTF_PORT = "8343"
+  WWMTF_DATABASE_PATH = "/data/wwmtf.db"
+  WWMTF_PUBLIC_BASE_URL = "https://wwmtf.hyperchad.dev"
   RUST_LOG = "info,moosicbox_middleware::api_logger=off"
 
 [[mounts]]

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
-use words_with_spouses_game_domain::{GameEvent, GameId, GameState, GameStatus};
+use wwmtf_game_domain::{GameEvent, GameId, GameState, GameStatus};
 
 /// Rebuilds projection rows from canonical aggregate state and journal events.
 ///
@@ -211,11 +211,7 @@ pub async fn rebuild_all_user_score_totals(
 
 const fn history_fields(
     event: &GameEvent,
-) -> (
-    Option<words_with_spouses_game_domain::PlayerId>,
-    &'static str,
-    u32,
-) {
+) -> (Option<wwmtf_game_domain::PlayerId>, &'static str, u32) {
     match event {
         GameEvent::GameStarted { .. } => (None, "GAME_STARTED", 0),
         GameEvent::TilesPlayed {
@@ -238,7 +234,7 @@ fn last_score(events: &[GameEvent]) -> Option<u32> {
 async fn user_for_player(
     db: &dyn Database,
     game_id: &str,
-    player: words_with_spouses_game_domain::PlayerId,
+    player: wwmtf_game_domain::PlayerId,
 ) -> Result<Option<String>, ProjectionError> {
     let rows = db
         .select("game_players")
@@ -616,7 +612,7 @@ pub async fn projected_revision(
 mod tests {
     use futures_lite::future::block_on;
     use time::OffsetDateTime;
-    use words_with_spouses_game_domain::{
+    use wwmtf_game_domain::{
         DictionaryRef, GameMetadata, GameStatus, PlayerId, RuleProfileRef, initial_rule_profile,
         initialize_game, replay,
     };

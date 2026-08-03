@@ -1,5 +1,5 @@
 {
-  description = "Words with Spouses development environment";
+  description = "Words with More Than Friends development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -44,7 +44,7 @@
           ];
 
           shellHook = ''
-            echo "Words with Spouses development environment loaded"
+            echo "Words with More Than Friends development environment loaded"
             echo "  $(cargo --version)"
             echo "  $(rustc --version)"
             echo "  $(cargo nextest --version)"

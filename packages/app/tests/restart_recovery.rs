@@ -10,16 +10,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use switchy_database::query::FilterableQuery as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-use words_with_spouses_app::{
+use wwmtf_app::{
     GameSharedStateDispatcher, accept_challenge, create_challenge, create_session,
     dashboard_channel, dashboard_projection, game_channel, load_events, migrate_app,
     rebuild_game_projections, recover_game, register, resolve_session, store_snapshot,
     user_game_summaries,
 };
-use words_with_spouses_game_domain::{GameCommand, GameId, GameState};
+use wwmtf_game_domain::{GameCommand, GameId, GameState};
 
 fn database_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("words-with-spouses-restart-{}.db", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("wwmtf-restart-{}.db", Uuid::new_v4()))
 }
 
 async fn open_database(path: &std::path::Path) -> Box<dyn switchy_database::Database> {
@@ -127,10 +127,10 @@ fn simultaneous_same_revision_commands_have_one_winner() {
         let state = recover_game(&*first_db, game_id)
             .await
             .expect("game recovers");
-        let event = words_with_spouses_game_domain::GameEvent::TurnPassed {
+        let event = wwmtf_game_domain::GameEvent::TurnPassed {
             player_id: state.active_player,
         };
-        let first = words_with_spouses_app::append_events_transactionally(
+        let first = wwmtf_app::append_events_transactionally(
             &*first_db,
             game_id,
             "same-revision-a",
@@ -138,7 +138,7 @@ fn simultaneous_same_revision_commands_have_one_winner() {
             state.revision,
             std::slice::from_ref(&event),
         );
-        let second = words_with_spouses_app::append_events_transactionally(
+        let second = wwmtf_app::append_events_transactionally(
             &*second_db,
             game_id,
             "same-revision-b",

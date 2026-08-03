@@ -332,7 +332,7 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
 /// * Returns a schema migration error when migration discovery or execution fails.
 pub async fn migrate_app(db: &dyn Database) -> switchy_schema::Result<()> {
     MigrationRunner::new(Box::new(app_migrations()))
-        .with_table_name("__words_with_spouses_migrations")
+        .with_table_name("__wwmtf_migrations")
         .run(db)
         .await
 }
@@ -432,7 +432,7 @@ mod tests {
                     .await
                     .expect("in-memory Turso opens");
                 MigrationRunner::new(Box::new(app_migrations()))
-                    .with_table_name("__words_with_spouses_migrations")
+                    .with_table_name("__wwmtf_migrations")
                     .with_strategy(ExecutionStrategy::UpTo(retained.id().to_string()))
                     .run(&*db)
                     .await

@@ -44,7 +44,7 @@ SHELL_ENV_FILE="$TEST_DIR/shell-env"
 grep -Fxq 'TF_VAR_fly_ipv6_address=2001:db8::1' "$SHELL_ENV_FILE"
 grep -Fxq 'TF_VAR_fly_ownership_txt=ownership-test' "$SHELL_ENV_FILE"
 [[ ! -s "$GITHUB_ENV_FILE" ]]
-grep -Fq 'bucket                      = "words-with-spouses-opentofu-state"' \
+grep -Fq 'bucket                      = "wwmtf-opentofu-state"' \
     "$TEST_DIR/repo/infra/deploy/backend.hcl"
 
 echo "production infrastructure preparation tests passed"

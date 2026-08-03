@@ -1,4 +1,4 @@
-# Words with Spouses contributor instructions
+# Words with More Than Friends contributor instructions
 
 ## Architectural boundaries
 
@@ -12,7 +12,7 @@
 - Declare third-party dependencies once in the root workspace table with full versions, `default-features = false`, and narrow features. Leaf crates use `workspace = true`.
 - Every crate must expose `fail-on-warnings = []` and use the repository lint attributes.
 - Do not commit application-owned JavaScript or a live-update path parallel to HyperChad.
-- Treat `words-with-spouses.md` as a local progress document unless the user explicitly chooses to commit it.
+- Treat `wwmtf.md` as a local progress document unless the user explicitly chooses to commit it.
 
 ## Required validation
 

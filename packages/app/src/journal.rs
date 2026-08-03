@@ -8,7 +8,7 @@ use switchy_database::{
     query::{FilterableQuery as _, SortDirection},
 };
 use thiserror::Error;
-use words_with_spouses_game_domain::{
+use wwmtf_game_domain::{
     BoardTile, Coordinate, GameEvent, GameId, GameMetadata, GameState, GameStatus, PlayerId, Tile,
     apply_event, replay,
 };
@@ -506,7 +506,7 @@ pub async fn load_events(
 pub async fn store_snapshot(
     db: &dyn Database,
     game_id: GameId,
-    state: &words_with_spouses_game_domain::GameState,
+    state: &wwmtf_game_domain::GameState,
     created_at_ms: i64,
 ) -> Result<(), JournalError> {
     let game_id = game_id.to_string();
@@ -541,7 +541,7 @@ pub async fn store_snapshot(
 pub async fn load_latest_snapshot(
     db: &dyn Database,
     game_id: GameId,
-) -> Result<Option<words_with_spouses_game_domain::GameState>, JournalError> {
+) -> Result<Option<wwmtf_game_domain::GameState>, JournalError> {
     let rows = db
         .select("game_snapshots")
         .where_eq("game_id", game_id.to_string())
@@ -598,7 +598,7 @@ pub enum JournalError {
     EmptyJournal,
     /// Persisted canonical event sequence is invalid.
     #[error(transparent)]
-    Replay(#[from] words_with_spouses_game_domain::ReplayError),
+    Replay(#[from] wwmtf_game_domain::ReplayError),
     /// Domain event serialization failed.
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
@@ -611,7 +611,7 @@ pub enum JournalError {
 mod tests {
     use futures_lite::future::block_on;
     use time::OffsetDateTime;
-    use words_with_spouses_game_domain::{
+    use wwmtf_game_domain::{
         GameMetadata, PlayerId, RuleProfileRef, bundled_dictionary_ref, initial_rule_profile,
         initialize_game, replay,
     };
@@ -619,11 +619,7 @@ mod tests {
     use super::*;
     use crate::migrate_app;
 
-    async fn initialized_database() -> (
-        Box<dyn Database>,
-        GameId,
-        words_with_spouses_game_domain::GameState,
-    ) {
+    async fn initialized_database() -> (Box<dyn Database>, GameId, wwmtf_game_domain::GameState) {
         let db = switchy_database_connection::builder()
             .turso()
             .with_in_memory()
@@ -931,8 +927,8 @@ mod tests {
             let board_tile = BoardTile {
                 tile,
                 letter: match tile.face {
-                    words_with_spouses_game_domain::TileFace::Letter(letter) => letter,
-                    words_with_spouses_game_domain::TileFace::Blank => 'A',
+                    wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                    wwmtf_game_domain::TileFace::Blank => 'A',
                 },
             };
             let played = GameEvent::TilesPlayed {

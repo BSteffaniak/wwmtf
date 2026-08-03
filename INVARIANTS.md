@@ -1,6 +1,6 @@
 # Architectural invariants
 
-These are durable conditions of a valid Words with Spouses implementation. They describe product and architectural truth rather than contributor workflow.
+These are durable conditions of a valid Words with More Than Friends implementation. They describe product and architectural truth rather than contributor workflow.
 
 ## Gameplay authority
 

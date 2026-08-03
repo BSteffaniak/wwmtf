@@ -7,7 +7,7 @@ authors    = ["Braden Steffaniak"]
 edition    = "2024"
 license    = "MPL-2.0"
 readme     = "README.md"
-repository = "https://github.com/bradenst/words-with-spouses"
+repository = "https://github.com/bradenst/wwmtf"
 version    = "0.1.0"
 
 [workspace.dependencies]
@@ -53,4 +53,4 @@ uuid = { version = "1.24.0", default-features = false, features = [
     "serde",
     "v4",
 ] }
-words_with_spouses_game_domain = { path = "packages/game_domain" }
+wwmtf_game_domain = { path = "packages/game_domain" }
