@@ -18,7 +18,6 @@ variable "state_archive_retention_days" {
 resource "cloudflare_r2_bucket" "state" {
   account_id    = var.cloudflare_account_id
   name          = var.state_bucket_name
-  location      = "enam"
   storage_class = "Standard"
 
   lifecycle {
