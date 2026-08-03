@@ -25,7 +25,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures-lite = { version = "2.6.1", default-features = false, features = [
     "std",
 ] }
-hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "2dcedf2a70efecfe659ff0ce54d9800b7647dfc2", default-features = false }
+hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 log = { version = "0.4.33", default-features = false, features = [
     "release_max_level_trace",
 ] }
@@ -41,9 +41,9 @@ serde_json = { version = "1.0.151", default-features = false, features = [
     "std",
 ] }
 sha2 = { version = "0.11.0", default-features = false }
-switchy_database = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "2dcedf2a70efecfe659ff0ce54d9800b7647dfc2", default-features = false }
-switchy_database_connection = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "2dcedf2a70efecfe659ff0ce54d9800b7647dfc2", default-features = false }
-switchy_schema = { git = "https://github.com/MoosicBox/MoosicBox.git", rev = "2dcedf2a70efecfe659ff0ce54d9800b7647dfc2", default-features = false }
+switchy_database = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
+switchy_database_connection = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
+switchy_schema = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 thiserror = { version = "2.0.19", default-features = false }
 time = { version = "0.3.54", default-features = false, features = [
     "serde",
