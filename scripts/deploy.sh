@@ -37,6 +37,38 @@ machine_ids() {
     fly machine list --app "$APP_NAME" --json | jq -r '.[].id'
 }
 
+machine_state() {
+    local machine_id="$1"
+    fly machine list --app "$APP_NAME" --json \
+        | jq -r --arg id "$machine_id" '.[] | select(.id == $id) | .state'
+}
+
+ensure_machine_started() {
+    local machine_id="$1"
+    local state
+
+    for _ in $(seq 1 30); do
+        state="$(machine_state "$machine_id")"
+        if [[ "$state" == "started" ]]; then
+            return
+        fi
+        if [[ "$state" == "stopped" ]]; then
+            fly machine start --app "$APP_NAME" "$machine_id" || true
+        fi
+        sleep 2
+    done
+
+    state="$(machine_state "$machine_id")"
+    [[ "$state" == "started" ]] || {
+        echo "Machine ${machine_id} did not reach started state; current state: ${state:-missing}" >&2
+        return 1
+    }
+}
+
+restart_machine_best_effort() {
+    ensure_machine_started "$1" >/dev/null 2>&1 || true
+}
+
 ensure_app() {
     if app_exists; then
         echo "Fly app ${APP_NAME} already exists"
@@ -108,31 +140,22 @@ snapshot_volume() {
     done
     fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"
 
-    restart_after_snapshot() {
-        if fly machine list --app "$APP_NAME" --json \
-            | jq -e --arg id "${machines[0]}" '.[] | select(.id == $id and .state == "started")' >/dev/null; then
-            return
-        fi
-        fly machine start --app "$APP_NAME" "${machines[@]}" >/dev/null 2>&1 || true
-    }
-    trap restart_after_snapshot EXIT
+    local machine_id="${machines[0]}"
+    trap "restart_machine_best_effort '$machine_id'" EXIT
 
-    fly machine stop --app "$APP_NAME" --signal SIGTERM --timeout 30 "${machines[@]}"
-    stopped=true
+    fly machine stop --app "$APP_NAME" --signal SIGTERM --timeout 30 "$machine_id"
     for _ in $(seq 1 30); do
-        if fly machine list --app "$APP_NAME" --json \
-            | jq -e --arg id "${machines[0]}" '.[] | select(.id == $id and .state == "stopped")' >/dev/null; then
+        if [[ "$(machine_state "$machine_id")" == "stopped" ]]; then
             break
         fi
         sleep 1
     done
-    fly machine list --app "$APP_NAME" --json \
-        | jq -e --arg id "${machines[0]}" '.[] | select(.id == $id and .state == "stopped")' >/dev/null
+    [[ "$(machine_state "$machine_id")" == "stopped" ]]
 
     snapshot="$(create_volume_snapshot "$id")"
     echo "$snapshot"
 
-    fly machine start --app "$APP_NAME" "${machines[@]}"
+    ensure_machine_started "$machine_id"
     trap - EXIT
     smoke_test "https://${APP_NAME}.fly.dev"
 }
@@ -187,10 +210,11 @@ case "${1:-help}" in
     bootstrap) bootstrap ;;
     certificate-dns) output_certificate_dns ;;
     deploy) deploy ;;
+    ensure-started) ensure_machine_started "${2:?Machine ID is required}" ;;
     snapshot) snapshot_volume ;;
     smoke) smoke_test "${2:-$PUBLIC_URL}" ;;
     *)
-        echo "Usage: $0 {bootstrap|certificate-dns|deploy|snapshot|smoke [url]}" >&2
+        echo "Usage: $0 {bootstrap|certificate-dns|deploy|ensure-started machine-id|snapshot|smoke [url]}" >&2
         exit 2
         ;;
 esac
