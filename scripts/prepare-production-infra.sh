@@ -56,8 +56,8 @@ skip_s3_checksum            = true
 skip_metadata_api_check     = true
 EOF
 
-if [[ -n "$GITHUB_ENV_FILE" || -n "$SHELL_ENV_FILE" ]]; then
-    environment_file="${GITHUB_ENV_FILE:-$SHELL_ENV_FILE}"
+if [[ -n "$SHELL_ENV_FILE" || -n "$GITHUB_ENV_FILE" ]]; then
+    environment_file="${SHELL_ENV_FILE:-$GITHUB_ENV_FILE}"
     {
         printf 'TF_VAR_cloudflare_api_token=%s\n' "$CLOUDFLARE_API_TOKEN"
         printf 'TF_VAR_cloudflare_account_id=%s\n' "$CLOUDFLARE_ACCOUNT_ID"
