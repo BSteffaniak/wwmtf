@@ -19,6 +19,7 @@ jobs:
     env:
       TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_state_encryption_passphrase: ${{ secrets.TOFU_STATE_ENCRYPTION_PASSPHRASE }}
       AWS_ACCESS_KEY_ID: ${{ secrets.TOFU_STATE_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.TOFU_STATE_SECRET_ACCESS_KEY }}
     steps:
@@ -37,6 +38,11 @@ jobs:
       - name: Check formatting
         run: tofu fmt -check -recursive .
         working-directory: infra/deploy
+      - name: Archive current encrypted state
+        run: ./scripts/archive-opentofu-state.sh archive
+        env:
+          TOFU_STATE_BUCKET: ${{ secrets.TOFU_STATE_BUCKET }}
+          TOFU_STATE_S3_ENDPOINT: ${{ secrets.TOFU_STATE_S3_ENDPOINT }}
       - name: Plan
         run: tofu plan -out=tfplan
         working-directory: infra/deploy

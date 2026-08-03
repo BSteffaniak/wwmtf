@@ -12,8 +12,8 @@ The canonical URL is `https://wwmtf.hyperchad.dev`. The path `https://hyperchad.
 
 - Fly organization and an app name available globally.
 - `hyperchad.dev` already active in Cloudflare.
-- `flyctl`, `jq`, OpenTofu, and credentials with narrow scopes.
-- An encrypted, versioned S3-compatible OpenTofu state bucket with locking.
+- `flyctl`, `jq`, `aws`, `age`, OpenTofu, and credentials with narrow scopes.
+- R2 enabled on the Cloudflare account. The repository bootstrap creates the private state and encrypted-backup buckets.
 
 Copy `fly.toml` and OpenTofu variable defaults if the chosen Fly app name differs from `words-with-spouses`.
 
@@ -39,15 +39,52 @@ The default deployment keeps the Machine running (`auto_stop_machines = "off"`) 
 
 ## Cloudflare/OpenTofu
 
-Create `infra/deploy/backend.hcl` from the example and provide backend credentials through environment variables. In GitHub, store the non-secret backend HCL body as `TOFU_BACKEND_HCL`; provider and object-store credentials remain separate secrets. Supply provider inputs through `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_account_id`.
+### One-time R2 bootstrap
+
+Use a temporary Cloudflare API token with only account R2 bucket write access. Set unique bucket names and run the interactive bootstrap:
+
+```sh
+export TF_VAR_cloudflare_api_token='...'
+export TF_VAR_cloudflare_account_id='...'
+export TF_VAR_state_bucket_name='unique-wwmtf-opentofu-state'
+export TF_VAR_backup_bucket_name='unique-wwmtf-encrypted-backups'
+./scripts/bootstrap-cloudflare.sh
+```
+
+The bootstrap creates private Standard-class R2 buckets. The state bucket's immutable `history/` prefix has a 365-day object lock and matching expiration policy; the live state and `.tflock` keys remain writable. The backup bucket has a 180-day object lock and matching expiration policy. Both bucket resources also use `prevent_destroy`. R2 does not provide S3 bucket versioning, so `scripts/archive-opentofu-state.sh archive` makes a server-side encrypted-state copy before every CI apply. OpenTofu's lock object prevents concurrent applies; native OpenTofu AES-GCM encryption protects the state before upload.
+
+`infra/bootstrap/terraform.tfstate` intentionally remains local. Encrypt and store an offline copy before removing it. After bootstrap, revoke the temporary management token and create two distinct bucket-scoped R2 API tokens in the Cloudflare dashboard:
+
+- State: Object Read & Write for the state bucket only.
+- Backups: Object Read & Write for the backup bucket only.
+
+Creating the two bucket-scoped S3 credentials is deliberately a manual trust-bootstrap step: it keeps credential material out of OpenTofu state and avoids granting the bootstrap token account token-management rights.
+
+### Main Cloudflare stack
+
+The bootstrap writes the non-secret `infra/deploy/backend.hcl`. Provide its state-bucket credentials through `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Generate a high-entropy state encryption passphrase, store it separately from the R2 credentials, and supply it through `TF_VAR_state_encryption_passphrase`. Losing this passphrase makes the state unrecoverable. Before local applies, run `scripts/archive-opentofu-state.sh archive` with `TOFU_STATE_BUCKET` and `TOFU_STATE_S3_ENDPOINT`; CI does this automatically. The script also supports `list` and an interactive `restore <history-key>` recovery operation.
+
+Supply the main provider inputs through `TF_VAR_cloudflare_api_token` and `TF_VAR_cloudflare_account_id`:
 
 ```sh
 cd infra/deploy
+export AWS_ACCESS_KEY_ID='...'
+export AWS_SECRET_ACCESS_KEY='...'
+export TF_VAR_state_encryption_passphrase='...'
+export TF_VAR_cloudflare_api_token='...'
+export TF_VAR_cloudflare_account_id='...'
 tofu init -backend-config=backend.hcl
 tofu plan
 ```
 
-The DNS record and strict origin TLS are enabled by default. The committed origin values (`fly_ipv6_address` and `fly_ownership_txt`) came from `fly certs setup wwmtf.hyperchad.dev`; refresh them if Fly resources are recreated. Shared zone-phase rulesets are intentionally disabled initially. `hyperchad.dev` may contain unrelated services, and Cloudflare has one entry-point ruleset per zone phase. Inventory or import existing redirects, WAF, rate-limit, cache, and response-header rules before setting `manage_zone_rulesets = true`.
+The initial apply manages the app DNS records and strict origin TLS. The committed origin values (`fly_ipv6_address` and `fly_ownership_txt`) came from `fly certs setup wwmtf.hyperchad.dev`; refresh them if Fly resources are recreated. Shared zone-phase rulesets are intentionally disabled initially. `hyperchad.dev` may contain unrelated services, and Cloudflare has one entry-point ruleset per zone phase. Inventory or import existing redirects, WAF, rate-limit, cache, and response-header rules before setting `manage_zone_rulesets = true`. Once adopted, keep those resources authoritative in OpenTofu rather than editing them in the dashboard.
+
+For GitHub, configure the protected `production` environment with:
+
+- Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TOFU_BACKEND_HCL`, `TOFU_STATE_ACCESS_KEY_ID`, `TOFU_STATE_SECRET_ACCESS_KEY`, `TOFU_STATE_ENCRYPTION_PASSPHRASE`, `TOFU_STATE_BUCKET`, and `TOFU_STATE_S3_ENDPOINT`.
+- Backup secrets: `BACKUP_AGE_RECIPIENT`, `BACKUP_DESTINATION` (`s3://<backup-bucket>/wwmtf`), `BACKUP_ACCESS_KEY_ID`, `BACKUP_SECRET_ACCESS_KEY`, and `BACKUP_S3_ENDPOINT` (`https://<account-id>.r2.cloudflarestorage.com`).
+
+Use a distinct Cloudflare provider token for the main stack. Scope it to the `hyperchad.dev` zone resources in this configuration plus account Turnstile access only if Turnstile is enabled.
 
 Turnstile provisioning is also disabled because the current renderer has no registration integration. Setting `manage_turnstile = true` only creates the widget; do not enable it until verification is implemented. Managed WAF execution is likewise opt-in through `cloudflare_managed_ruleset_id`; query the zone's available managed rulesets and use only an ID supported by its Free plan.
 
@@ -79,7 +116,7 @@ BACKUP_DESTINATION='s3://private-bucket/wwmtf' \
 ./scripts/backup-production.sh
 ```
 
-For Cloudflare R2, configure the AWS CLI with its S3 endpoint and narrowly scoped credentials. Never put encryption keys or bucket credentials in source control.
+For Cloudflare R2, configure the AWS CLI with the backup bucket's dedicated S3 endpoint and bucket-scoped credentials. Keep the private age identity outside GitHub so a compromise of Cloudflare plus the repository's production secrets still does not reveal backup plaintext. Never put encryption keys or bucket credentials in source control.
 
 Restore a Fly snapshot into a new, unattached volume:
 

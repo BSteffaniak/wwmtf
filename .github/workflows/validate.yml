@@ -40,17 +40,24 @@ jobs:
         with:
           tofu_version: 1.10.9
       - name: Check OpenTofu formatting
-        run: tofu fmt -check -recursive .
-        working-directory: infra/deploy
+        run: tofu fmt -check -recursive infra
+      - name: Initialize bootstrap OpenTofu without production state
+        run: tofu init -backend=false
+        working-directory: infra/bootstrap
+      - name: Validate bootstrap OpenTofu
+        run: tofu validate
+        working-directory: infra/bootstrap
       - name: Check Fly configuration
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
       - run: flyctl config validate --config fly.toml
       - name: Check nginx configuration
         run: docker run --rm -v "$PWD/config/nginx.conf:/etc/nginx/nginx.conf:ro" nginx:1.28-bookworm nginx -t
-      - name: Initialize OpenTofu without production state
+      - name: Initialize deployment OpenTofu without production state
         run: tofu init -backend=false
         working-directory: infra/deploy
-      - name: Validate OpenTofu
+      - name: Validate deployment OpenTofu
+        env:
+          TF_VAR_state_encryption_passphrase: validation-only-passphrase
         run: tofu validate
         working-directory: infra/deploy
       - name: Build production container

@@ -1,0 +1,7 @@
+cloudflare_api_token  = "use-TF_VAR_cloudflare_api_token-instead"
+cloudflare_account_id = "your-cloudflare-account-id"
+state_bucket_name      = "your-unique-wwmtf-opentofu-state"
+backup_bucket_name     = "your-unique-wwmtf-encrypted-backups"
+bucket_location       = "enam"
+backup_retention_days       = 180
+state_archive_retention_days = 365
