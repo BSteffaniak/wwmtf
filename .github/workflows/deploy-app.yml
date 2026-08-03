@@ -12,8 +12,6 @@ name: Deploy Application
 permissions:
   contents: read
 
-environment: production
-
 concurrency:
   group: production
   cancel-in-progress: false
@@ -21,6 +19,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
