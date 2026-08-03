@@ -4,7 +4,7 @@ set -euo pipefail
 ZONE_NAME="${CLOUDFLARE_ZONE_NAME:-hyperchad.dev}"
 PHASE="http_request_dynamic_redirect"
 EXPECTED_RULESET_ID="67478f03550248edb045997f49ded3ce"
-EXPECTED_RULES_SHA256="b4ab8c12aef7a1d787eaf1497be3c89173ffedacd3623fff8769300c3fd0a3a8"
+EXPECTED_RULES_SHA256="aa31e6fbfd7fc431db2be98c92b02279dc35346aaaec108cf4b87acf194404a2"
 DEPLOY_DIR="infra/deploy"
 RESOURCE_ADDRESS='cloudflare_ruleset.redirects[0]'
 
