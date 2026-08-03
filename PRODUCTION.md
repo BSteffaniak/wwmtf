@@ -66,6 +66,8 @@ The dynamic redirect phase is independently enabled and guarded. Before every in
 - If an unmanaged entry point contains rules, the workflow stops before planning so it cannot delete unrelated redirects.
 - If OpenTofu already owns the entry point, planning proceeds normally.
 
+If the guard finds existing rules, run the `Inventory Cloudflare Redirects` workflow. It exports the complete shared ruleset as a seven-day workflow artifact without printing it into logs. Model every exported rule in `infra/deploy/rules.tf`, then import the ruleset before applying.
+
 After adoption, do not edit redirect rules in the Cloudflare dashboard. Add all redirects for `hyperchad.dev` to the authoritative OpenTofu ruleset.
 
 The redirect preserves query strings and maps both `/games/wwmtf` and `/games/wwmtf/*` to the equivalent path on `https://wwmtf.hyperchad.dev`.
