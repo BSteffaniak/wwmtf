@@ -15,7 +15,7 @@ permissions:
 environment: production
 
 concurrency:
-  group: deploy-production
+  group: production
   cancel-in-progress: false
 
 jobs:

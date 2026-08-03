@@ -3,8 +3,9 @@ cloudflare_account_id = "your-cloudflare-account-id"
 zone_name              = "hyperchad.dev"
 app_subdomain           = "wwmtf"
 fly_app_name            = "words-with-spouses"
-fly_ipv6_address         = "2a09:8280:1::15d:94b3:0"
-fly_ownership_txt        = "onx2065"
+fly_ipv6_address        = "discover-with-flyctl"
+fly_ownership_txt       = "discover-with-flyctl"
+state_bucket_name       = "words-with-spouses-opentofu-state"
 
 # Shared zone-phase rulesets are opt-in. Inventory/import or coordinate existing
 # hyperchad.dev rules before setting this to true.

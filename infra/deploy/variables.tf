@@ -1,7 +1,7 @@
 variable "cloudflare_api_token" {
   type        = string
   sensitive   = true
-  description = "Cloudflare token scoped to the hyperchad.dev zone and Turnstile account resources"
+  description = "Cloudflare token scoped to R2 management and required hyperchad.dev zone resources"
 }
 
 variable "cloudflare_account_id" {
@@ -29,14 +29,12 @@ variable "fly_app_name" {
 
 variable "fly_ipv6_address" {
   type        = string
-  default     = "2a09:8280:1::15d:94b3:0"
-  description = "Dedicated Fly IPv6 address used as the proxied Cloudflare origin"
+  description = "Dedicated Fly IPv6 address discovered during production bootstrap"
 }
 
 variable "fly_ownership_txt" {
   type        = string
-  default     = "onx2065"
-  description = "Fly certificate ownership verification token"
+  description = "Fly certificate ownership verification token discovered during production bootstrap"
 }
 
 variable "manage_zone_rulesets" {

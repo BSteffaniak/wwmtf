@@ -1,4 +1,4 @@
-bucket                      = "your-private-opentofu-state-bucket"
+bucket                      = "words-with-spouses-opentofu-state"
 key                         = "words-with-spouses/production.tfstate"
 region                      = "auto"
 endpoint                    = "https://<account-id>.r2.cloudflarestorage.com"

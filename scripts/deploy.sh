@@ -137,6 +137,28 @@ snapshot_volume() {
     smoke_test "https://${APP_NAME}.fly.dev"
 }
 
+output_fly_ipv6() {
+    local ips
+    local ipv6
+    ips="$(fly ips list --app "$APP_NAME" --json)"
+    ipv6="$(jq -r '[.[] | select((.Type // .type) == "v6") | (.Address // .address)][0] // empty' <<<"$ips")"
+    [[ -n "$ipv6" ]] || { echo "Fly IPv6 address is unavailable" >&2; exit 1; }
+    printf '%s\n' "$ipv6"
+}
+
+output_certificate_dns() {
+    local hostname="wwmtf.hyperchad.dev"
+    local certificate
+    local ownership
+    certificate="$(fly certs check --app "$APP_NAME" --json "$hostname")"
+    ownership="$(jq -r '.dns_requirements.ownership.app_value // empty' <<<"$certificate")"
+    [[ -n "$ownership" ]] || { echo "Fly ownership TXT value is unavailable" >&2; exit 1; }
+    jq -n \
+        --arg ipv6 "$(output_fly_ipv6)" \
+        --arg ownership "$ownership" \
+        '{fly_ipv6_address: $ipv6, fly_ownership_txt: $ownership}'
+}
+
 smoke_test() {
     local url="${1:-$PUBLIC_URL}"
     curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
@@ -163,11 +185,12 @@ deploy() {
 
 case "${1:-help}" in
     bootstrap) bootstrap ;;
+    certificate-dns) output_certificate_dns ;;
     deploy) deploy ;;
     snapshot) snapshot_volume ;;
     smoke) smoke_test "${2:-$PUBLIC_URL}" ;;
     *)
-        echo "Usage: $0 {bootstrap|deploy|snapshot|smoke [url]}" >&2
+        echo "Usage: $0 {bootstrap|certificate-dns|deploy|snapshot|smoke [url]}" >&2
         exit 2
         ;;
 esac

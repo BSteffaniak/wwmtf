@@ -9,7 +9,7 @@ permissions:
 environment: production
 
 concurrency:
-  group: deploy-infrastructure
+  group: production
   cancel-in-progress: false
 
 jobs:
@@ -17,21 +17,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      TF_VAR_state_encryption_passphrase: ${{ secrets.TOFU_STATE_ENCRYPTION_PASSPHRASE }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       AWS_ACCESS_KEY_ID: ${{ secrets.TOFU_STATE_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.TOFU_STATE_SECRET_ACCESS_KEY }}
+      TF_VAR_state_encryption_passphrase: ${{ secrets.TOFU_STATE_ENCRYPTION_PASSPHRASE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
           tofu_version: 1.10.9
-      - name: Write backend configuration
-        working-directory: infra/deploy
-        env:
-          BACKEND_HCL: ${{ secrets.TOFU_BACKEND_HCL }}
-        run: printf '%s' "$BACKEND_HCL" > backend.hcl
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Discover production inputs
+        run: ./scripts/prepare-production-infra.sh
+      - name: Assert remote state exists
+        run: |
+          aws s3api list-objects-v2 \
+            --bucket "$TOFU_STATE_BUCKET" \
+            --prefix words-with-spouses/production.tfstate \
+            --max-keys 2 \
+            --endpoint-url "$TOFU_STATE_S3_ENDPOINT" \
+            --region auto \
+            --output json \
+            | jq -e 'any(.Contents[]?; .Key == "words-with-spouses/production.tfstate")'
       - name: Initialize
         run: tofu init -backend-config=backend.hcl
         working-directory: infra/deploy
@@ -40,9 +49,6 @@ jobs:
         working-directory: infra/deploy
       - name: Archive current encrypted state
         run: ./scripts/archive-opentofu-state.sh archive
-        env:
-          TOFU_STATE_BUCKET: ${{ secrets.TOFU_STATE_BUCKET }}
-          TOFU_STATE_S3_ENDPOINT: ${{ secrets.TOFU_STATE_S3_ENDPOINT }}
       - name: Plan
         run: tofu plan -out=tfplan
         working-directory: infra/deploy

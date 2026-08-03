@@ -8,6 +8,11 @@ output "fly_origin" {
   description = "Fly origin used by the proxied DNS record"
 }
 
+output "state_bucket_name" {
+  value       = cloudflare_r2_bucket.state.name
+  description = "Private R2 bucket holding encrypted OpenTofu state"
+}
+
 output "turnstile_sitekey" {
   value       = var.manage_turnstile ? cloudflare_turnstile_widget.registration[0].sitekey : null
   description = "Registration widget site key when Turnstile management is enabled"
