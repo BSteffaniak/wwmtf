@@ -1,27 +1,74 @@
 resource "cloudflare_ruleset" "redirects" {
   count       = var.manage_redirect_ruleset ? 1 : 0
   zone_id     = local.zone_id
-  name        = "WWMTF redirects"
-  description = "Redirect the hyperchad.dev games path to the canonical WWMTF hostname"
+  name        = "Static Asset Redirects"
+  description = "Shared dynamic redirects for hyperchad.dev services"
   kind        = "zone"
   phase       = "http_request_dynamic_redirect"
 
-  rules = [{
-    action = "redirect"
-    action_parameters = {
-      from_value = {
-        status_code = 301
-        target_url = {
-          expression = "concat(\"https://${local.app_hostname}\", substring(http.request.uri.path, 12))"
+  rules = [
+    {
+      action = "redirect"
+      action_parameters = {
+        from_value = {
+          status_code = 301
+          target_url = {
+            expression = "concat(\"https://planning-poker-assets-test.hyperchad.dev\", http.request.uri.path)"
+          }
         }
-        preserve_query_string = true
       }
+      expression  = "starts_with(http.request.uri.path, \"/public/\") and http.host eq \"planning-poker-test.hyperchad.dev\""
+      description = "Redirect /public/* to R2 bucket"
+      enabled     = true
+      ref         = "redirect_public_to_r2"
+    },
+    {
+      action = "redirect"
+      action_parameters = {
+        from_value = {
+          status_code = 301
+          target_url = {
+            expression = "concat(\"https://planning-poker-assets-test.hyperchad.dev\", http.request.uri.path)"
+          }
+        }
+      }
+      expression  = "starts_with(http.request.uri.path, \"/js/\") and http.host eq \"planning-poker-test.hyperchad.dev\""
+      description = "Redirect /js/* to R2 bucket"
+      enabled     = true
+      ref         = "redirect_js_to_r2"
+    },
+    {
+      action = "redirect"
+      action_parameters = {
+        from_value = {
+          status_code = 301
+          target_url = {
+            value = "https://planning-poker-assets-test.hyperchad.dev/favicon.ico"
+          }
+        }
+      }
+      expression  = "http.request.uri.path eq \"/favicon.ico\" and http.host eq \"planning-poker-test.hyperchad.dev\""
+      description = "Redirect favicon.ico to R2 bucket"
+      enabled     = true
+      ref         = "redirect_favicon_to_r2"
+    },
+    {
+      action = "redirect"
+      action_parameters = {
+        from_value = {
+          status_code = 301
+          target_url = {
+            expression = "concat(\"https://${local.app_hostname}\", substring(http.request.uri.path, 12))"
+          }
+          preserve_query_string = true
+        }
+      }
+      expression  = "http.host eq \"${var.zone_name}\" and (http.request.uri.path eq \"/games/wwmtf\" or starts_with(http.request.uri.path, \"/games/wwmtf/\"))"
+      description = "Redirect /games/wwmtf to the canonical application hostname"
+      enabled     = true
+      ref         = "wwmtf_path_redirect"
     }
-    expression  = "http.host eq \"${var.zone_name}\" and (http.request.uri.path eq \"/games/wwmtf\" or starts_with(http.request.uri.path, \"/games/wwmtf/\"))"
-    description = "Redirect /games/wwmtf to the canonical application hostname"
-    enabled     = true
-    ref         = "wwmtf_path_redirect"
-  }]
+  ]
 }
 
 resource "cloudflare_ruleset" "firewall" {
