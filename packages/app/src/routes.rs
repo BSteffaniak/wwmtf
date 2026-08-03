@@ -187,6 +187,12 @@ impl TurnDraft {
             || self.mode != TurnMode::Play
     }
 
+    fn begin_action(&mut self, action: &str) {
+        if !matches!(action, "PICK_RACK_TILE" | "SWAP_RACK_TILES") {
+            self.rack_tile = None;
+        }
+    }
+
     fn domain_placements(&self) -> Vec<Placement> {
         self.placements
             .iter()
@@ -196,6 +202,16 @@ impl TurnDraft {
                 blank_letter: placement.blank_letter,
             })
             .collect()
+    }
+}
+
+fn rack_action(draft: &TurnDraft) -> &'static str {
+    if draft.mode == TurnMode::Exchange {
+        "TOGGLE_EXCHANGE"
+    } else if draft.rack_tile.is_some() {
+        "SWAP_RACK_TILES"
+    } else {
+        "PICK_RACK_TILE"
     }
 }
 
@@ -703,6 +719,7 @@ async fn game_compose_route(
         );
     }
     let mut draft = parse_draft(&form.draft).unwrap_or_default();
+    draft.begin_action(&form.action);
     let viewer_turn = game.view.active_player == game.viewer_player;
     if !viewer_turn
         && !matches!(
@@ -820,7 +837,7 @@ async fn game_compose_route(
             draft.selected_tile = Some(tile_id);
         }
         "SWAP_RACK_TILES" => {
-            let selected_tile = draft.rack_tile.or(draft.selected_tile);
+            let selected_tile = draft.rack_tile;
             let (Some(selected_tile), Some(target_tile)) = (selected_tile, form.tile_id) else {
                 return draft_error_page(&game, &draft, "Choose two rack tiles to swap.");
             };
@@ -1866,13 +1883,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     @let exchange_selected = draft.exchange_tiles.contains(tile_id);
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
                     @if can_compose || draft.mode == TurnMode::Play {
-                        @let rack_action = if draft.mode == TurnMode::Exchange {
-                            "TOGGLE_EXCHANGE"
-                        } else if draft.rack_tile.is_some() || draft.selected_tile.is_some() {
-                            "SWAP_RACK_TILES"
-                        } else {
-                            "PICK_RACK_TILE"
-                        };
+                        @let rack_action = rack_action(draft);
                         form hx-post=(action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
@@ -2587,6 +2598,58 @@ mod tests {
             ..TurnDraft::default()
         };
         assert_eq!(parse_draft(&draft_token(&draft)), Some(draft));
+    }
+
+    #[test]
+    fn non_rack_actions_break_the_consecutive_rack_click_sequence() {
+        for action in [
+            "PLACE_TILE",
+            "REMOVE_TILE",
+            "CHOOSE_BLANK_LETTER",
+            "BEGIN_EXCHANGE",
+            "CANCEL_MODE",
+        ] {
+            let mut draft = TurnDraft {
+                selected_tile: Some(7),
+                rack_tile: Some(7),
+                ..TurnDraft::default()
+            };
+
+            draft.begin_action(action);
+
+            assert_eq!(draft.rack_tile, None, "{action}");
+            assert_eq!(draft.selected_tile, Some(7), "{action}");
+        }
+    }
+
+    #[test]
+    fn consecutive_rack_actions_preserve_the_swap_anchor() {
+        for action in ["PICK_RACK_TILE", "SWAP_RACK_TILES"] {
+            let mut draft = TurnDraft {
+                selected_tile: Some(7),
+                rack_tile: Some(7),
+                ..TurnDraft::default()
+            };
+
+            draft.begin_action(action);
+
+            assert_eq!(draft.rack_tile, Some(7), "{action}");
+        }
+    }
+
+    #[test]
+    fn rack_click_only_swaps_after_an_uninterrupted_rack_click() {
+        let mut draft = TurnDraft {
+            selected_tile: Some(7),
+            rack_tile: Some(7),
+            ..TurnDraft::default()
+        };
+        assert_eq!(rack_action(&draft), "SWAP_RACK_TILES");
+
+        draft.begin_action("PLACE_TILE");
+
+        assert_eq!(rack_action(&draft), "PICK_RACK_TILE");
+        assert_eq!(draft.selected_tile, Some(7));
     }
 
     #[test]
