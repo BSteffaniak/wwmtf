@@ -64,7 +64,6 @@ futures-lite = { workspace = true }
 [features]
 actix = [
     "hyperchad/renderer-html-actix",
-    "hyperchad/renderer-html-sse",
     "hyperchad/shared-state-models",
     "hyperchad/shared-state-transport",
 ]

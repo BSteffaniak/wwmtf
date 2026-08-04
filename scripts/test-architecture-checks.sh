@@ -35,6 +35,10 @@ printf '%s\n' 'console.log("owned client path");' > "$tmp/packages/app/client.js
 assert_rejected "application-owned JavaScript"
 
 reset_fixture
+printf '%s\n' '[features]' 'actix = ["hyperchad/renderer-html-sse"]' > "$tmp/packages/app/Cargo.toml"
+assert_rejected "a parallel renderer SSE path"
+
+reset_fixture
 printf '%s\n' 'use hyperchad::router::Router;' > "$tmp/packages/game_domain/src/lib.rs"
 assert_rejected "a HyperChad dependency in the game domain"
 

@@ -26,6 +26,7 @@ fi
 
 check_pattern "direct Actix dependency or import" '(^|[^[:alnum:]_])(actix-web|actix_web)([^[:alnum:]_]|$)' packages
 check_pattern "raw SQL in application code" '(SELECT|INSERT[[:space:]]+INTO|UPDATE[[:space:]]+[[:alnum:]_]+[[:space:]]+SET|DELETE[[:space:]]+FROM|CREATE[[:space:]]+TABLE|ALTER[[:space:]]+TABLE|DROP[[:space:]]+TABLE)' packages
+check_pattern "parallel renderer SSE path" 'renderer-html-sse|renderer-vanilla-js-plugin-sse' packages/app/Cargo.toml
 check_pattern "renderer-specific application branch" 'cfg!?.*renderer|feature[[:space:]]*=[[:space:]]*"(actix|egui|fltk|lambda)"' packages/app/src
 check_pattern "game-domain dependency points out of the domain" '(^|[^[:alnum:]_])(hyperchad|switchy|actix[-_]|database|http)([^[:alnum:]_]|$)' packages/game_domain
 check_pattern "forbidden generic crate name" '^name[[:space:]]*=[[:space:]]*"(core|common|shared)"' packages
