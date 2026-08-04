@@ -74,11 +74,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let config = RuntimeConfig::from_env()?;
+    let release = option_env!("WWMTF_RELEASE").unwrap_or("development");
+    let machine = std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string());
     let secure_cookies = !config.development_mode;
     log::info!(
-        "starting Words with More Than Friends on {}:{}",
+        "starting Words with More Than Friends on {}:{} release={} machine={}",
         config.address,
-        config.port
+        config.port,
+        release,
+        machine
     );
     if !config.development_mode && !config.public_base_url.starts_with("https://") {
         log::warn!("public base URL is not HTTPS; intended only for local development");

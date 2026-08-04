@@ -13,6 +13,8 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY .cargo .cargo
 COPY packages packages
 
+ARG WWMTF_RELEASE=unknown
+ENV WWMTF_RELEASE=${WWMTF_RELEASE}
 RUN cargo build --locked --release -p wwmtf_app --bin wwmtf
 
 FROM debian:bookworm-slim AS runtime

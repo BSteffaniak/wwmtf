@@ -137,10 +137,19 @@ impl GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         channel_id: &ChannelId,
     ) -> SharedStateTransportDispatchResult<(GameId, PlayerId)> {
-        let game_id = game_id(channel_id)?;
+        let game_id = match game_id(channel_id) {
+            Ok(game_id) => game_id,
+            Err(error) => {
+                crate::observability::record_live_subscription_failure("invalid_channel");
+                return Err(error);
+            }
+        };
         let player = player_for_user(&*self.database, game_id, context.participant_id.as_str())
             .await
-            .map_err(|_| "game channel is unknown or unauthorized")?;
+            .map_err(|_| {
+                crate::observability::record_live_subscription_failure("unauthorized_game");
+                "game channel is unknown or unauthorized"
+            })?;
         Ok((game_id, player))
     }
 

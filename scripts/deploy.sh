@@ -202,7 +202,10 @@ bootstrap() {
 }
 
 deploy() {
-    fly deploy --app "$APP_NAME" --ha=false --strategy immediate --wait-timeout 10m
+    local release
+    release="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+    fly deploy --app "$APP_NAME" --ha=false --strategy immediate --wait-timeout 10m \
+        --build-arg "WWMTF_RELEASE=${release}"
     smoke_test "https://${APP_NAME}.fly.dev"
 }
 

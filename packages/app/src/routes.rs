@@ -696,6 +696,14 @@ async fn game_compose_route(
     let game = match load_authorized_game_page(database, &request.cookies, game_id, now).await {
         Ok(game) => game,
         Err(PresentationError::Unauthenticated) => return signed_out_page(),
+        Err(error @ PresentationError::Forbidden) => {
+            let request_id = request
+                .headers
+                .get("x-request-id")
+                .map_or("missing", String::as_str);
+            crate::observability::record_compose_authorization_failure("forbidden", request_id);
+            return product_error_page("Unable to compose turn", &error.to_string());
+        }
         Err(error) => return product_error_page("Unable to compose turn", &error.to_string()),
     };
     if game.completed {
@@ -1134,6 +1142,31 @@ pub fn create_product_router(
         Ok(Content::Raw {
             data: b"ok\n".to_vec().into(),
             content_type: "text/plain; charset=utf-8".to_string(),
+        }) as Result<Content, Box<dyn std::error::Error>>
+    });
+    router.add_route_result("/metrics", |_request: RouteRequest| async move {
+        let metrics = crate::app_metrics_snapshot();
+        let body = format!(
+            concat!(
+                "wwmtf_authentication_failures_total {}\n",
+                "wwmtf_command_conflicts_total {}\n",
+                "wwmtf_projection_rebuilds_total {}\n",
+                "wwmtf_live_subscribers {}\n",
+                "wwmtf_database_failures_total {}\n",
+                "wwmtf_compose_authorization_failures_total {}\n",
+                "wwmtf_live_subscription_failures_total {}\n"
+            ),
+            metrics.authentication_failures,
+            metrics.command_conflicts,
+            metrics.projection_rebuilds,
+            metrics.live_subscribers,
+            metrics.database_failures,
+            metrics.compose_authorization_failures,
+            metrics.live_subscription_failures,
+        );
+        Ok(Content::Raw {
+            data: body.into_bytes().into(),
+            content_type: "text/plain; version=0.0.4; charset=utf-8".to_string(),
         }) as Result<Content, Box<dyn std::error::Error>>
     });
     let readiness_database = database.clone();
@@ -3412,9 +3445,20 @@ mod tests {
                 .await
                 .expect("readiness route resolves")
                 .expect("readiness returns content");
+            let metrics = router
+                .navigate(("/metrics", RequestInfo::default()))
+                .await
+                .expect("metrics route resolves")
+                .expect("metrics returns content");
 
             assert!(matches!(live, Content::Raw { .. }));
             assert!(matches!(ready, Content::Raw { .. }));
+            let Content::Raw { data, .. } = metrics else {
+                panic!("metrics should be raw content");
+            };
+            let metrics = std::str::from_utf8(&data).expect("metrics should be UTF-8");
+            assert!(metrics.contains("wwmtf_authentication_failures_total"));
+            assert!(metrics.contains("wwmtf_live_subscribers"));
         });
     }
 
