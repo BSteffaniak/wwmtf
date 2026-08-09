@@ -1489,7 +1489,7 @@ async fn game_word_panel_route(
     now: OffsetDateTime,
 ) -> Container {
     match played_word_definition(database, provider, request, game_id, word, now).await {
-        Ok((game_id, word, lookup)) => definition_panel(game_id, &word, &lookup),
+        Ok((_game_id, word, lookup)) => definition_panel(&word, &lookup),
         Err(message) => definition_panel_error(message),
     }
 }
@@ -1545,12 +1545,7 @@ fn definition_page(
     .into()
 }
 
-fn definition_panel(
-    game_id: wwmtf_game_domain::GameId,
-    word: &str,
-    lookup: &crate::DefinitionLookup,
-) -> Container {
-    let standalone_href = format!("/games/{game_id}/words/{}", word.to_ascii_lowercase());
+fn definition_panel(word: &str, lookup: &crate::DefinitionLookup) -> Container {
     let content = definition_content(word, lookup);
     container! {
         aside id="game-definition-layer" class="game-definition-panel" position="fixed"
@@ -1564,7 +1559,6 @@ fn definition_panel(
                     padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
             }
             (content)
-            anchor href=(standalone_href) color=#526243 font-size="12px" { "Open definition page" }
         }
     }
     .into()
@@ -4122,14 +4116,14 @@ mod tests {
             let panel_lookup = crate::DefinitionLookup::Unavailable(
                 crate::DefinitionUnavailableReason::RateLimited,
             );
-            let panel = definition_panel(game_id, "WORD", &panel_lookup)
+            let panel = definition_panel("WORD", &panel_lookup)
                 .display_to_string(false, false)
                 .expect("panel renders");
             assert!(panel.contains("id=\"game-definition-layer\""));
             assert!(panel.contains("temporarily rate limited"));
             assert!(!panel.contains("id=\"app-page\""));
             assert!(panel.contains("fx-click"));
-            assert!(panel.contains(&format!("/games/{game_id}/words/word")));
+            assert!(!panel.contains("Open definition page"));
 
             let panel_error = definition_panel_error("You are not authorized for this game.")
                 .display_to_string(false, false)

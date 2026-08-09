@@ -371,7 +371,6 @@ pub fn move_history_component(
                     @if !entry.played_words.is_empty() {
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
                             @for word in &entry.played_words {
-                                @let definition_href = format!("/games/{game_id}/words/{}", word.text.to_ascii_lowercase());
                                 @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
                                 button type=button class="played-word-definition"
                                     hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
@@ -380,8 +379,6 @@ pub fn move_history_component(
                                     padding-y="4px" padding-x="9px" font-weight=bold cursor=pointer {
                                     (word.text.as_str()) " · " (word.score)
                                 }
-                                anchor class="played-word-definition-fallback" href=(definition_href)
-                                    color=#5d6258 font-size="11px" { "Open page" }
                             }
                         }
                     }
@@ -620,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn move_history_word_links_preserve_fallback_navigation_and_target_the_panel() {
+    fn move_history_word_buttons_target_the_definition_panel() {
         let game_id = GameId::new();
         let history = vec![MoveHistoryView {
             revision: 1,
@@ -636,8 +633,8 @@ mod tests {
             .display_to_string(false, false)
             .expect("history renders");
 
-        assert!(rendered.contains(&format!("href=\"/games/{game_id}/words/word\"")));
-        assert!(rendered.contains("played-word-definition-fallback"));
+        assert!(!rendered.contains("played-word-definition-fallback"));
+        assert!(!rendered.contains("Open page"));
         assert!(rendered.contains(&format!("hx-get=\"/games/{game_id}/word-panels/word\"")));
         assert!(rendered.contains("hx-target=\"#game-definition-layer\""));
         assert!(rendered.contains("hx-swap=\"this\""));
