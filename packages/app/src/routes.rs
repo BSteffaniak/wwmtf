@@ -2028,7 +2028,7 @@ fn visual_board(
                         background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
                 }
             }
-            div class="board-viewport" width="100%" max-height="42vh" overflow-x="auto" overflow-y="auto" {
+            div class="board-viewport" width="100%" max-height="40vh" overflow-x="auto" overflow-y="auto" {
                 div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
                     width=(board_frame_width) background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -2607,8 +2607,48 @@ fn visual_game_page(
             fx-global-shared-state-event=(refresh_game)
             direction="column" align-items="center" overflow-x="hidden"
             min-height="100vh" background=#123b2a color=#f4f0df
-            padding-top=10 padding-bottom=310 padding-x=10 gap="8px" {
-            header id="scene-controls" width="100%" max-width="1100px"
+            padding-top=68 padding-bottom=330 padding-x=10 gap="8px" {
+            main id="game-layout" class="game-arena" width="100%" max-width="1100px"
+                align-items="center" gap="6px" {
+                (opponent_hud)
+                section id="play-stage" class="board-platform" width="800px" max-width="100%"
+                    align-items="center" overflow-x="hidden" background=#714b2b border=(("#3c2819", 8))
+                    border-radius="24px" padding-y="14px" padding-x="14px" gap="8px" {
+                    (turn_feedback_view)
+                    section id="board-region" width="730px" max-width="100%" background=#173d2c
+                        border=(("#9b7041", 5)) border-radius="16px"
+                        padding-y="12px" padding-x="9px" {
+                        (board)
+                    }
+                }
+                (viewer_hud)
+                section id="play-console" class="game-console turn-dock" position="fixed" bottom=8 left="50%"
+                    translate-x="-50%" width="96%" max-width="720px" max-height="300px" overflow-y="auto"
+                    background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
+                    padding-y="7px" padding-x="12px" gap="5px" {
+                    (rack)
+                    section id="composer-card" width="100%" gap="6px" {
+                        @if !game.completed && game.view.active_player == game.viewer_player {
+                            (draft_preview)
+                            (actions)
+                        } @else if !game.completed {
+                            section id="turn-actions" class="turn-composer action-hud" min-height="54px"
+                                background=#173d2c border=(("#35674e", 2)) border-radius="14px"
+                                padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
+                                span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
+                                span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
+                            }
+                        }
+                    }
+                }
+                @if let Some(completed_summary) = completed_summary {
+                    section id="game-overlay" width="720px" max-width="100%" background=#112b20
+                        border=(("#f4c95d", 3)) border-radius="18px" padding="12px" {
+                        (completed_summary)
+                    }
+                }
+            }
+            header id="scene-controls" position="fixed" top=10 left="2%" width="96%" max-width="1100px"
                 direction="row" justify-content="space-between" align-items="start" gap="12px" {
                 anchor href="/" background=#173326 color=#f4f0df border=(("#436854", 1))
                     border-radius="999px" padding-y="9px" padding-x="14px" font-weight=bold { "← Leave table" }
@@ -2637,46 +2677,6 @@ fn visual_game_page(
                             padding-top="12px" gap="10px" {
                             (rules_component(game))
                         }
-                    }
-                }
-            }
-            main id="game-layout" class="game-arena" width="100%" max-width="1100px"
-                align-items="center" gap="6px" {
-                (opponent_hud)
-                section id="play-stage" class="board-platform" width="800px" max-width="100%"
-                    align-items="center" overflow-x="hidden" background=#714b2b border=(("#3c2819", 8))
-                    border-radius="24px" padding-y="14px" padding-x="14px" gap="8px" {
-                    (turn_feedback_view)
-                    section id="board-region" width="730px" max-width="100%" background=#173d2c
-                        border=(("#9b7041", 5)) border-radius="16px"
-                        padding-y="12px" padding-x="9px" {
-                        (board)
-                    }
-                }
-                (viewer_hud)
-                section id="play-console" class="game-console turn-dock" position="fixed" bottom=8 left="2%"
-                    width="96%" max-width="720px" max-height="300px" overflow-y="auto"
-                    background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
-                    padding-y="7px" padding-x="12px" gap="5px" {
-                    (rack)
-                    section id="composer-card" width="100%" gap="6px" {
-                        @if !game.completed && game.view.active_player == game.viewer_player {
-                            (draft_preview)
-                            (actions)
-                        } @else if !game.completed {
-                            section id="turn-actions" class="turn-composer action-hud" min-height="54px"
-                                background=#173d2c border=(("#35674e", 2)) border-radius="14px"
-                                padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
-                                span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
-                                span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
-                            }
-                        }
-                    }
-                }
-                @if let Some(completed_summary) = completed_summary {
-                    section id="game-overlay" width="720px" max-width="100%" background=#112b20
-                        border=(("#f4c95d", 3)) border-radius="18px" padding="12px" {
-                        (completed_summary)
                     }
                 }
             }
@@ -3289,7 +3289,7 @@ mod tests {
             assert!(page.contains("activity-rail"));
             assert!(page.contains("turn-dock"));
             assert!(page.contains("sx-position=\"fixed\""));
-            assert!(page.contains("sx-padding-bottom=\"310\""));
+            assert!(page.contains("sx-padding-bottom=\"330\""));
             assert!(page.contains("sx-position=\"absolute\""));
             assert!(page.contains("sx-max-height=\"78vh\""));
             assert!(page.contains("sx-overflow-y=\"auto\""));

@@ -315,15 +315,41 @@ def assert_game_controls(browser: Browser, width: int) -> None:
     browser.navigate(path)
     browser.wait("Boolean(document.querySelector('#game-board'))")
     original_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
+    original_square_size = browser.evaluate(
+        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
+    )
     browser.submit('form:has(input[value="ZOOM_OUT"])')
     browser.wait(
         f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(original_zoom)}"
     )
     compact_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
+    compact_square_size = browser.evaluate(
+        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
+    )
+    if compact_square_size >= original_square_size:
+        raise AcceptanceError(
+            f"zoom out did not shrink board squares: {original_square_size} -> {compact_square_size}"
+        )
     browser.submit('form:has(input[value="ZOOM_IN"])')
     browser.wait(
         f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(compact_zoom)}"
     )
+    restored_square_size = browser.evaluate(
+        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
+    )
+    if restored_square_size <= compact_square_size:
+        raise AcceptanceError(
+            f"zoom in did not enlarge board squares: {compact_square_size} -> {restored_square_size}"
+        )
+    browser.submit('form:has(input[value="ZOOM_RESET"])')
+    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
+    fit_square_size = browser.evaluate(
+        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
+    )
+    if fit_square_size >= compact_square_size:
+        raise AcceptanceError(
+            f"fit did not produce the smallest board squares: {compact_square_size} -> {fit_square_size}"
+        )
     before_shuffle = browser.evaluate(
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.dataset.tileId).sort().join(',')"
     )
@@ -336,10 +362,17 @@ def assert_game_controls(browser: Browser, width: int) -> None:
         raise AcceptanceError("shuffle changed rack membership")
 
     menu = browser.evaluate(
-        "(() => { const details=document.querySelector('#game-menu'); const before=document.querySelector('#play-stage').getBoundingClientRect(); details.open=true; const after=document.querySelector('#play-stage').getBoundingClientRect(); const rail=details.querySelector('#activity-rail').getBoundingClientRect(); return {shift: Math.abs(after.top-before.top)+Math.abs(after.height-before.height), railRight: rail.right, railBottom: rail.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight}; })()"
+        "(() => { const details=document.querySelector('#game-menu'); const before=document.querySelector('#play-stage').getBoundingClientRect(); details.open=true; const after=document.querySelector('#play-stage').getBoundingClientRect(); const rail=details.querySelector('#activity-rail').getBoundingClientRect(); const samplePoint={x: Math.min(rail.right-8, rail.left+40), y: Math.min(rail.bottom-8, rail.top+80)}; const topElement=document.elementFromPoint(samplePoint.x, samplePoint.y); const dock=document.querySelector('#play-console').getBoundingClientRect(); return {shift: Math.abs(after.top-before.top)+Math.abs(after.height-before.height), railRight: rail.right, railBottom: rail.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, menuOnTop: Boolean(topElement && details.contains(topElement)), dockCenter: dock.left+dock.width/2, viewportCenter: innerWidth/2}; })()"
     )
-    if menu["shift"] != 0 or menu["railRight"] > menu["viewportWidth"] or menu["railBottom"] > menu["viewportHeight"]:
-        raise AcceptanceError(f"game menu is not a contained overlay at {width}px: {menu!r}")
+    if (
+        menu["shift"] != 0
+        or menu["railRight"] > menu["viewportWidth"]
+        or menu["railBottom"] > menu["viewportHeight"]
+        or not menu["menuOnTop"]
+    ):
+        raise AcceptanceError(f"game menu is not a contained top-layer overlay at {width}px: {menu!r}")
+    if abs(menu["dockCenter"] - menu["viewportCenter"]) > 1:
+        raise AcceptanceError(f"floating rack dock is not horizontally centered at {width}px: {menu!r}")
     browser.evaluate("document.querySelector('#game-menu').open=false")
 
 
