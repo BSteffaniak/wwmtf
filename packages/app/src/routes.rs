@@ -1451,7 +1451,15 @@ async fn game_word_route(
     let now_ms = i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX);
     let lookup = crate::lookup_definition(database, provider, &word, now_ms)
         .await
-        .unwrap_or(crate::DefinitionLookup::Unavailable);
+        .unwrap_or_else(|error| {
+            let reason = crate::DefinitionUnavailableReason::from(&error);
+            log::warn!(
+                target: "wwmtf::definitions",
+                "definition_lookup_failed reason={}",
+                reason.log_reason()
+            );
+            crate::DefinitionLookup::Unavailable(reason)
+        });
     definition_page(game.game_id, &word, lookup)
 }
 
@@ -1488,8 +1496,8 @@ fn definition_page(
                     crate::DefinitionLookup::Missing => {
                         span { "No definition is available from the configured provider." }
                     },
-                    crate::DefinitionLookup::Unavailable => {
-                        span { "Definitions are temporarily unavailable. Your game is unaffected; try again later." }
+                    crate::DefinitionLookup::Unavailable(reason) => {
+                        span { (reason.user_message()) }
                     },
                 }
             }
@@ -3850,7 +3858,10 @@ mod tests {
                         .await
                         .display_to_string(false, false)
                         .expect("participant definition renders");
-                assert!(page.contains("temporarily unavailable"), "{page}");
+                assert!(
+                    page.contains("disabled by the server administrator"),
+                    "{page}"
+                );
             }
 
             let mallory_session = create_session(&*database, &mallory, now, Duration::days(1))
@@ -4010,10 +4021,15 @@ mod tests {
                 }],
             });
             assert!(game.has_played_word("WORD"));
-            let unavailable =
-                definition_page(game_id, "WORD", crate::DefinitionLookup::Unavailable)
-                    .display_to_string(false, false)
-                    .expect("unavailable result renders");
+            let unavailable = definition_page(
+                game_id,
+                "WORD",
+                crate::DefinitionLookup::Unavailable(
+                    crate::DefinitionUnavailableReason::ProviderUnavailable,
+                ),
+            )
+            .display_to_string(false, false)
+            .expect("unavailable result renders");
             assert!(unavailable.contains("temporarily unavailable"));
             assert!(unavailable.contains(&format!("/games/{game_id}")));
         });

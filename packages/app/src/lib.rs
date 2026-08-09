@@ -37,7 +37,8 @@ pub use components::{
 };
 pub use definitions::{
     DEFAULT_DEFINITION_PROVIDER_BASE_URL, DefinitionError, DefinitionLookup, DefinitionMeaning,
-    DefinitionProvider, FreeDictionaryProvider, WordDefinition, lookup_definition,
+    DefinitionProvider, DefinitionUnavailableReason, FreeDictionaryProvider, WordDefinition,
+    lookup_definition,
 };
 pub use game_service::{GameServiceError, player_for_user, submit_game_command};
 pub use invitations::{

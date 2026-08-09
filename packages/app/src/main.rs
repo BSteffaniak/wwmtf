@@ -17,6 +17,22 @@ struct RuntimeConfig {
     development_mode: bool,
 }
 
+fn definitions_enabled(value: Option<&str>) -> Result<bool, &'static str> {
+    let Some(value) = value else {
+        return Ok(true);
+    };
+    if value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes") {
+        Ok(true)
+    } else if value == "0"
+        || value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+    {
+        Ok(false)
+    } else {
+        Err("WWMTF_DEFINITIONS_ENABLED must be true/false, yes/no, or 1/0 when specified")
+    }
+}
+
 impl RuntimeConfig {
     fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
         let production_mode = std::env::var("WWMTF_PRODUCTION_MODE")
@@ -135,10 +151,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )),
         ));
 
+        let definitions_setting = std::env::var("WWMTF_DEFINITIONS_ENABLED").ok();
         let definition_provider: Option<Arc<dyn wwmtf_app::DefinitionProvider>> =
-            if std::env::var("WWMTF_DEFINITIONS_ENABLED")
-                .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            {
+            if definitions_enabled(definitions_setting.as_deref())? {
                 let base_url =
                     std::env::var("WWMTF_DEFINITION_PROVIDER_BASE_URL").unwrap_or_else(|_| {
                         wwmtf_app::DEFAULT_DEFINITION_PROVIDER_BASE_URL.to_string()
@@ -197,4 +212,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::definitions_enabled;
+
+    #[test]
+    fn definitions_are_enabled_by_default_and_accept_explicit_boolean_values() {
+        assert_eq!(definitions_enabled(None), Ok(true));
+        assert_eq!(definitions_enabled(Some("TrUe")), Ok(true));
+        assert_eq!(definitions_enabled(Some("YES")), Ok(true));
+        assert_eq!(definitions_enabled(Some("0")), Ok(false));
+        assert_eq!(definitions_enabled(Some("FALSE")), Ok(false));
+        assert!(definitions_enabled(Some("sometimes")).is_err());
+    }
 }

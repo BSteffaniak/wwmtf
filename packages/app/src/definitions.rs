@@ -38,11 +38,66 @@ pub struct DefinitionMeaning {
     pub definitions: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefinitionUnavailableReason {
+    Disabled,
+    TimedOut,
+    Unreachable,
+    RateLimited,
+    ProviderUnavailable,
+    ProviderRejected,
+    InvalidResponse,
+    ResponseTooLarge,
+    MissingAttribution,
+    CacheUnavailable,
+}
+
+impl DefinitionUnavailableReason {
+    #[must_use]
+    pub const fn user_message(self) -> &'static str {
+        match self {
+            Self::Disabled => "Definitions have been disabled by the server administrator.",
+            Self::TimedOut => "The definition provider timed out. Try again.",
+            Self::Unreachable => "The definition provider could not be reached. Try again.",
+            Self::RateLimited => {
+                "The definition provider is temporarily rate limited. Try again later."
+            }
+            Self::ProviderUnavailable => {
+                "The definition provider is temporarily unavailable. Try again later."
+            }
+            Self::ProviderRejected => "The definition provider configuration was rejected.",
+            Self::InvalidResponse => "The provider returned an invalid definition response.",
+            Self::ResponseTooLarge => {
+                "The provider response exceeded the application's safety limit."
+            }
+            Self::MissingAttribution => {
+                "The provider response omitted required licensing information."
+            }
+            Self::CacheUnavailable => "The definition cache could not be accessed. Try again.",
+        }
+    }
+
+    pub(crate) const fn log_reason(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::TimedOut => "timeout",
+            Self::Unreachable => "unreachable",
+            Self::RateLimited => "rate_limited",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::ProviderRejected => "provider_rejected",
+            Self::InvalidResponse => "invalid_response",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::MissingAttribution => "missing_attribution",
+            Self::CacheUnavailable => "cache_unavailable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefinitionLookup {
     Found(WordDefinition),
     Missing,
-    Unavailable,
+    Unavailable(DefinitionUnavailableReason),
 }
 
 #[async_trait]
@@ -139,7 +194,9 @@ pub async fn lookup_definition(
         return Ok(cached);
     }
     let Some(provider) = provider else {
-        return Ok(DefinitionLookup::Unavailable);
+        return Ok(DefinitionLookup::Unavailable(
+            DefinitionUnavailableReason::Disabled,
+        ));
     };
     match provider.lookup(&normalized).await {
         Ok(Some(definition)) => {
@@ -158,7 +215,15 @@ pub async fn lookup_definition(
             cache_result(db, &normalized, "MISSING", None, now_ms, MISSING_TTL_MS).await?;
             Ok(DefinitionLookup::Missing)
         }
-        Err(_) => Ok(DefinitionLookup::Unavailable),
+        Err(error) => {
+            let reason = DefinitionUnavailableReason::from(&error);
+            log::warn!(
+                target: "wwmtf::definitions",
+                "definition_lookup_failed reason={}",
+                reason.log_reason()
+            );
+            Ok(DefinitionLookup::Unavailable(reason))
+        }
     }
 }
 
@@ -341,6 +406,28 @@ pub enum DefinitionError {
     Json(#[from] serde_json::Error),
 }
 
+impl From<&DefinitionError> for DefinitionUnavailableReason {
+    fn from(error: &DefinitionError) -> Self {
+        match error {
+            DefinitionError::Http(error) if error.is_timeout() => Self::TimedOut,
+            DefinitionError::Http(_) => Self::Unreachable,
+            DefinitionError::ProviderStatus(429) => Self::RateLimited,
+            DefinitionError::ProviderStatus(401 | 403) => Self::ProviderRejected,
+            DefinitionError::ProviderStatus(500..=599) | DefinitionError::ProviderFailure => {
+                Self::ProviderUnavailable
+            }
+            DefinitionError::ResponseTooLarge => Self::ResponseTooLarge,
+            DefinitionError::MissingAttribution => Self::MissingAttribution,
+            DefinitionError::Database(_) | DefinitionError::MalformedCache => {
+                Self::CacheUnavailable
+            }
+            DefinitionError::Json(_)
+            | DefinitionError::InvalidWord
+            | DefinitionError::ProviderStatus(_) => Self::InvalidResponse,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -481,6 +568,67 @@ mod tests {
     }
 
     #[test]
+    fn definition_errors_map_to_specific_unavailable_reasons() {
+        let timeout_response = br#"[{"meanings":[]}]"#;
+        let (base_url, handle) = serve_once(
+            http_response("200 OK", timeout_response),
+            Duration::from_millis(100),
+        );
+        let provider = FreeDictionaryProvider::new(base_url, Duration::from_millis(10))
+            .expect("provider builds");
+        let timeout = runtime()
+            .block_on(provider.lookup("WORD"))
+            .expect_err("lookup times out");
+        assert_eq!(
+            DefinitionUnavailableReason::from(&timeout),
+            DefinitionUnavailableReason::TimedOut
+        );
+        handle.join().expect("server joins");
+
+        let unreachable = reqwest::Client::new().get("http://127.0.0.1:0").send();
+        let unreachable = runtime()
+            .block_on(unreachable)
+            .expect_err("connection fails");
+        assert_eq!(
+            DefinitionUnavailableReason::from(&DefinitionError::Http(unreachable)),
+            DefinitionUnavailableReason::Unreachable
+        );
+
+        for (error, expected) in [
+            (
+                DefinitionError::ProviderStatus(429),
+                DefinitionUnavailableReason::RateLimited,
+            ),
+            (
+                DefinitionError::ProviderStatus(503),
+                DefinitionUnavailableReason::ProviderUnavailable,
+            ),
+            (
+                DefinitionError::ProviderStatus(403),
+                DefinitionUnavailableReason::ProviderRejected,
+            ),
+            (
+                DefinitionError::ResponseTooLarge,
+                DefinitionUnavailableReason::ResponseTooLarge,
+            ),
+            (
+                DefinitionError::MissingAttribution,
+                DefinitionUnavailableReason::MissingAttribution,
+            ),
+            (
+                DefinitionError::MalformedCache,
+                DefinitionUnavailableReason::CacheUnavailable,
+            ),
+            (
+                DefinitionError::ProviderStatus(418),
+                DefinitionUnavailableReason::InvalidResponse,
+            ),
+        ] {
+            assert_eq!(DefinitionUnavailableReason::from(&error), expected);
+        }
+    }
+
+    #[test]
     fn concurrent_cache_misses_are_coalesced() {
         futures_lite::future::block_on(async {
             let db = database().await;
@@ -530,16 +678,76 @@ mod tests {
                 lookup_definition(&*db, Some(&failing), "OTHER", 20)
                     .await
                     .expect("failure is recoverable"),
-                DefinitionLookup::Unavailable
+                DefinitionLookup::Unavailable(DefinitionUnavailableReason::ProviderUnavailable)
             );
             assert_eq!(
                 lookup_definition(&*db, Some(&failing), "OTHER", 21)
                     .await
                     .expect("failure retries"),
-                DefinitionLookup::Unavailable
+                DefinitionLookup::Unavailable(DefinitionUnavailableReason::ProviderUnavailable)
             );
             assert_eq!(failing.calls.load(Ordering::Relaxed), 2);
         });
+    }
+
+    #[test]
+    fn disabled_provider_has_an_explicit_lookup_state() {
+        futures_lite::future::block_on(async {
+            let db = database().await;
+            assert_eq!(
+                lookup_definition(&*db, None, "WORD", 10)
+                    .await
+                    .expect("disabled lookup resolves"),
+                DefinitionLookup::Unavailable(DefinitionUnavailableReason::Disabled)
+            );
+        });
+    }
+
+    #[test]
+    fn unavailable_reasons_have_distinct_actionable_messages() {
+        let cases = [
+            (
+                DefinitionUnavailableReason::Disabled,
+                "disabled by the server administrator",
+            ),
+            (DefinitionUnavailableReason::TimedOut, "timed out"),
+            (
+                DefinitionUnavailableReason::Unreachable,
+                "could not be reached",
+            ),
+            (DefinitionUnavailableReason::RateLimited, "rate limited"),
+            (
+                DefinitionUnavailableReason::ProviderUnavailable,
+                "temporarily unavailable",
+            ),
+            (
+                DefinitionUnavailableReason::ProviderRejected,
+                "configuration was rejected",
+            ),
+            (
+                DefinitionUnavailableReason::InvalidResponse,
+                "invalid definition response",
+            ),
+            (
+                DefinitionUnavailableReason::ResponseTooLarge,
+                "safety limit",
+            ),
+            (
+                DefinitionUnavailableReason::MissingAttribution,
+                "licensing information",
+            ),
+            (
+                DefinitionUnavailableReason::CacheUnavailable,
+                "cache could not be accessed",
+            ),
+        ];
+        let mut messages = std::collections::BTreeSet::new();
+        let mut log_reasons = std::collections::BTreeSet::new();
+        for (reason, expected) in cases {
+            assert!(reason.user_message().contains(expected));
+            assert!(messages.insert(reason.user_message()));
+            assert!(log_reasons.insert(reason.log_reason()));
+        }
     }
 
     #[test]
