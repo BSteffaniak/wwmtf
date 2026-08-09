@@ -70,6 +70,7 @@ impl RuntimeConfig {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
@@ -134,10 +135,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )),
         ));
 
+        let definition_provider: Option<Arc<dyn wwmtf_app::DefinitionProvider>> =
+            if std::env::var("WWMTF_DEFINITIONS_ENABLED")
+                .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            {
+                let base_url =
+                    std::env::var("WWMTF_DEFINITION_PROVIDER_BASE_URL").unwrap_or_else(|_| {
+                        wwmtf_app::DEFAULT_DEFINITION_PROVIDER_BASE_URL.to_string()
+                    });
+                let timeout_ms = std::env::var("WWMTF_DEFINITION_TIMEOUT_MS")
+                    .ok()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()?
+                    .unwrap_or(3_000);
+                Some(Arc::new(wwmtf_app::FreeDictionaryProvider::new(
+                    base_url,
+                    std::time::Duration::from_millis(timeout_ms),
+                )?))
+            } else {
+                None
+            };
+
         let mut app_builder = AppBuilder::new()
             .with_router(create_product_router(
                 database.clone(),
                 dispatcher.clone(),
+                definition_provider,
                 csrf_token.clone(),
                 config.public_base_url,
                 secure_cookies,

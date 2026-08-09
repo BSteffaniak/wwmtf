@@ -7,10 +7,12 @@
 mod accounts;
 mod challenges;
 mod components;
+mod definitions;
 mod game_service;
 mod invitations;
 mod journal;
 mod migrations;
+#[cfg(feature = "metrics")]
 mod observability;
 mod presentation;
 mod projections;
@@ -28,10 +30,14 @@ pub use challenges::{
     create_game_in_transaction, decline_challenge, find_user_by_username,
 };
 pub use components::{
-    GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PremiumView,
-    board_component, error_component, final_score_adjustments, game_view, move_history_component,
-    move_history_view, pending_move_component, premium_square_component, rack_component,
-    status_component, tile_component, viewer_turn_component,
+    GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,
+    PremiumView, board_component, error_component, final_score_adjustments, game_view,
+    move_history_component, move_history_view, pending_move_component, premium_square_component,
+    rack_component, status_component, tile_component, viewer_turn_component,
+};
+pub use definitions::{
+    DEFAULT_DEFINITION_PROVIDER_BASE_URL, DefinitionError, DefinitionLookup, DefinitionMeaning,
+    DefinitionProvider, FreeDictionaryProvider, WordDefinition, lookup_definition,
 };
 pub use game_service::{GameServiceError, player_for_user, submit_game_command};
 pub use invitations::{
@@ -44,6 +50,7 @@ pub use journal::{
     persisted_payload_compatibility, recover_game, store_snapshot,
 };
 pub use migrations::{app_migrations, migrate_app};
+#[cfg(feature = "metrics")]
 pub use observability::{AppMetricsSnapshot, app_metrics_snapshot};
 pub use presentation::{
     AuthenticatedDashboard, AuthorizedGamePage, CSRF_COOKIE_NAME, CSRF_HEADER_NAME,
@@ -57,7 +64,8 @@ pub use projections::{
     user_score_totals,
 };
 pub use rack_preferences::{
-    RackPreferenceError, load_rack_order, reconcile_rack_order, save_rack_order, swap_rack_tiles,
+    RackPreferenceError, load_rack_order, reconcile_rack_order, save_rack_order,
+    shuffle_rack_order, swap_rack_tiles,
 };
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,

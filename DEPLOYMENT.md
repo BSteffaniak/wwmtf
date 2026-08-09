@@ -12,6 +12,9 @@ Words with More Than Friends is designed for an internet deployment behind a TLS
 | `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
 | `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
 | `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration and generated invitation links. |
+| `WWMTF_DEFINITIONS_ENABLED` | No; defaults to disabled | Enables server-side played-word definition lookup. When disabled, played words remain linked and show an honest unavailable state. |
+| `WWMTF_DEFINITION_PROVIDER_BASE_URL` | No; defaults to `https://api.dictionaryapi.dev` | HTTPS Free Dictionary API-compatible endpoint used only when definitions are enabled. |
+| `WWMTF_DEFINITION_TIMEOUT_MS` | No; defaults to `3000` | Connect and overall timeout for definition-provider requests. |
 | `RUST_LOG` | No | Logging filter. Logs must never include passwords, session/invitation tokens, racks, bags, or canonical event payloads. |
 
 The pinned `switchy_database_connection` Turso backend is local/file-backed and does not accept a Turso Cloud URL/token. A remote Turso deployment therefore requires a generic upstream `switchy` connection capability before this application may support `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`; do not add a backend-specific application bypass.
@@ -29,6 +32,10 @@ The session cookie carries only a random opaque token whose hash is persisted. C
 ## Startup and migrations
 
 The binary opens the configured database and runs all application code migrations before constructing or accepting traffic. A migration failure aborts startup. Application schema/query access remains builder-only through `switchy`.
+
+Played-word definitions use Free Dictionary API data derived from Wiktionary. Successful responses are cached for 30 days and provider-confirmed misses for 24 hours; timeouts, rate limits, server errors, malformed payloads, and oversized responses are not cached and render a retryable unavailable state. Responses must include HTTPS source and CC BY-SA license metadata, which the UI displays. The public service advertises free use but does not publish a production SLA or guaranteed rate limit, so production operators must monitor availability, keep the short timeout enabled, and disable `WWMTF_DEFINITIONS_ENABLED` if provider terms or reliability become unsuitable. Definition availability never affects gameplay or game loading.
+
+The generic `switchy_http` client was evaluated but does not currently expose request timeouts or bounded response streaming. The application therefore uses a narrowly configured root `reqwest` dependency for this server-side integration; it remains isolated behind `DefinitionProvider` for deterministic tests and replacement.
 
 The production Fly deployment, volume/bootstrap commands, OpenTofu resources, backup commands, and launch checklist are documented in `PRODUCTION.md`.
 

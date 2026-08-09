@@ -16,6 +16,7 @@ argon2 = { version = "0.5.3", default-features = false, features = [
     "password-hash",
     "rand",
 ] }
+async-lock = { version = "3.4.2", default-features = false }
 async-trait = { version = "0.1.89", default-features = false }
 env_logger = { version = "0.11.11", default-features = false, features = [
     "auto-color",
@@ -33,6 +34,10 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 rand_core = { version = "0.6.4", default-features = false, features = [
     "getrandom",
 ] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "rustls",
+] }
 serde = { version = "1.0.229", default-features = false, features = [
     "derive",
     "std",
@@ -48,6 +53,11 @@ thiserror = { version = "2.0.19", default-features = false }
 time = { version = "0.3.54", default-features = false, features = [
     "serde",
     "std",
+] }
+tokio = { version = "1.53.1", default-features = false, features = [
+    "net",
+    "rt",
+    "time",
 ] }
 uuid = { version = "1.24.0", default-features = false, features = [
     "serde",

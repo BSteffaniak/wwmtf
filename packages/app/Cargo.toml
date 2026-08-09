@@ -17,6 +17,7 @@ required-features = ["actix"]
 
 [dependencies]
 argon2 = { workspace = true }
+async-lock = { workspace = true }
 async-trait = { workspace = true }
 env_logger = { workspace = true }
 flume = { workspace = true }
@@ -47,6 +48,7 @@ hyperchad = { workspace = true, features = [
 ] }
 log = { workspace = true }
 rand_core = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -55,6 +57,7 @@ switchy_database_connection = { workspace = true, features = ["turso"] }
 switchy_schema = { workspace = true, features = ["code"] }
 thiserror = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true }
 uuid = { workspace = true }
 wwmtf_game_domain = { workspace = true }
 
@@ -70,3 +73,4 @@ actix = [
 default = ["actix"]
 fail-on-warnings = ["hyperchad/fail-on-warnings"]
 insecure = ["hyperchad/renderer-vanilla-js-plugin-uuid-insecure"]
+metrics = []

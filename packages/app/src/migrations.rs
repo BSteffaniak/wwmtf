@@ -319,6 +319,22 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["game_id", "user_id"],
         true,
     ));
+    source.add_migration(table_migration(
+        "034_definition_cache",
+        "definition_cache",
+        vec![
+            text("definition_cache_id"),
+            text("provider"),
+            bigint("provider_version"),
+            text("language"),
+            text("word"),
+            text("status"),
+            nullable_text("payload"),
+            bigint("fetched_at_ms"),
+            bigint("expires_at_ms"),
+        ],
+        "definition_cache_id",
+    ));
     source
 }
 
@@ -412,9 +428,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 29);
+        assert_eq!(migrations.len(), 30);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[28].id(), "033_rack_preferences_game_user_unique");
+        assert_eq!(migrations[29].id(), "034_definition_cache");
     }
 
     #[test]
@@ -458,6 +474,7 @@ mod tests {
                     "game_snapshots",
                     "game_scores",
                     "rack_preferences",
+                    "definition_cache",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -490,6 +507,7 @@ mod tests {
                 "projection_checkpoints",
                 "game_scores",
                 "rack_preferences",
+                "definition_cache",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }

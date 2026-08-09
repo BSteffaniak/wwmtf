@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AnalyzedWord, BoardTile, Coordinate, Dictionary, GameCommand, GameError, GameEvent, GameState,
-    GameStatus, MoveResult, Placement, PlacementGuidance, PlayAnalysis, PlayerId, PremiumSquare,
-    RuleProfile, Tile, TileFace, TileId,
+    AnalyzedWord, BoardTile, CandidatePlayAnalysis, Coordinate, Dictionary, GameCommand, GameError,
+    GameEvent, GameState, GameStatus, MoveResult, Placement, PlacementGuidance, PlayAnalysis,
+    PlayerId, PremiumSquare, RuleProfile, Tile, TileFace, TileId,
 };
 
 /// Validates a gameplay command and produces canonical events without mutating state.
@@ -62,6 +62,10 @@ fn decide_play(
     dictionary: &impl Dictionary,
 ) -> Result<Vec<GameEvent>, GameError> {
     let prepared = prepare_play(state, actor, placements, profile, dictionary)?;
+    if !prepared.candidate.invalid_words.is_empty() {
+        return Err(GameError::InvalidWords(prepared.candidate.invalid_words));
+    }
+    let analysis = prepared.candidate.play;
     let drawn: Vec<Tile> = state
         .bag
         .iter()
@@ -73,7 +77,7 @@ fn decide_play(
     let play_event = GameEvent::TilesPlayed {
         player_id: actor,
         placements: prepared.placed,
-        score: prepared.analysis.score,
+        score: analysis.score,
         drawn,
     };
     let mut events = vec![play_event];
@@ -82,7 +86,7 @@ fn decide_play(
         events.push(completion_event_after_rack_out(
             state,
             actor,
-            prepared.analysis.score,
+            analysis.score,
         ));
     }
     Ok(events)
@@ -90,10 +94,29 @@ fn decide_play(
 
 struct PreparedPlay {
     placed: BTreeMap<Coordinate, BoardTile>,
-    analysis: PlayAnalysis,
+    candidate: CandidatePlayAnalysis,
 }
 
-/// Analyzes a candidate play with the same deterministic rules used to accept it.
+/// Analyzes a structurally complete candidate play, including every dictionary rejection.
+///
+/// This function never mutates canonical state, draws tiles, or produces events. A successful
+/// result can still be dictionary-invalid; inspect [`CandidatePlayAnalysis::invalid_words`].
+///
+/// # Errors
+///
+/// * Returns [`GameError`] for membership, turn, rack, geometry, or lifecycle failures.
+pub fn analyze_candidate_play(
+    state: &GameState,
+    actor: PlayerId,
+    placements: &[Placement],
+    profile: &RuleProfile,
+    dictionary: &impl Dictionary,
+) -> Result<CandidatePlayAnalysis, GameError> {
+    ensure_actor(state, actor)?;
+    Ok(prepare_play(state, actor, placements, profile, dictionary)?.candidate)
+}
+
+/// Analyzes a legal candidate play with the same deterministic rules used to accept it.
 ///
 /// This function never mutates canonical state, draws tiles, or produces events.
 ///
@@ -108,8 +131,12 @@ pub fn analyze_play(
     profile: &RuleProfile,
     dictionary: &impl Dictionary,
 ) -> Result<PlayAnalysis, GameError> {
-    ensure_actor(state, actor)?;
-    Ok(prepare_play(state, actor, placements, profile, dictionary)?.analysis)
+    let candidate = analyze_candidate_play(state, actor, placements, profile, dictionary)?;
+    if candidate.invalid_words.is_empty() {
+        Ok(candidate.play)
+    } else {
+        Err(GameError::InvalidWords(candidate.invalid_words))
+    }
 }
 
 /// Derives the public words and score of an already accepted placement map.
@@ -190,11 +217,11 @@ fn prepare_play(
     let board = combined_board(&state.board, &placed);
     validate_connection(state, &placed, &board, profile, axis)?;
     let words = formed_words(&board, &placed, axis);
-    for word in &words {
-        if !dictionary.contains(&word.text) {
-            return Err(GameError::InvalidWord(word.text.clone()));
-        }
-    }
+    let invalid_words = words
+        .iter()
+        .filter(|word| !dictionary.contains(&word.text))
+        .map(|word| word.text.clone())
+        .collect::<Vec<_>>();
     let full_rack_bonus = if placements.len() == usize::from(profile.rack_size) {
         profile.full_rack_bonus
     } else {
@@ -214,10 +241,13 @@ fn prepare_play(
     let score = words.iter().map(|word| word.score).sum::<u32>() + u32::from(full_rack_bonus);
     Ok(PreparedPlay {
         placed,
-        analysis: PlayAnalysis {
-            words,
-            score,
-            full_rack_bonus,
+        candidate: CandidatePlayAnalysis {
+            play: PlayAnalysis {
+                words,
+                score,
+                full_rack_bonus,
+            },
+            invalid_words,
         },
     })
 }
@@ -725,6 +755,68 @@ mod tests {
             coordinate: Coordinate::new(x, y),
             blank_letter: None,
         }
+    }
+
+    #[test]
+    fn candidate_analysis_scores_and_reports_every_invalid_word() {
+        let (mut state, mut profile, _dictionary) = state();
+        let actor = state.active_player;
+        profile.premiums.clear();
+        set_rack(&mut state, actor, &[(200, TileFace::Letter('X'), 8)]);
+        for (coordinate, letter) in [
+            (Coordinate::new(6, 6), 'Q'),
+            (Coordinate::new(6, 8), 'Z'),
+            (Coordinate::new(7, 5), 'Z'),
+            (Coordinate::new(7, 7), 'A'),
+            (Coordinate::new(8, 6), 'Q'),
+            (Coordinate::new(8, 8), 'Z'),
+        ] {
+            state.board.insert(
+                coordinate,
+                BoardTile {
+                    tile: Tile {
+                        id: TileId::new(
+                            300 + u16::from(coordinate.x) * 16 + u16::from(coordinate.y),
+                        ),
+                        face: TileFace::Letter(letter),
+                        points: 1,
+                    },
+                    letter,
+                },
+            );
+        }
+        let placements = vec![play(200, 7, 6)];
+        let dictionary = WordSetDictionary::new(std::iter::empty::<&str>());
+
+        let candidate = analyze_candidate_play(&state, actor, &placements, &profile, &dictionary)
+            .expect("structurally complete candidate analyzes");
+
+        assert_eq!(
+            candidate
+                .play
+                .words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["QXQ", "ZXA"]
+        );
+        assert_eq!(candidate.invalid_words, ["QXQ", "ZXA"]);
+        assert_eq!(candidate.play.score, 20);
+        let invalid_words = vec!["QXQ".to_string(), "ZXA".to_string()];
+        assert_eq!(
+            analyze_play(&state, actor, &placements, &profile, &dictionary),
+            Err(GameError::InvalidWords(invalid_words.clone()))
+        );
+        assert_eq!(
+            decide_command(
+                &state,
+                actor,
+                &GameCommand::Play { placements },
+                &profile,
+                &dictionary,
+            ),
+            Err(GameError::InvalidWords(invalid_words))
+        );
     }
 
     #[test]

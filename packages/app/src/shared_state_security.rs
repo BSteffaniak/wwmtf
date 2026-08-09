@@ -140,6 +140,7 @@ impl GameSharedStateDispatcher {
         let game_id = match game_id(channel_id) {
             Ok(game_id) => game_id,
             Err(error) => {
+                #[cfg(feature = "metrics")]
                 crate::observability::record_live_subscription_failure("invalid_channel");
                 return Err(error);
             }
@@ -147,6 +148,7 @@ impl GameSharedStateDispatcher {
         let player = player_for_user(&*self.database, game_id, context.participant_id.as_str())
             .await
             .map_err(|_| {
+                #[cfg(feature = "metrics")]
                 crate::observability::record_live_subscription_failure("unauthorized_game");
                 "game channel is unknown or unauthorized"
             })?;
@@ -284,8 +286,11 @@ impl GameSharedStateDispatcher {
                 });
             }
         }
-        let live_subscribers = subscribers.values().map(Vec::len).sum();
-        crate::observability::set_live_subscribers(live_subscribers);
+        #[cfg(feature = "metrics")]
+        {
+            let live_subscribers = subscribers.values().map(Vec::len).sum();
+            crate::observability::set_live_subscribers(live_subscribers);
+        }
         drop(subscribers);
         Ok(())
     }
@@ -427,14 +432,17 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 user_id: context.participant_id.as_str().to_string(),
                 sender: sender.clone(),
             });
-        let live_subscribers = self
-            .subscribers
-            .lock()
-            .map_err(|_| "game subscriber registry is unavailable")?
-            .values()
-            .map(Vec::len)
-            .sum();
-        crate::observability::set_live_subscribers(live_subscribers);
+        #[cfg(feature = "metrics")]
+        {
+            let live_subscribers = self
+                .subscribers
+                .lock()
+                .map_err(|_| "game subscriber registry is unavailable")?
+                .values()
+                .map(Vec::len)
+                .sum();
+            crate::observability::set_live_subscribers(live_subscribers);
+        }
 
         // Register before loading so a command racing subscription is duplicated at worst, never
         // lost. Revision-aware clients converge on the newest update.

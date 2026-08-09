@@ -42,6 +42,7 @@ pub async fn login_and_create_session(
     let user_id = authenticate(db, username, password)
         .await
         .map_err(|error| {
+            #[cfg(feature = "metrics")]
             crate::observability::record_authentication_failure("invalid_credentials");
             AccountWorkflowError::Account(error)
         })?;

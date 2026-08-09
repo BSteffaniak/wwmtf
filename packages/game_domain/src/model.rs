@@ -226,6 +226,26 @@ pub struct PlayAnalysis {
     pub full_rack_bonus: u16,
 }
 
+/// Deterministic, non-mutating analysis of a structurally complete candidate play.
+///
+/// Unlike [`PlayAnalysis`], this result may describe a play rejected by the pinned dictionary.
+/// Scores remain authoritative because they are derived by the same rules used for acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidatePlayAnalysis {
+    /// Formed words and score calculated from the candidate placement.
+    pub play: PlayAnalysis,
+    /// Every formed word rejected by the pinned dictionary, in formation order.
+    pub invalid_words: Vec<String>,
+}
+
+impl CandidatePlayAnalysis {
+    /// Returns whether every formed word is accepted by the pinned dictionary.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.invalid_words.is_empty()
+    }
+}
+
 /// Structural board guidance for extending a candidate placement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementGuidance {
@@ -295,9 +315,9 @@ pub enum GameError {
     /// A later move must touch the committed board.
     #[error("the move must connect to an existing tile")]
     Disconnected,
-    /// A server-derived word is not accepted by the pinned dictionary.
-    #[error("dictionary rejected word {0}")]
-    InvalidWord(String),
+    /// One or more server-derived words are not accepted by the pinned dictionary.
+    #[error("dictionary rejected words: {}", .0.join(", "))]
+    InvalidWords(Vec<String>),
     /// Exchange requires enough tiles in the bag.
     #[error("the bag does not contain enough tiles for an exchange")]
     ExchangeUnavailable,

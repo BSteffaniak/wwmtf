@@ -195,6 +195,13 @@ pub enum MoveHistoryError {
     Analysis(#[from] wwmtf_game_domain::GameError),
 }
 
+/// One structured word from an accepted canonical play.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayedWordView {
+    pub text: String,
+    pub score: u32,
+}
+
 /// Renderer-neutral move-history row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoveHistoryView {
@@ -202,6 +209,7 @@ pub struct MoveHistoryView {
     pub kind: String,
     pub description: String,
     pub score_summary: String,
+    pub played_words: Vec<PlayedWordView>,
 }
 
 /// Derives chronological renderer-neutral public history directly from canonical events.
@@ -219,6 +227,7 @@ pub fn move_history_view(
     let mut state = None;
     let mut history = Vec::with_capacity(events.len());
     for event in events {
+        let mut played_words = Vec::new();
         let (kind, description) = match (state.as_ref(), event) {
             (None, GameEvent::GameStarted { .. }) => ("GAME_STARTED", "Game started.".to_string()),
             (
@@ -238,6 +247,14 @@ pub fn move_history_view(
                     .map(|word| word.text.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
+                played_words = analysis
+                    .words
+                    .into_iter()
+                    .map(|word| PlayedWordView {
+                        text: word.text,
+                        score: word.score,
+                    })
+                    .collect();
                 (
                     "TILES_PLAYED",
                     format!(
@@ -297,6 +314,7 @@ pub fn move_history_view(
             kind: kind.to_string(),
             description,
             score_summary,
+            played_words,
         });
     }
     Ok(history)
@@ -334,7 +352,10 @@ pub fn final_score_adjustments(
 
 /// Renders chronological move/score history.
 #[must_use]
-pub fn move_history_component(history: &[MoveHistoryView]) -> Container {
+pub fn move_history_component(
+    game_id: wwmtf_game_domain::GameId,
+    history: &[MoveHistoryView],
+) -> Container {
     container! {
         section id="move-history" gap=8 {
             @if history.is_empty() {
@@ -346,6 +367,18 @@ pub fn move_history_component(history: &[MoveHistoryView]) -> Container {
                 div background=#f7f5ef border-left=(("#8eb59a", 3)) border-radius="10px"
                     padding-y="10px" padding-x="12px" gap="3px" {
                     span font-weight=bold { (entry.description.as_str()) }
+                    @if !entry.played_words.is_empty() {
+                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
+                            @for word in &entry.played_words {
+                                @let definition_href = format!("/games/{game_id}/words/{}", word.text.to_ascii_lowercase());
+                                anchor class="played-word-definition" href=(definition_href) color=#28573b
+                                    background=#e8f1e3 border=(("#8eb59a", 1)) border-radius="999px"
+                                    padding-y="4px" padding-x="9px" font-weight=bold {
+                                    (word.text.as_str()) " · " (word.score)
+                                }
+                            }
+                        }
+                    }
                     span color=#5d6258 font-size="12px" { (entry.score_summary.as_str()) }
                 }
             }

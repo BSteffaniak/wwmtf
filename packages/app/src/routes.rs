@@ -17,8 +17,7 @@ use serde::Deserialize;
 use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
 use wwmtf_game_domain::{
-    Coordinate, GameCommand, GameError, Placement, PlacementGuidance, PlayAnalysis, PremiumSquare,
-    TileId,
+    Coordinate, GameCommand, GameError, Placement, PlacementGuidance, PremiumSquare, TileId,
 };
 
 use crate::{
@@ -135,6 +134,7 @@ async fn dashboard_action_route(
             .await
             .is_err()
     {
+        #[cfg(feature = "metrics")]
         crate::observability::record_database_failure("refresh_dashboard_subscribers");
     }
     match dashboard {
@@ -167,6 +167,44 @@ struct TurnDraft {
     exchange_tiles: Vec<u16>,
     #[serde(default)]
     mode: TurnMode,
+    #[serde(default)]
+    board_zoom: BoardZoom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+enum BoardZoom {
+    Fit,
+    Compact,
+    #[default]
+    Normal,
+    Large,
+}
+
+impl BoardZoom {
+    const fn square_size(self) -> u32 {
+        match self {
+            Self::Fit => 20,
+            Self::Compact => 28,
+            Self::Normal => 44,
+            Self::Large => 56,
+        }
+    }
+
+    const fn zoom_out(self) -> Self {
+        match self {
+            Self::Fit | Self::Compact => Self::Fit,
+            Self::Normal => Self::Compact,
+            Self::Large => Self::Normal,
+        }
+    }
+
+    const fn zoom_in(self) -> Self {
+        match self {
+            Self::Fit => Self::Compact,
+            Self::Compact => Self::Normal,
+            Self::Normal | Self::Large => Self::Large,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -188,7 +226,15 @@ impl TurnDraft {
     }
 
     fn begin_action(&mut self, action: &str) {
-        if !matches!(action, "PICK_RACK_TILE" | "SWAP_RACK_TILES") {
+        if !matches!(
+            action,
+            "PICK_RACK_TILE"
+                | "SWAP_RACK_TILES"
+                | "SHUFFLE_RACK"
+                | "ZOOM_OUT"
+                | "ZOOM_RESET"
+                | "ZOOM_IN"
+        ) {
             self.rack_tile = None;
         }
     }
@@ -205,6 +251,10 @@ impl TurnDraft {
     }
 }
 
+fn is_zoom_action(action: &str) -> bool {
+    matches!(action, "ZOOM_OUT" | "ZOOM_RESET" | "ZOOM_IN")
+}
+
 fn rack_action(draft: &TurnDraft) -> &'static str {
     if draft.mode == TurnMode::Exchange {
         "TOGGLE_EXCHANGE"
@@ -217,7 +267,7 @@ fn rack_action(draft: &TurnDraft) -> &'static str {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DraftFeedback {
-    analysis: Option<PlayAnalysis>,
+    candidate: Option<wwmtf_game_domain::CandidatePlayAnalysis>,
     guidance: PlacementGuidance,
     message: String,
 }
@@ -516,6 +566,7 @@ async fn logout_route(
     if let Some(session) = request.cookies.get(crate::SESSION_COOKIE_NAME)
         && logout_session(database, session, now).await.is_err()
     {
+        #[cfg(feature = "metrics")]
         crate::observability::record_database_failure("logout_session");
         return View::from(product_error_page(
             "Unable to sign out",
@@ -612,19 +663,29 @@ fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback
             "Choose a rack tile, then place it on a highlighted connecting square."
         };
         return DraftFeedback {
-            analysis: None,
+            candidate: None,
             guidance,
             message: message.to_string(),
         };
     }
-    match game.analyze_play(&placements) {
-        Ok(analysis) => DraftFeedback {
-            analysis: Some(analysis),
-            guidance,
-            message: "This draft is ready to play.".to_string(),
-        },
+    match game.analyze_candidate_play(&placements) {
+        Ok(candidate) => {
+            let message = if candidate.is_valid() {
+                "This draft is ready to play.".to_string()
+            } else {
+                format!(
+                    "The dictionary does not accept: {}.",
+                    candidate.invalid_words.join(", ")
+                )
+            };
+            DraftFeedback {
+                candidate: Some(candidate),
+                guidance,
+                message,
+            }
+        }
         Err(error) => DraftFeedback {
-            analysis: None,
+            candidate: None,
             guidance,
             message: draft_analysis_message(&error),
         },
@@ -640,7 +701,9 @@ fn draft_analysis_message(error: &GameError) -> String {
             "The first word must cover the highlighted center square.".to_string()
         }
         GameError::Disconnected => "Connect this draft to a tile already on the board.".to_string(),
-        GameError::InvalidWord(word) => format!("The dictionary does not accept {word}."),
+        GameError::InvalidWords(words) => {
+            format!("The dictionary does not accept: {}.", words.join(", "))
+        }
         GameError::InvalidBlankLetter => {
             "Choose a letter for every drafted blank tile.".to_string()
         }
@@ -649,32 +712,37 @@ fn draft_analysis_message(error: &GameError) -> String {
 }
 
 fn draft_feedback_component(feedback: &DraftFeedback) -> Container {
-    let formed_words = feedback.analysis.as_ref().map(|analysis| {
-        analysis
-            .words
-            .iter()
-            .map(|word| word.text.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    });
+    let candidate_valid = feedback
+        .candidate
+        .as_ref()
+        .is_some_and(wwmtf_game_domain::CandidatePlayAnalysis::is_valid);
     container! {
-        section id="draft-preview" min-height="52px" padding-y="8px" padding-x="12px" gap="3px"
-            background=(if feedback.analysis.is_some() { "#f4c95d" } else { "#214c38" })
-            color=(if feedback.analysis.is_some() { "#2d2515" } else { "#f4f0df" })
-            border=((if feedback.analysis.is_some() { "#ffe29a" } else { "#376d53" }, 2))
+        section id="draft-preview" min-height="52px" padding-y="8px" padding-x="12px" gap="5px"
+            background=(if candidate_valid { "#f4c95d" } else if feedback.candidate.is_some() { "#f7d8ae" } else { "#214c38" })
+            color=(if feedback.candidate.is_some() { "#2d2515" } else { "#f4f0df" })
+            border=((if candidate_valid { "#ffe29a" } else if feedback.candidate.is_some() { "#d77a59" } else { "#376d53" }, 2))
             border-radius="14px" {
             span font-size="11px" font-weight=bold { "MOVE" }
-            @if let Some(analysis) = &feedback.analysis {
-                span color=#28573b font-weight=bold { "Word" (if analysis.words.len() == 1 { "" } else { "s" }) ": " (formed_words.unwrap_or_default()) }
-                span color=#2d2515 font-size="24px" font-weight=bold { (analysis.score) " points" }
-                span color=#4d432b { (feedback.message.as_str()) }
-                @if analysis.full_rack_bonus > 0 {
-                    span color=#5d6258 { "Includes a " (analysis.full_rack_bonus) "-point full-rack bonus." }
+            @if let Some(candidate) = &feedback.candidate {
+                @for word in &candidate.play.words {
+                    @let invalid = candidate.invalid_words.contains(&word.text);
+                    div direction="row" justify-content="space-between" gap="10px" {
+                        span color=(if invalid { "#8a321f" } else { "#28573b" }) font-weight=bold {
+                            (word.text.as_str())
+                            @if invalid { " · not accepted" }
+                        }
+                        span font-weight=bold { (word.score) " pts" }
+                    }
+                }
+                span color=#2d2515 font-size="24px" font-weight=bold { (candidate.play.score) " points" }
+                span color=(if candidate_valid { "#4d432b" } else { "#8a321f" }) { (feedback.message.as_str()) }
+                @if candidate.play.full_rack_bonus > 0 {
+                    span color=#5d6258 { "Includes a " (candidate.play.full_rack_bonus) "-point full-rack bonus." }
                 }
             } @else {
                 span color=#e8dfc8 { (feedback.message.as_str()) }
                 @if !feedback.guidance.required.is_empty() {
-                    span color=#7a3f16 font-weight=bold { "Required squares are highlighted on the board." }
+                    span color=#f3a64b font-weight=bold { "Required squares are highlighted on the board." }
                 }
             }
         }
@@ -697,18 +765,18 @@ async fn game_compose_route(
         Ok(game) => game,
         Err(PresentationError::Unauthenticated) => return signed_out_page(),
         Err(error @ PresentationError::Forbidden) => {
-            let request_id = request
-                .headers
-                .get("x-request-id")
-                .map_or("missing", String::as_str);
-            crate::observability::record_compose_authorization_failure("forbidden", request_id);
+            #[cfg(feature = "metrics")]
+            {
+                let request_id = request
+                    .headers
+                    .get("x-request-id")
+                    .map_or("missing", String::as_str);
+                crate::observability::record_compose_authorization_failure("forbidden", request_id);
+            }
             return product_error_page("Unable to compose turn", &error.to_string());
         }
         Err(error) => return product_error_page("Unable to compose turn", &error.to_string()),
     };
-    if game.completed {
-        return visual_game_page(&game, &TurnDraft::default(), Some("This game is complete."));
-    }
     let form: ComposeTurnForm = match request.parse_form() {
         Ok(form) => form,
         Err(_) => {
@@ -728,12 +796,16 @@ async fn game_compose_route(
     }
     let mut draft = parse_draft(&form.draft).unwrap_or_default();
     draft.begin_action(&form.action);
+    if game.completed && !is_zoom_action(&form.action) {
+        return visual_game_page(&game, &draft, Some("This game is complete."));
+    }
     let viewer_turn = game.view.active_player == game.viewer_player;
     if !viewer_turn
         && !matches!(
             form.action.as_str(),
-            "PICK_RACK_TILE" | "SWAP_RACK_TILES" | "CANCEL_MODE"
+            "PICK_RACK_TILE" | "SWAP_RACK_TILES" | "SHUFFLE_RACK" | "CANCEL_MODE"
         )
+        && !is_zoom_action(&form.action)
     {
         return draft_error_page(
             &game,
@@ -915,7 +987,35 @@ async fn game_compose_route(
             draft.mode = TurnMode::Play;
             draft.exchange_tiles.clear();
         }
-        "CLEAR" => draft = TurnDraft::default(),
+        "SHUFFLE_RACK" => {
+            let order = crate::shuffle_rack_order(&game.rack_order);
+            let updated_at_ms =
+                i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX);
+            if crate::save_rack_order(database, game.game_id, &game.user_id, &order, updated_at_ms)
+                .await
+                .is_err()
+            {
+                return draft_error_page(&game, &draft, "Your rack could not be shuffled.");
+            }
+            let game =
+                match load_authorized_game_page(database, &request.cookies, game_id, now).await {
+                    Ok(game) => game,
+                    Err(error) => {
+                        return product_error_page("Unable to shuffle rack", &error.to_string());
+                    }
+                };
+            return visual_game_page(&game, &draft, None);
+        }
+        "ZOOM_OUT" => draft.board_zoom = draft.board_zoom.zoom_out(),
+        "ZOOM_RESET" => draft.board_zoom = BoardZoom::Fit,
+        "ZOOM_IN" => draft.board_zoom = draft.board_zoom.zoom_in(),
+        "CLEAR" => {
+            let board_zoom = draft.board_zoom;
+            draft = TurnDraft {
+                board_zoom,
+                ..TurnDraft::default()
+            };
+        }
         _ => return draft_error_page(&game, &draft, "That turn action is unavailable."),
     }
     visual_game_page(&game, &draft, None)
@@ -1133,6 +1233,7 @@ async fn invitation_route(
 pub fn create_product_router(
     database: Arc<dyn Database>,
     dispatcher: Arc<crate::GameSharedStateDispatcher>,
+    definition_provider: Option<Arc<dyn crate::DefinitionProvider>>,
     csrf_token: String,
     public_base_url: String,
     secure_cookies: bool,
@@ -1144,6 +1245,7 @@ pub fn create_product_router(
             content_type: "text/plain; charset=utf-8".to_string(),
         }) as Result<Content, Box<dyn std::error::Error>>
     });
+    #[cfg(feature = "metrics")]
     router.add_route_result("/metrics", |_request: RouteRequest| async move {
         let metrics = crate::app_metrics_snapshot();
         let body = format!(
@@ -1266,11 +1368,13 @@ pub fn create_product_router(
         }
     });
     let game_dispatcher = dispatcher;
+    let game_definition_provider = definition_provider;
     router.add_route_result(
         RoutePath::LiteralPrefix("/games/".to_string()),
         move |request: RouteRequest| {
             let database = database.clone();
             let dispatcher = game_dispatcher.clone();
+            let definition_provider = game_definition_provider.clone();
             async move {
                 let game_path = request.path.strip_prefix("/games/").unwrap_or_default();
                 if let Some(game_id) = game_path.strip_suffix("/compose") {
@@ -1292,6 +1396,18 @@ pub fn create_product_router(
                         OffsetDateTime::now_utc(),
                     )
                     .await) as Result<View, Box<dyn std::error::Error>>
+                } else if let Some((game_id, word)) = game_path.split_once("/words/") {
+                    Ok(View::from(
+                        game_word_route(
+                            &*database,
+                            definition_provider.as_deref(),
+                            &request,
+                            game_id,
+                            word,
+                            OffsetDateTime::now_utc(),
+                        )
+                        .await,
+                    )) as Result<View, Box<dyn std::error::Error>>
                 } else {
                     Ok(View::from(
                         game_route(&*database, &request, OffsetDateTime::now_utc()).await,
@@ -1301,6 +1417,85 @@ pub fn create_product_router(
         },
     );
     router
+}
+
+/// Loads one played-word definition after authenticating game membership and occurrence.
+async fn game_word_route(
+    database: &dyn Database,
+    provider: Option<&dyn crate::DefinitionProvider>,
+    request: &RouteRequest,
+    game_id: &str,
+    word: &str,
+    now: OffsetDateTime,
+) -> Container {
+    let game = match load_authorized_game_page(database, &request.cookies, game_id, now).await {
+        Ok(game) => game,
+        Err(PresentationError::Unauthenticated) => return signed_out_page(),
+        Err(PresentationError::Forbidden) => {
+            return product_error_page(
+                "Definition unavailable",
+                "You are not authorized for this game.",
+            );
+        }
+        Err(error) => return product_error_page("Definition unavailable", &error.to_string()),
+    };
+    let Some(word) = wwmtf_game_domain::normalize_word(word) else {
+        return product_error_page("Definition unavailable", "That played word is invalid.");
+    };
+    if !game.has_played_word(&word) {
+        return product_error_page(
+            "Definition unavailable",
+            "That word does not occur in this game's accepted move history.",
+        );
+    }
+    let now_ms = i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX);
+    let lookup = crate::lookup_definition(database, provider, &word, now_ms)
+        .await
+        .unwrap_or(crate::DefinitionLookup::Unavailable);
+    definition_page(game.game_id, &word, lookup)
+}
+
+fn definition_page(
+    game_id: wwmtf_game_domain::GameId,
+    word: &str,
+    lookup: crate::DefinitionLookup,
+) -> Container {
+    let game_href = format!("/games/{game_id}");
+    container! {
+        div id="app-page" direction="column" align-items="center" min-height="100vh"
+            background=#f4f1e8 padding-y=32 padding-x=18 {
+            main id="word-definition" width="100%" max-width="720px" background=#ffffff
+                border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="14px" {
+                anchor href=(game_href) color=#526243 { "← Back to game" }
+                h1 { (word) }
+                @match lookup {
+                    crate::DefinitionLookup::Found(definition) => {
+                        @for meaning in &definition.meanings {
+                            section gap="6px" {
+                                h2 font-size="18px" { (meaning.part_of_speech.as_str()) }
+                                @for text in &meaning.definitions {
+                                    span { "• " (text.as_str()) }
+                                }
+                            }
+                        }
+                        span color=#5d6258 font-size="12px" {
+                            "Source: " anchor href=(definition.source_url.as_str()) color=#526243 { (definition.source_url.as_str()) }
+                        }
+                        span color=#5d6258 font-size="12px" {
+                            "License: " anchor href=(definition.license_url.as_str()) color=#526243 { (definition.license_name.as_str()) }
+                        }
+                    },
+                    crate::DefinitionLookup::Missing => {
+                        span { "No definition is available from the configured provider." }
+                    },
+                    crate::DefinitionLookup::Unavailable => {
+                        span { "Definitions are temporarily unavailable. Your game is unaffected; try again later." }
+                    },
+                }
+            }
+        }
+    }
+    .into()
 }
 
 /// Loads and renders the signed-in dashboard, or a recoverable authentication page.
@@ -1794,12 +1989,46 @@ fn visual_board(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let board_grid_width = u32::from(game.rules.board_size) * 44
+    let score_anchor = feedback
+        .candidate
+        .as_ref()
+        .and_then(|candidate| candidate.play.words.first())
+        .and_then(|word| word.coordinates.last())
+        .copied();
+    let score = feedback
+        .candidate
+        .as_ref()
+        .map(|candidate| candidate.play.score);
+    let invalid_score = feedback
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| !candidate.is_valid());
+    let square_size = draft.board_zoom.square_size();
+    let tile_font_size = if square_size < 36 { 15 } else { 20 };
+    let premium_font_size = if square_size < 36 { 10 } else { 16 };
+    let board_grid_width = u32::from(game.rules.board_size) * square_size
         + u32::from(game.rules.board_size.saturating_sub(1)) * 2;
     let board_frame_width = board_grid_width + 12;
     container! {
-        section id="game-board" data-revision=(game.view.revision) gap="8px" {
-            div overflow-x="auto" {
+        section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom)) gap="8px" {
+            div direction="row" justify-content="center" gap="7px" {
+                form hx-post=(action.as_str()) hx-target="#app-page" {
+                    (compose_form_fields(game, draft, "ZOOM_OUT"))
+                    button type=submit padding-y="6px" padding-x="11px"
+                        background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "−" }
+                }
+                form hx-post=(action.as_str()) hx-target="#app-page" {
+                    (compose_form_fields(game, draft, "ZOOM_RESET"))
+                    button type=submit padding-y="6px" padding-x="11px" background=#173d2c color=#ffffff
+                        border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "Fit" }
+                }
+                form hx-post=(action.as_str()) hx-target="#app-page" {
+                    (compose_form_fields(game, draft, "ZOOM_IN"))
+                    button type=submit padding-y="6px" padding-x="11px"
+                        background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
+                }
+            }
+            div class="board-viewport" width="100%" max-height="42vh" overflow-x="auto" overflow-y="auto" {
                 div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
                     width=(board_frame_width) background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
@@ -1838,24 +2067,35 @@ fn visual_board(
                                     form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
-                                        button type=submit class="board-square pending-square" width="44px" height="44px"
+                                        button type=submit class="board-square pending-square" width=(square_size) height=(square_size)
                                             background=#d8ecff color=#193751 border=(("#4381b3", 3)) border-radius="4px"
                                             align-items="center" justify-content="center" font-weight=bold position="relative" cursor=pointer {
-                                            span font-size="20px" { (label) }
+                                            span font-size=(tile_font_size) { (label) }
                                             @if let Some(points) = draft_points {
                                                 span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
+                                            }
+                                            @if score_anchor == Some(coordinate) {
+                                                @if let Some(score) = score {
+                                                    span class=(if invalid_score { "draft-score-bubble invalid-draft-score" } else { "draft-score-bubble" })
+                                                        position="absolute" right="-12px" top="-16px" min-width="31px" height="25px"
+                                                        background=(if invalid_score { "#b4452f" } else { "#2f8a57" }) color=#ffffff
+                                                        border=(if invalid_score { ("#7a2d20", 2) } else { ("#246d45", 2) }) border-radius="999px"
+                                                        align-items="center" justify-content="center" font-size="12px" font-weight=bold {
+                                                        (score)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 } @else if committed.is_some() {
-                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width="44px" height="44px"
+                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width=(square_size) height=(square_size)
                                         background=(background) color=(color) border=((if latest { "#2f8a57" } else { "#9a7d45" }, if latest { 3 } else { 1 }))
                                         border-radius="4px" align-items="center" justify-content="center" font-weight=bold position="relative" {
                                         @if viewer_owned {
                                             span class="viewer-tile-marker" position="absolute" top="4px" left="4px"
                                                 width="5px" height="5px" background=#7f93a8 opacity=0.55 border-radius="999px" { }
                                         }
-                                        span font-size="20px" { (label) }
+                                        span font-size=(tile_font_size) { (label) }
                                         @if let Some((_, points)) = committed {
                                             span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
                                         }
@@ -1866,7 +2106,7 @@ fn visual_board(
                                         input type=hidden name="x" value=(x);
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
-                                            width="44px" height="44px" background=(background) color=(color)
+                                            width=(square_size) height=(square_size) background=(background) color=(color)
                                             border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a4888", 3) } else { ("#aa9e85", 1) })
                                             position="relative" align-items="center" justify-content="center"
                                             font-weight=bold cursor=pointer {
@@ -1877,7 +2117,7 @@ fn visual_board(
                                                 span class="eligible-square-highlight" position="absolute" top=0 left=0
                                                     width="100%" height="100%" background=#7f9a78 opacity=0.3 { }
                                             }
-                                            span position="relative" { (label) }
+                                            span position="relative" font-size=(premium_font_size) { (label) }
                                         }
                                     }
                                 }
@@ -1906,8 +2146,17 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         .collect::<Vec<_>>();
     container! {
         section id="player-rack" padding-y="6px" gap="7px" {
-            span color=#f3e3b9 font-size="11px" font-weight=bold { "RACK" }
-            div class="rack-tray" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
+            div direction="row" justify-content="space-between" align-items="center" gap="8px" {
+                span color=#f3e3b9 font-size="11px" font-weight=bold { "RACK" }
+                @if !game.completed {
+                    form hx-post=(action.as_str()) hx-target="#app-page" {
+                        (compose_form_fields(game, draft, "SHUFFLE_RACK"))
+                        button type=submit padding-y="5px" padding-x="10px" background=#173d2c color=#ffffff
+                            border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "Shuffle" }
+                    }
+                }
+            }
+            div class="rack-tray" direction="row" overflow-x="auto" overflow-y="hidden"
                 justify-content="center" gap="7px"
                 background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="11px" padding-x="14px" {
                 @for (tile_id, letter, points) in rack {
@@ -1977,8 +2226,9 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
     let play_score = draft_feedback(game, draft)
-        .analysis
-        .map(|analysis| analysis.score);
+        .candidate
+        .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
+        .map(|candidate| candidate.play.score);
     container! {
         section id="turn-actions" class="turn-composer action-hud" min-height="76px" padding-y="10px" gap="8px"
             background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { "#173d2c" })
@@ -2343,7 +2593,7 @@ fn visual_game_page(
     let completed_summary = game.completed.then(|| completed_game_summary(game));
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
-    let history = move_history_component(&game.history);
+    let history = move_history_component(game.game_id, &game.history);
     let game_channel = format!("game:{}", game.game_id);
     let game_path = if draft.has_composed_turn_input() {
         format!("/games/{game_id}?draft_revision={}", game.view.revision)
@@ -2357,15 +2607,16 @@ fn visual_game_page(
             fx-global-shared-state-event=(refresh_game)
             direction="column" align-items="center" overflow-x="hidden"
             min-height="100vh" background=#123b2a color=#f4f0df
-            padding-y=10 padding-x=10 gap="8px" {
+            padding-top=10 padding-bottom=310 padding-x=10 gap="8px" {
             header id="scene-controls" width="100%" max-width="1100px"
                 direction="row" justify-content="space-between" align-items="start" gap="12px" {
                 anchor href="/" background=#173326 color=#f4f0df border=(("#436854", 1))
                     border-radius="999px" padding-y="9px" padding-x="14px" font-weight=bold { "← Leave table" }
-                details id="game-menu" align-items="end" {
+                details id="game-menu" position="relative" align-items="end" {
                     summary cursor=pointer background=#173326 color=#f4f0df border=(("#436854", 1))
                         border-radius="999px" padding-y="9px" padding-x="14px" font-weight=bold { "Game menu ···" }
-                    aside id="activity-rail" width="340px" max-width="100%" background=#f6f0df color=#26382d
+                    aside id="activity-rail" position="absolute" top=46 right=0 width="340px" max-width="92vw"
+                        max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
                         border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
                         div gap="2px" {
                             span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
@@ -2403,7 +2654,8 @@ fn visual_game_page(
                     }
                 }
                 (viewer_hud)
-                section id="play-console" class="game-console turn-dock" width="720px" max-width="100%"
+                section id="play-console" class="game-console turn-dock" position="fixed" bottom=8 left="2%"
+                    width="96%" max-width="720px" max-height="300px" overflow-y="auto"
                     background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
                     padding-y="7px" padding-x="12px" gap="5px" {
                     (rack)
@@ -2622,6 +2874,7 @@ mod tests {
         let draft = TurnDraft {
             selected_tile: Some(7),
             selected_blank_letter: Some('Q'),
+            board_zoom: BoardZoom::Large,
             placements: vec![DraftPlacement {
                 tile_id: 3,
                 x: 7,
@@ -2631,6 +2884,24 @@ mod tests {
             ..TurnDraft::default()
         };
         assert_eq!(parse_draft(&draft_token(&draft)), Some(draft));
+    }
+
+    #[test]
+    fn board_zoom_is_bounded_and_defaults_for_older_drafts() {
+        assert_eq!(BoardZoom::Fit.zoom_out(), BoardZoom::Fit);
+        assert_eq!(BoardZoom::Fit.zoom_in(), BoardZoom::Compact);
+        assert_eq!(BoardZoom::Compact.zoom_out(), BoardZoom::Fit);
+        assert_eq!(BoardZoom::Compact.zoom_in(), BoardZoom::Normal);
+        assert_eq!(BoardZoom::Normal.zoom_in(), BoardZoom::Large);
+        assert_eq!(BoardZoom::Large.zoom_in(), BoardZoom::Large);
+        assert_eq!(BoardZoom::Fit.square_size(), 20);
+        assert_eq!(BoardZoom::Compact.square_size(), 28);
+        assert_eq!(BoardZoom::Normal.square_size(), 44);
+        assert_eq!(BoardZoom::Large.square_size(), 56);
+
+        let legacy = r#"{"selected_tile":null,"selected_blank_letter":null,"placements":[],"rack_tile":null,"exchange_tiles":[],"mode":"Play"}"#;
+        let draft: TurnDraft = serde_json::from_str(legacy).expect("legacy draft parses");
+        assert_eq!(draft.board_zoom, BoardZoom::Normal);
     }
 
     #[test]
@@ -2657,7 +2928,14 @@ mod tests {
 
     #[test]
     fn consecutive_rack_actions_preserve_the_swap_anchor() {
-        for action in ["PICK_RACK_TILE", "SWAP_RACK_TILES"] {
+        for action in [
+            "PICK_RACK_TILE",
+            "SWAP_RACK_TILES",
+            "SHUFFLE_RACK",
+            "ZOOM_OUT",
+            "ZOOM_RESET",
+            "ZOOM_IN",
+        ] {
             let mut draft = TurnDraft {
                 selected_tile: Some(7),
                 rack_tile: Some(7),
@@ -3010,6 +3288,17 @@ mod tests {
             assert!(page.contains("game-menu"));
             assert!(page.contains("activity-rail"));
             assert!(page.contains("turn-dock"));
+            assert!(page.contains("sx-position=\"fixed\""));
+            assert!(page.contains("sx-padding-bottom=\"310\""));
+            assert!(page.contains("sx-position=\"absolute\""));
+            assert!(page.contains("sx-max-height=\"78vh\""));
+            assert!(page.contains("sx-overflow-y=\"auto\""));
+            assert!(page.contains("board-viewport"));
+            assert!(page.contains("value=\"ZOOM_OUT\""));
+            assert!(page.contains("value=\"ZOOM_RESET\""));
+            assert!(page.contains("value=\"ZOOM_IN\""));
+            assert!(page.contains("value=\"SHUFFLE_RACK\""));
+            assert!(page.contains("Shuffle"));
             assert!(page.contains("RACK"));
             assert!(page.contains("Game menu"));
             assert!(!page.contains("primary-turn-action"));
@@ -3152,7 +3441,46 @@ mod tests {
             assert_eq!(rendered.matches("primary-turn-action").count(), 1);
             assert!(rendered.contains("Play word ·"));
             assert!(rendered.contains("board-tile-points"));
+            assert!(rendered.contains("draft-score-bubble"));
             assert!(rendered.contains(&format!("draft_revision={}", game.view.revision)));
+
+            let initial_order = game.rack_order.clone();
+            let initial_revision = game.view.revision;
+            let mut shuffle_request = RouteRequest::from_path(
+                &format!("/games/{game_id}/compose"),
+                RequestInfo::default(),
+            );
+            shuffle_request.method = "POST".parse().expect("POST parses");
+            shuffle_request.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            shuffle_request.cookies = cookies.clone();
+            shuffle_request.body = Some(std::sync::Arc::new(
+                format!(
+                    "action=SHUFFLE_RACK&expected_revision={}&draft={}",
+                    game.view.revision,
+                    draft_token(&draft)
+                )
+                .into(),
+            ));
+            let shuffled =
+                game_compose_route(&*database, &shuffle_request, &game_id.to_string(), now)
+                    .await
+                    .display_to_string(false, false)
+                    .expect("shuffle response renders");
+            let reloaded =
+                load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
+                    .await
+                    .expect("shuffled game reloads");
+            let mut original_members = initial_order.clone();
+            let mut shuffled_members = reloaded.rack_order.clone();
+            original_members.sort_unstable();
+            shuffled_members.sort_unstable();
+            assert_eq!(original_members, shuffled_members);
+            assert_eq!(reloaded.view.revision, initial_revision);
+            assert!(shuffled.contains("pending-square"));
+            assert!(shuffled.contains("data-board-zoom=\"Normal\""));
 
             let rack_only_draft = TurnDraft {
                 selected_tile: Some(first.id.get()),
@@ -3423,6 +3751,271 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn definition_route_authorizes_participants_and_only_canonical_played_words() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let mallory = register(&*database, "mallory", "third correct horse battery", now)
+                .await
+                .expect("Mallory registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("game loads");
+            let alice_player = crate::player_for_user(&*database, game_id, &alice)
+                .await
+                .expect("Alice is seated");
+            let (active_user, rack) = if state.active_player == alice_player {
+                (&alice, &state.racks[&alice_player])
+            } else {
+                (&bob, &state.racks[&state.active_player])
+            };
+            let (first, second, word) = rack
+                .iter()
+                .enumerate()
+                .find_map(|(first_index, first)| {
+                    rack.iter().enumerate().find_map(|(second_index, second)| {
+                        if first_index == second_index {
+                            return None;
+                        }
+                        let wwmtf_game_domain::TileFace::Letter(first_letter) = first.face else {
+                            return None;
+                        };
+                        let wwmtf_game_domain::TileFace::Letter(second_letter) = second.face else {
+                            return None;
+                        };
+                        let word = format!("{first_letter}{second_letter}");
+                        wwmtf_game_domain::bundled_dictionary()
+                            .contains(&word)
+                            .then_some((*first, *second, word))
+                    })
+                })
+                .expect("rack contains a legal two-letter word");
+            crate::submit_game_command(
+                &*database,
+                game_id,
+                active_user,
+                "definition-play-command",
+                "definition-play-idempotency",
+                state.revision,
+                &GameCommand::Play {
+                    placements: vec![
+                        Placement {
+                            tile_id: first.id,
+                            coordinate: Coordinate::new(7, 7),
+                            blank_letter: None,
+                        },
+                        Placement {
+                            tile_id: second.id,
+                            coordinate: Coordinate::new(8, 7),
+                            blank_letter: None,
+                        },
+                    ],
+                },
+                1,
+            )
+            .await
+            .expect("word is played");
+
+            for user in [&alice, &bob] {
+                let session = create_session(&*database, user, now, Duration::days(1))
+                    .await
+                    .expect("participant session creates");
+                let mut request = RouteRequest::from_path(
+                    &format!("/games/{game_id}/words/{word}"),
+                    RequestInfo::default(),
+                );
+                request.cookies.insert(
+                    SESSION_COOKIE_NAME.to_string(),
+                    session.expose().to_string(),
+                );
+                let page =
+                    game_word_route(&*database, None, &request, &game_id.to_string(), &word, now)
+                        .await
+                        .display_to_string(false, false)
+                        .expect("participant definition renders");
+                assert!(page.contains("temporarily unavailable"), "{page}");
+            }
+
+            let mallory_session = create_session(&*database, &mallory, now, Duration::days(1))
+                .await
+                .expect("Mallory session creates");
+            let mut forbidden = RouteRequest::from_path(
+                &format!("/games/{game_id}/words/{word}"),
+                RequestInfo::default(),
+            );
+            forbidden.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                mallory_session.expose().to_string(),
+            );
+            let forbidden = game_word_route(
+                &*database,
+                None,
+                &forbidden,
+                &game_id.to_string(),
+                &word,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("forbidden result renders");
+            assert!(forbidden.contains("not authorized"));
+
+            let signed_out = game_word_route(
+                &*database,
+                None,
+                &RouteRequest::from_path(
+                    &format!("/games/{game_id}/words/{word}"),
+                    RequestInfo::default(),
+                ),
+                &game_id.to_string(),
+                &word,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("signed-out result renders");
+            assert!(signed_out.contains("Sign in"));
+
+            let active_session = create_session(&*database, active_user, now, Duration::days(1))
+                .await
+                .expect("active session creates");
+            let mut active_request = RouteRequest::from_path(
+                &format!("/games/{game_id}/words/WORD"),
+                RequestInfo::default(),
+            );
+            active_request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                active_session.expose().to_string(),
+            );
+            let unplayed = game_word_route(
+                &*database,
+                None,
+                &active_request,
+                &game_id.to_string(),
+                "WORD",
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("unplayed result renders");
+            assert!(unplayed.contains("does not occur"));
+            let malformed = game_word_route(
+                &*database,
+                None,
+                &active_request,
+                &game_id.to_string(),
+                "not%20a%20word",
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("malformed result renders");
+            assert!(
+                malformed.contains("played word is invalid")
+                    || malformed.contains("word is invalid")
+            );
+
+            let second_challenge = create_challenge(&*database, &alice, &mallory, now)
+                .await
+                .expect("second challenge creates");
+            let second_game = accept_challenge(&*database, &second_challenge, &mallory, now, 6)
+                .await
+                .expect("second game starts");
+            let cross_game = game_word_route(
+                &*database,
+                None,
+                &active_request,
+                &second_game.to_string(),
+                &word,
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("cross-game result renders");
+            assert!(cross_game.contains("does not occur"));
+        });
+    }
+
+    #[test]
+    fn definition_route_requires_a_played_word_and_handles_disabled_provider() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let session = create_session(&*database, &alice, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let mut request = RouteRequest::from_path(
+                &format!("/games/{game_id}/words/WORD"),
+                RequestInfo::default(),
+            );
+            request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+
+            let unplayed = game_word_route(
+                &*database,
+                None,
+                &request,
+                &game_id.to_string(),
+                "WORD",
+                now,
+            )
+            .await
+            .display_to_string(false, false)
+            .expect("unplayed result renders");
+            assert!(unplayed.contains("does not occur"));
+
+            let mut game =
+                load_authorized_game_page(&*database, &request.cookies, &game_id.to_string(), now)
+                    .await
+                    .expect("game loads");
+            game.history.push(crate::MoveHistoryView {
+                revision: 2,
+                kind: "TILES_PLAYED".to_string(),
+                description: "alice played WORD.".to_string(),
+                score_summary: "alice 4 – bob 0".to_string(),
+                played_words: vec![crate::PlayedWordView {
+                    text: "WORD".to_string(),
+                    score: 4,
+                }],
+            });
+            assert!(game.has_played_word("WORD"));
+            let unavailable =
+                definition_page(game_id, "WORD", crate::DefinitionLookup::Unavailable)
+                    .display_to_string(false, false)
+                    .expect("unavailable result renders");
+            assert!(unavailable.contains("temporarily unavailable"));
+            assert!(unavailable.contains(&format!("/games/{game_id}")));
+        });
+    }
+
+    #[test]
     fn health_routes_report_process_and_database_readiness() {
         block_on(async {
             let database = test_database().await;
@@ -3430,6 +4023,7 @@ mod tests {
             let router = create_product_router(
                 database,
                 dispatcher,
+                None,
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,
@@ -3445,14 +4039,40 @@ mod tests {
                 .await
                 .expect("readiness route resolves")
                 .expect("readiness returns content");
+
+            assert!(matches!(live, Content::Raw { .. }));
+            assert!(matches!(ready, Content::Raw { .. }));
+            #[cfg(not(feature = "metrics"))]
+            assert!(
+                router
+                    .navigate(("/metrics", RequestInfo::default()))
+                    .await
+                    .is_err(),
+                "metrics route must be absent unless explicitly enabled"
+            );
+        });
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_route_reports_secret_safe_counters() {
+        block_on(async {
+            let database = test_database().await;
+            let dispatcher = Arc::new(crate::GameSharedStateDispatcher::new(database.clone()));
+            let router = create_product_router(
+                database,
+                dispatcher,
+                None,
+                "csrf-test".to_string(),
+                "https://games.example.test".to_string(),
+                true,
+            );
             let metrics = router
                 .navigate(("/metrics", RequestInfo::default()))
                 .await
                 .expect("metrics route resolves")
                 .expect("metrics returns content");
 
-            assert!(matches!(live, Content::Raw { .. }));
-            assert!(matches!(ready, Content::Raw { .. }));
             let Content::Raw { data, .. } = metrics else {
                 panic!("metrics should be raw content");
             };

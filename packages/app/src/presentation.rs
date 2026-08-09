@@ -6,8 +6,8 @@ use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use time::OffsetDateTime;
 use wwmtf_game_domain::{
-    GameError, GameId, GameStatus, Placement, PlacementGuidance, PlayAnalysis, analyze_play,
-    dictionary, placement_guidance,
+    CandidatePlayAnalysis, GameError, GameId, GameStatus, Placement, PlacementGuidance,
+    PlayAnalysis, analyze_candidate_play, analyze_play, dictionary, placement_guidance,
 };
 
 use crate::{
@@ -56,7 +56,26 @@ pub struct AuthorizedGamePage {
 }
 
 impl AuthorizedGamePage {
-    /// Analyzes a candidate play against this authorized viewer's canonical game state.
+    /// Analyzes a structurally complete candidate, including scores for dictionary-invalid words.
+    ///
+    /// # Errors
+    ///
+    /// * Returns deterministic gameplay failures for actor, rack, blank, coordinate, or geometry
+    ///   validation.
+    pub fn analyze_candidate_play(
+        &self,
+        placements: &[Placement],
+    ) -> Result<CandidatePlayAnalysis, GameError> {
+        analyze_candidate_play(
+            &self.state,
+            self.viewer_player,
+            placements,
+            &self.rules,
+            &self.dictionary,
+        )
+    }
+
+    /// Analyzes a legal candidate play against this viewer's canonical game state.
     ///
     /// # Errors
     ///
@@ -69,6 +88,13 @@ impl AuthorizedGamePage {
             &self.rules,
             &self.dictionary,
         )
+    }
+
+    #[must_use]
+    pub fn has_played_word(&self, word: &str) -> bool {
+        self.history
+            .iter()
+            .any(|entry| entry.played_words.iter().any(|played| played.text == word))
     }
 
     /// Returns safe structural guidance for a partial candidate placement.
@@ -96,6 +122,7 @@ pub async fn authenticated_user(
     now: OffsetDateTime,
 ) -> Result<String, PresentationError> {
     let session = cookies.get(SESSION_COOKIE_NAME).ok_or_else(|| {
+        #[cfg(feature = "metrics")]
         crate::observability::record_authentication_failure("missing_session");
         PresentationError::Unauthenticated
     })?;
@@ -103,14 +130,17 @@ pub async fn authenticated_user(
         .await
         .map_err(|error| match error {
             crate::SessionError::Invalid | crate::SessionError::Timestamp => {
+                #[cfg(feature = "metrics")]
                 crate::observability::record_authentication_failure("invalid_session");
                 PresentationError::Unauthenticated
             }
             crate::SessionError::Busy => {
+                #[cfg(feature = "metrics")]
                 crate::observability::record_database_failure("resolve_session_busy");
                 PresentationError::Database(switchy_database::DatabaseError::UnexpectedResult)
             }
             crate::SessionError::Database(error) => {
+                #[cfg(feature = "metrics")]
                 crate::observability::record_database_failure("resolve_session");
                 PresentationError::Database(error)
             }

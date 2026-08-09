@@ -1,5 +1,6 @@
 //! Private, non-authoritative rack-order presentation preferences.
 
+use rand_core::{OsRng, RngCore as _};
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use wwmtf_game_domain::{GameId, TileId};
@@ -105,6 +106,30 @@ pub enum RackPreferenceError {
     Database(#[from] switchy_database::DatabaseError),
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
+}
+
+/// Shuffles a rack order with operating-system randomness.
+#[must_use]
+pub fn shuffle_rack_order(order: &[u16]) -> Vec<u16> {
+    let mut random = OsRng;
+    shuffle_rack_order_with(order, || random.next_u64())
+}
+
+fn shuffle_rack_order_with(order: &[u16], mut next_random: impl FnMut() -> u64) -> Vec<u16> {
+    let mut shuffled = order.to_vec();
+    for upper in (1..shuffled.len()).rev() {
+        let bound = u64::try_from(upper + 1).expect("rack index fits u64");
+        let zone = u64::MAX - u64::MAX % bound;
+        let value = loop {
+            let value = next_random();
+            if value < zone {
+                break value;
+            }
+        };
+        let index = usize::try_from(value % bound).expect("bounded rack index fits usize");
+        shuffled.swap(upper, index);
+    }
+    shuffled
 }
 
 /// Swaps two rack tiles while preserving every other position.
@@ -239,6 +264,18 @@ mod tests {
                 Some(alice)
             );
         });
+    }
+
+    #[test]
+    fn deterministic_shuffle_preserves_exact_membership() {
+        let mut values = [0_u64, 1, 0].into_iter();
+        let shuffled = shuffle_rack_order_with(&[1, 2, 3, 4], || values.next().unwrap_or(0));
+        assert_eq!(shuffled, [3, 4, 2, 1]);
+        let mut sorted = shuffled;
+        sorted.sort_unstable();
+        assert_eq!(sorted, [1, 2, 3, 4]);
+        assert!(shuffle_rack_order_with(&[], || 0).is_empty());
+        assert_eq!(shuffle_rack_order_with(&[7], || 0), [7]);
     }
 
     #[test]

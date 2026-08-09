@@ -91,6 +91,7 @@ async fn submit_in_transaction(
     let actor = player_for_user(tx, game_id, user_id).await?;
     let current = crate::recover_game(tx, game_id).await?;
     if current.revision != expected_revision {
+        #[cfg(feature = "metrics")]
         crate::observability::record_command_conflict(expected_revision, current.revision);
         return Err(GameServiceError::Conflict {
             expected: expected_revision,
