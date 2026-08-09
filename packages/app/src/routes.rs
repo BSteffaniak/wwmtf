@@ -1396,6 +1396,18 @@ pub fn create_product_router(
                         OffsetDateTime::now_utc(),
                     )
                     .await) as Result<View, Box<dyn std::error::Error>>
+                } else if let Some((game_id, word)) = game_path.split_once("/word-panels/") {
+                    Ok(View::from(
+                        game_word_panel_route(
+                            &*database,
+                            definition_provider.as_deref(),
+                            &request,
+                            game_id,
+                            word,
+                            OffsetDateTime::now_utc(),
+                        )
+                        .await,
+                    )) as Result<View, Box<dyn std::error::Error>>
                 } else if let Some((game_id, word)) = game_path.split_once("/words/") {
                     Ok(View::from(
                         game_word_route(
@@ -1419,34 +1431,24 @@ pub fn create_product_router(
     router
 }
 
-/// Loads one played-word definition after authenticating game membership and occurrence.
-async fn game_word_route(
+async fn played_word_definition(
     database: &dyn Database,
     provider: Option<&dyn crate::DefinitionProvider>,
     request: &RouteRequest,
     game_id: &str,
     word: &str,
     now: OffsetDateTime,
-) -> Container {
-    let game = match load_authorized_game_page(database, &request.cookies, game_id, now).await {
-        Ok(game) => game,
-        Err(PresentationError::Unauthenticated) => return signed_out_page(),
-        Err(PresentationError::Forbidden) => {
-            return product_error_page(
-                "Definition unavailable",
-                "You are not authorized for this game.",
-            );
-        }
-        Err(error) => return product_error_page("Definition unavailable", &error.to_string()),
-    };
-    let Some(word) = wwmtf_game_domain::normalize_word(word) else {
-        return product_error_page("Definition unavailable", "That played word is invalid.");
-    };
+) -> Result<(wwmtf_game_domain::GameId, String, crate::DefinitionLookup), &'static str> {
+    let game = load_authorized_game_page(database, &request.cookies, game_id, now)
+        .await
+        .map_err(|error| match error {
+            PresentationError::Unauthenticated => "Your session expired. Sign in and try again.",
+            PresentationError::Forbidden => "You are not authorized for this game.",
+            _ => "The game could not be loaded.",
+        })?;
+    let word = wwmtf_game_domain::normalize_word(word).ok_or("That played word is invalid.")?;
     if !game.has_played_word(&word) {
-        return product_error_page(
-            "Definition unavailable",
-            "That word does not occur in this game's accepted move history.",
-        );
+        return Err("That word does not occur in this game's accepted move history.");
     }
     let now_ms = i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX);
     let lookup = crate::lookup_definition(database, provider, &word, now_ms)
@@ -1460,47 +1462,127 @@ async fn game_word_route(
             );
             crate::DefinitionLookup::Unavailable(reason)
         });
-    definition_page(game.game_id, &word, lookup)
+    Ok((game.game_id, word, lookup))
+}
+
+/// Loads one played-word definition after authenticating game membership and occurrence.
+async fn game_word_route(
+    database: &dyn Database,
+    provider: Option<&dyn crate::DefinitionProvider>,
+    request: &RouteRequest,
+    game_id: &str,
+    word: &str,
+    now: OffsetDateTime,
+) -> Container {
+    match played_word_definition(database, provider, request, game_id, word, now).await {
+        Ok((game_id, word, lookup)) => definition_page(game_id, &word, &lookup),
+        Err(message) => product_error_page("Definition unavailable", message),
+    }
+}
+
+async fn game_word_panel_route(
+    database: &dyn Database,
+    provider: Option<&dyn crate::DefinitionProvider>,
+    request: &RouteRequest,
+    game_id: &str,
+    word: &str,
+    now: OffsetDateTime,
+) -> Container {
+    match played_word_definition(database, provider, request, game_id, word, now).await {
+        Ok((game_id, word, lookup)) => definition_panel(game_id, &word, &lookup),
+        Err(message) => definition_panel_error(message),
+    }
+}
+
+fn definition_content(word: &str, lookup: &crate::DefinitionLookup) -> Container {
+    container! {
+        h1 { (word) }
+        @match lookup {
+            crate::DefinitionLookup::Found(definition) => {
+                @for meaning in &definition.meanings {
+                    section gap="6px" {
+                        h2 font-size="18px" { (meaning.part_of_speech.as_str()) }
+                        @for text in &meaning.definitions {
+                            span { "• " (text.as_str()) }
+                        }
+                    }
+                }
+                span color=#5d6258 font-size="12px" {
+                    "Source: " anchor href=(definition.source_url.as_str()) color=#526243 { (definition.source_url.as_str()) }
+                }
+                span color=#5d6258 font-size="12px" {
+                    "License: " anchor href=(definition.license_url.as_str()) color=#526243 { (definition.license_name.as_str()) }
+                }
+            },
+            crate::DefinitionLookup::Missing => {
+                span { "No definition is available from the configured provider." }
+            },
+            crate::DefinitionLookup::Unavailable(reason) => {
+                span { (reason.user_message()) }
+            },
+        }
+    }
+    .into()
 }
 
 fn definition_page(
     game_id: wwmtf_game_domain::GameId,
     word: &str,
-    lookup: crate::DefinitionLookup,
+    lookup: &crate::DefinitionLookup,
 ) -> Container {
     let game_href = format!("/games/{game_id}");
+    let content = definition_content(word, lookup);
     container! {
         div id="app-page" direction="column" align-items="center" min-height="100vh"
             background=#f4f1e8 padding-y=32 padding-x=18 {
             main id="word-definition" width="100%" max-width="720px" background=#ffffff
                 border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="14px" {
                 anchor href=(game_href) color=#526243 { "← Back to game" }
-                h1 { (word) }
-                @match lookup {
-                    crate::DefinitionLookup::Found(definition) => {
-                        @for meaning in &definition.meanings {
-                            section gap="6px" {
-                                h2 font-size="18px" { (meaning.part_of_speech.as_str()) }
-                                @for text in &meaning.definitions {
-                                    span { "• " (text.as_str()) }
-                                }
-                            }
-                        }
-                        span color=#5d6258 font-size="12px" {
-                            "Source: " anchor href=(definition.source_url.as_str()) color=#526243 { (definition.source_url.as_str()) }
-                        }
-                        span color=#5d6258 font-size="12px" {
-                            "License: " anchor href=(definition.license_url.as_str()) color=#526243 { (definition.license_name.as_str()) }
-                        }
-                    },
-                    crate::DefinitionLookup::Missing => {
-                        span { "No definition is available from the configured provider." }
-                    },
-                    crate::DefinitionLookup::Unavailable(reason) => {
-                        span { (reason.user_message()) }
-                    },
-                }
+                (content)
             }
+        }
+    }
+    .into()
+}
+
+fn definition_panel(
+    game_id: wwmtf_game_domain::GameId,
+    word: &str,
+    lookup: &crate::DefinitionLookup,
+) -> Container {
+    let standalone_href = format!("/games/{game_id}/words/{}", word.to_ascii_lowercase());
+    let content = definition_content(word, lookup);
+    container! {
+        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
+            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
+            background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
+            padding="18px" gap="12px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
+                span color=#5d6e62 font-size="11px" font-weight=bold { "WORD DEFINITION" }
+                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
+                    background=#173326 color=#f4f0df border=(("#436854", 1)) border-radius="999px"
+                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
+            }
+            (content)
+            anchor href=(standalone_href) color=#526243 font-size="12px" { "Open definition page" }
+        }
+    }
+    .into()
+}
+
+fn definition_panel_error(message: &str) -> Container {
+    container! {
+        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
+            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
+            background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
+            padding="18px" gap="12px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
+                h2 { "Definition unavailable" }
+                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
+                    background=#173326 color=#f4f0df border=(("#436854", 1)) border-radius="999px"
+                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
+            }
+            span { (message) }
         }
     }
     .into()
@@ -2691,6 +2773,13 @@ fn visual_game_page(
                         }
                     }
                 }
+            }
+            aside id="game-definition-layer" hidden position="fixed" top=68 right="2%"
+                width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
+                background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
+                padding="18px" gap="12px" {
+                span color=#5d6e62 font-size="11px" font-weight=bold { "WORD DEFINITION" }
+                span { "Loading definition…" }
             }
         }
     }
@@ -4021,17 +4110,32 @@ mod tests {
                 }],
             });
             assert!(game.has_played_word("WORD"));
-            let unavailable = definition_page(
-                game_id,
-                "WORD",
-                crate::DefinitionLookup::Unavailable(
-                    crate::DefinitionUnavailableReason::ProviderUnavailable,
-                ),
-            )
-            .display_to_string(false, false)
-            .expect("unavailable result renders");
+            let unavailable_lookup = crate::DefinitionLookup::Unavailable(
+                crate::DefinitionUnavailableReason::ProviderUnavailable,
+            );
+            let unavailable = definition_page(game_id, "WORD", &unavailable_lookup)
+                .display_to_string(false, false)
+                .expect("unavailable result renders");
             assert!(unavailable.contains("temporarily unavailable"));
             assert!(unavailable.contains(&format!("/games/{game_id}")));
+
+            let panel_lookup = crate::DefinitionLookup::Unavailable(
+                crate::DefinitionUnavailableReason::RateLimited,
+            );
+            let panel = definition_panel(game_id, "WORD", &panel_lookup)
+                .display_to_string(false, false)
+                .expect("panel renders");
+            assert!(panel.contains("id=\"game-definition-layer\""));
+            assert!(panel.contains("temporarily rate limited"));
+            assert!(!panel.contains("id=\"app-page\""));
+            assert!(panel.contains("fx-click"));
+            assert!(panel.contains(&format!("/games/{game_id}/words/word")));
+
+            let panel_error = definition_panel_error("You are not authorized for this game.")
+                .display_to_string(false, false)
+                .expect("panel error renders");
+            assert!(panel_error.contains("game-definition-layer"));
+            assert!(panel_error.contains("not authorized"));
         });
     }
 

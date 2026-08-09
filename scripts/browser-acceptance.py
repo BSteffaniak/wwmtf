@@ -817,6 +817,24 @@ def run() -> None:
             )
             valid_observer = bob if valid_actor is alice else alice
             play_valid_word(valid_actor, valid_observer)
+            valid_actor.wait("Boolean(document.querySelector('.played-word-definition'))")
+            definition_path = valid_actor.evaluate("location.pathname")
+            valid_actor.evaluate("document.querySelector('.played-word-definition').click()")
+            valid_actor.wait(
+                "Boolean(document.querySelector('#game-definition-layer.game-definition-panel'))"
+            )
+            if valid_actor.evaluate("location.pathname") != definition_path:
+                raise AcceptanceError("opening a definition navigated away from the game")
+            if not valid_actor.evaluate(
+                "Boolean(document.querySelector('#game-board') && document.querySelector('#player-rack'))"
+            ):
+                raise AcceptanceError("opening a definition replaced the game UI")
+            valid_actor.evaluate(
+                "document.querySelector('#game-definition-layer button').click()"
+            )
+            valid_actor.wait(
+                "getComputedStyle(document.querySelector('#game-definition-layer')).display === 'none'"
+            )
             for width in [1440, 390]:
                 assert_responsive_game_layout(valid_actor, width)
                 assert_responsive_game_layout(valid_observer, width)

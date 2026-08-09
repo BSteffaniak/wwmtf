@@ -1,6 +1,7 @@
 //! Renderer-neutral reusable gameplay view components.
 
 use hyperchad::{
+    actions::ActionType,
     router::Container,
     template::{LayoutOverflow, container},
 };
@@ -371,11 +372,16 @@ pub fn move_history_component(
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
                             @for word in &entry.played_words {
                                 @let definition_href = format!("/games/{game_id}/words/{}", word.text.to_ascii_lowercase());
-                                anchor class="played-word-definition" href=(definition_href) color=#28573b
+                                @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
+                                button type=button class="played-word-definition"
+                                    hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
+                                    fx-click=(ActionType::display_by_id("game-definition-layer")) color=#28573b
                                     background=#e8f1e3 border=(("#8eb59a", 1)) border-radius="999px"
-                                    padding-y="4px" padding-x="9px" font-weight=bold {
+                                    padding-y="4px" padding-x="9px" font-weight=bold cursor=pointer {
                                     (word.text.as_str()) " · " (word.score)
                                 }
+                                anchor class="played-word-definition-fallback" href=(definition_href)
+                                    color=#5d6258 font-size="11px" { "Open page" }
                             }
                         }
                     }
@@ -611,6 +617,30 @@ mod tests {
             vec![(4, 'B', 3), (5, 'C', 3), (3, 'A', 1)]
         );
         assert_eq!(PendingMoveView::reorder_rack(&rack, 99), rack);
+    }
+
+    #[test]
+    fn move_history_word_links_preserve_fallback_navigation_and_target_the_panel() {
+        let game_id = GameId::new();
+        let history = vec![MoveHistoryView {
+            revision: 1,
+            kind: "TILES_PLAYED".to_string(),
+            description: "Alice played WORD.".to_string(),
+            score_summary: "Alice 4 – Bob 0".to_string(),
+            played_words: vec![PlayedWordView {
+                text: "WORD".to_string(),
+                score: 4,
+            }],
+        }];
+        let rendered = move_history_component(game_id, &history)
+            .display_to_string(false, false)
+            .expect("history renders");
+
+        assert!(rendered.contains(&format!("href=\"/games/{game_id}/words/word\"")));
+        assert!(rendered.contains("played-word-definition-fallback"));
+        assert!(rendered.contains(&format!("hx-get=\"/games/{game_id}/word-panels/word\"")));
+        assert!(rendered.contains("hx-target=\"#game-definition-layer\""));
+        assert!(rendered.contains("hx-swap=\"this\""));
     }
 
     #[test]
