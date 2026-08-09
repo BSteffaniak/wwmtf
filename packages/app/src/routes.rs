@@ -2578,6 +2578,7 @@ fn live_status_action(visible_id: &str) -> ActionType {
     ])
 }
 
+#[allow(clippy::too_many_lines)]
 fn visual_game_page(
     game: &AuthorizedGamePage,
     draft: &TurnDraft,
@@ -2622,21 +2623,24 @@ fn visual_game_page(
                     }
                 }
                 (viewer_hud)
-                section id="play-console" class="game-console turn-dock" position="fixed" bottom=8 left="50%"
-                    translate-x="-50%" width="96%" max-width="720px" max-height="300px" overflow-y="auto"
-                    background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
-                    padding-y="7px" padding-x="12px" gap="5px" {
-                    (rack)
-                    section id="composer-card" width="100%" gap="6px" {
-                        @if !game.completed && game.view.active_player == game.viewer_player {
-                            (draft_preview)
-                            (actions)
-                        } @else if !game.completed {
-                            section id="turn-actions" class="turn-composer action-hud" min-height="54px"
-                                background=#173d2c border=(("#35674e", 2)) border-radius="14px"
-                                padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
-                                span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
-                                span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
+                section id="turn-dock-layer" position="fixed" bottom=8 left=0 width="100%"
+                    align-items="center" padding-x="2%" {
+                    section id="play-console" class="game-console turn-dock" width="100%" max-width="720px"
+                        max-height="300px" overflow-y="auto"
+                        background=#2a523c border=(("#8e6b3d", 4)) border-radius="20px"
+                        padding-y="7px" padding-x="12px" gap="5px" {
+                        (rack)
+                        section id="composer-card" width="100%" gap="6px" {
+                            @if !game.completed && game.view.active_player == game.viewer_player {
+                                (draft_preview)
+                                (actions)
+                            } @else if !game.completed {
+                                section id="turn-actions" class="turn-composer action-hud" min-height="54px"
+                                    background=#173d2c border=(("#35674e", 2)) border-radius="14px"
+                                    padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
+                                    span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
+                                    span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
+                                }
                             }
                         }
                     }
