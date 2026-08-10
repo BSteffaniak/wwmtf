@@ -335,6 +335,91 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         ],
         "definition_cache_id",
     ));
+    source.add_migration(table_migration(
+        "035_external_identities",
+        "external_identities",
+        vec![
+            text("external_identity_id"),
+            text("provider"),
+            text("issuer"),
+            text("subject"),
+            text("user_id"),
+            nullable_text("provider_display_name"),
+            nullable_text("provider_picture_url"),
+            bigint("created_at_ms"),
+            bigint("last_authenticated_at_ms"),
+        ],
+        "external_identity_id",
+    ));
+    source.add_migration(index_migration(
+        "036_external_identities_issuer_subject_unique",
+        "idx_external_identities_issuer_subject",
+        "external_identities",
+        vec!["issuer", "subject"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "037_external_identities_user_issuer_unique",
+        "idx_external_identities_user_issuer",
+        "external_identities",
+        vec!["user_id", "issuer"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "038_auth_login_attempts",
+        "auth_login_attempts",
+        vec![
+            text("attempt_id"),
+            text("state_hash"),
+            text("browser_binding_hash"),
+            text("nonce"),
+            text("pkce_verifier"),
+            text("purpose"),
+            nullable_text("existing_user_id"),
+            nullable_text("continuation_invitation_id"),
+            text("status"),
+            bigint("created_at_ms"),
+            bigint("expires_at_ms"),
+            nullable_bigint("claimed_at_ms"),
+            nullable_bigint("consumed_at_ms"),
+        ],
+        "attempt_id",
+    ));
+    source.add_migration(index_migration(
+        "039_auth_login_attempts_state_unique",
+        "idx_auth_login_attempts_state_hash",
+        "auth_login_attempts",
+        vec!["state_hash"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "040_user_profiles",
+        "user_profiles",
+        vec![
+            text("user_id"),
+            text("display_name"),
+            text("display_name_source"),
+            text("avatar_source"),
+            nullable_text("provider_picture_url"),
+            nullable_bigint("provider_picture_checked_at_ms"),
+            bigint("updated_at_ms"),
+        ],
+        "user_id",
+    ));
+    source.add_migration(table_migration(
+        "041_user_profile_images",
+        "user_profile_images",
+        vec![
+            text("user_id"),
+            text("content_type"),
+            text("content_base64"),
+            text("content_sha256"),
+            bigint("width"),
+            bigint("height"),
+            bigint("updated_at_ms"),
+        ],
+        "user_id",
+    ));
     source
 }
 
@@ -428,9 +513,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 30);
+        assert_eq!(migrations.len(), 37);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[29].id(), "034_definition_cache");
+        assert_eq!(migrations[36].id(), "041_user_profile_images");
     }
 
     #[test]
@@ -475,6 +560,10 @@ mod tests {
                     "game_scores",
                     "rack_preferences",
                     "definition_cache",
+                    "external_identities",
+                    "auth_login_attempts",
+                    "user_profiles",
+                    "user_profile_images",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -508,6 +597,10 @@ mod tests {
                 "game_scores",
                 "rack_preferences",
                 "definition_cache",
+                "external_identities",
+                "auth_login_attempts",
+                "user_profiles",
+                "user_profile_images",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }
