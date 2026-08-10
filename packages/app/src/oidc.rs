@@ -21,7 +21,6 @@ pub struct GoogleOidcClient {
         EndpointMaybeSet,
         EndpointMaybeSet,
     >,
-    http_client: openidconnect::reqwest::Client,
     issuer: String,
 }
 
@@ -38,22 +37,77 @@ impl GoogleOidcClient {
         client_secret: &str,
         redirect_uri: &str,
     ) -> Result<Self, GoogleOidcError> {
+        Self::discover_issuer_with_runtime(
+            client_id,
+            client_secret,
+            redirect_uri,
+            GOOGLE_ISSUER,
+            None,
+        )
+        .await
+    }
+
+    /// Discovers an OIDC issuer while retaining Google's identity namespace.
+    ///
+    /// This is intended for deterministic local acceptance providers. Production wiring must use
+    /// [`Self::discover`].
+    ///
+    /// # Errors
+    ///
+    /// * Returns configuration, discovery, or HTTP client construction failures.
+    pub async fn discover_issuer(
+        client_id: &str,
+        client_secret: &str,
+        redirect_uri: &str,
+        issuer_url: &str,
+    ) -> Result<Self, GoogleOidcError> {
+        Self::discover_issuer_with_runtime(client_id, client_secret, redirect_uri, issuer_url, None)
+            .await
+    }
+
+    /// Discovers an issuer and retains the runtime that owns the HTTP client's async resources.
+    ///
+    /// # Errors
+    ///
+    /// * Returns configuration, discovery, or HTTP client construction failures.
+    pub async fn discover_issuer_with_runtime(
+        client_id: &str,
+        client_secret: &str,
+        redirect_uri: &str,
+        issuer_url: &str,
+        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    ) -> Result<Self, GoogleOidcError> {
         if client_id.trim().is_empty() || client_secret.trim().is_empty() {
             return Err(GoogleOidcError::Configuration);
         }
-        let http_client = openidconnect::reqwest::ClientBuilder::new()
-            .redirect(openidconnect::reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|_| GoogleOidcError::HttpClient)?;
-        let issuer = IssuerUrl::new(GOOGLE_ISSUER.to_string())
-            .map_err(|_| GoogleOidcError::Configuration)?;
+        let runtime = match runtime {
+            Some(runtime) => runtime,
+            None => std::sync::Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .map_err(|_| GoogleOidcError::HttpClient)?,
+            ),
+        };
+        let http_client = {
+            let runtime_guard = runtime.enter();
+            let client = openidconnect::reqwest::ClientBuilder::new()
+                .redirect(openidconnect::reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|_| GoogleOidcError::HttpClient)?;
+            drop(runtime_guard);
+            client
+        };
+        let issuer =
+            IssuerUrl::new(issuer_url.to_string()).map_err(|_| GoogleOidcError::Configuration)?;
         let provider_metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
             .await
             .map_err(|_| GoogleOidcError::Discovery)?;
         let discovered_issuer = provider_metadata.issuer().as_str().to_string();
-        if discovered_issuer != GOOGLE_ISSUER {
+        if discovered_issuer != issuer_url {
             return Err(GoogleOidcError::Discovery);
         }
         let client = CoreClient::from_provider_metadata(
@@ -67,7 +121,6 @@ impl GoogleOidcClient {
         );
         Ok(Self {
             client,
-            http_client,
             issuer: discovered_issuer,
         })
     }
@@ -107,12 +160,18 @@ impl GoogleOidcClient {
         if code.trim().is_empty() {
             return Err(GoogleOidcError::Callback);
         }
+        let http_client = openidconnect::reqwest::ClientBuilder::new()
+            .redirect(openidconnect::reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|_| GoogleOidcError::HttpClient)?;
         let token = self
             .client
             .exchange_code(AuthorizationCode::new(code.to_string()))
             .map_err(|_| GoogleOidcError::Callback)?
             .set_pkce_verifier(PkceCodeVerifier::new(attempt.pkce_verifier.clone()))
-            .request_async(&self.http_client)
+            .request_async(&http_client)
             .await
             .map_err(|_| GoogleOidcError::TokenExchange)?;
         let id_token = token.id_token().ok_or(GoogleOidcError::MissingIdToken)?;

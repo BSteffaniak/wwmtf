@@ -129,6 +129,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dispatcher =
         std::sync::Arc::new(wwmtf_app::GameSharedStateDispatcher::new(database.clone()));
+    let oidc_runtime = std::sync::Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()?,
+    );
     let app = {
         use std::sync::Arc;
 
@@ -171,11 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
 
-        let google_oidc = if config.development_mode
-            && std::env::var("WWMTF_ACCEPTANCE_DISABLE_OIDC").as_deref() == Ok("true")
-        {
-            None
-        } else {
+        let google_oidc = {
             let google_client_id = std::env::var("WWMTF_GOOGLE_CLIENT_ID")
                 .map_err(|_| "WWMTF_GOOGLE_CLIENT_ID is required")?;
             let google_client_secret = std::env::var("WWMTF_GOOGLE_CLIENT_SECRET")
@@ -184,13 +186,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "{}/auth/google/callback",
                 config.public_base_url.trim_end_matches('/')
             );
-            Some(Arc::new(futures_lite::future::block_on(
-                wwmtf_app::GoogleOidcClient::discover(
-                    &google_client_id,
-                    &google_client_secret,
-                    &google_callback,
-                ),
-            )?))
+            let google_issuer = std::env::var("WWMTF_DEVELOPMENT_OIDC_ISSUER").ok();
+            if google_issuer.is_some() && !config.development_mode {
+                return Err(
+                    "WWMTF_DEVELOPMENT_OIDC_ISSUER is only allowed in development mode".into(),
+                );
+            }
+            Some(Arc::new(oidc_runtime.block_on(async {
+                if let Some(issuer) = google_issuer {
+                    wwmtf_app::GoogleOidcClient::discover_issuer_with_runtime(
+                        &google_client_id,
+                        &google_client_secret,
+                        &google_callback,
+                        &issuer,
+                        Some(oidc_runtime.clone()),
+                    )
+                    .await
+                } else {
+                    wwmtf_app::GoogleOidcClient::discover_issuer_with_runtime(
+                        &google_client_id,
+                        &google_client_secret,
+                        &google_callback,
+                        wwmtf_app::GOOGLE_ISSUER,
+                        Some(oidc_runtime.clone()),
+                    )
+                    .await
+                }
+            })?))
         };
 
         let mut app_builder = AppBuilder::new()

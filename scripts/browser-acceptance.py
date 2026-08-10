@@ -8,6 +8,8 @@ own application JavaScript or require a browser-automation package at runtime.
 from __future__ import annotations
 
 import base64
+import hashlib
+import http.server
 import json
 import os
 import pathlib
@@ -17,7 +19,9 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -25,7 +29,9 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
 PORT = 18343
+OIDC_PORT = 18344
 BASE_URL = f"http://{HOST}:{PORT}"
+OIDC_ISSUER = f"http://{HOST}:{OIDC_PORT}"
 TIMEOUT = 20.0
 
 
@@ -40,6 +46,148 @@ def bundled_dictionary_contains(word: str) -> bool:
 
 class AcceptanceError(RuntimeError):
     pass
+
+
+def base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+
+class FakeOidcProvider:
+    """Small deterministic OIDC provider used only by browser acceptance."""
+
+    def __init__(self, directory: pathlib.Path) -> None:
+        self.key = directory / "oidc-key.pem"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(self.key)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        details = subprocess.run(
+            ["openssl", "pkey", "-in", str(self.key), "-pubout", "-text", "-noout"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        modulus_text = details.split("Modulus:", 1)[1].split("Exponent:", 1)[0]
+        modulus = bytes.fromhex("".join(modulus_text.replace(":", " ").split()))
+        exponent = int(details.split("Exponent:", 1)[1].split()[0])
+        self.jwk = {
+            "kty": "RSA",
+            "kid": "acceptance-key",
+            "use": "sig",
+            "alg": "RS256",
+            "n": base64url(modulus),
+            "e": base64url(exponent.to_bytes((exponent.bit_length() + 7) // 8, "big")),
+        }
+        self.codes: dict[str, dict[str, str]] = {}
+        self.next_subject = 1
+        provider = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+            def json_response(self, value: object) -> None:
+                body = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/.well-known/openid-configuration":
+                    self.json_response({
+                        "issuer": OIDC_ISSUER,
+                        "authorization_endpoint": f"{OIDC_ISSUER}/authorize",
+                        "token_endpoint": f"{OIDC_ISSUER}/token",
+                        "jwks_uri": f"{OIDC_ISSUER}/jwks",
+                        "response_types_supported": ["code"],
+                        "subject_types_supported": ["public"],
+                        "id_token_signing_alg_values_supported": ["RS256"],
+                        "scopes_supported": ["openid", "profile"],
+                        "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+                        "claims_supported": ["iss", "sub", "aud", "exp", "iat", "nonce", "name"],
+                        "code_challenge_methods_supported": ["S256"],
+                    })
+                    return
+                if parsed.path == "/jwks":
+                    self.json_response({"keys": [provider.jwk]})
+                    return
+                if parsed.path == "/authorize":
+                    query = urllib.parse.parse_qs(parsed.query)
+                    subject = provider.next_subject
+                    provider.next_subject += 1
+                    code = base64url(os.urandom(24))
+                    provider.codes[code] = {
+                        "nonce": query["nonce"][0],
+                        "challenge": query["code_challenge"][0],
+                        "subject": f"acceptance-subject-{subject}",
+                        "name": f"Acceptance Player {subject}",
+                    }
+                    separator = "&" if "?" in query["redirect_uri"][0] else "?"
+                    location = (
+                        query["redirect_uri"][0]
+                        + separator
+                        + urllib.parse.urlencode({"code": code, "state": query["state"][0]})
+                    )
+                    self.send_response(302)
+                    self.send_header("Location", location)
+                    self.end_headers()
+                    return
+                self.send_error(404)
+
+            def do_POST(self) -> None:
+                if self.path != "/token":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                form = urllib.parse.parse_qs(self.rfile.read(length).decode())
+                code = form.get("code", [""])[0]
+                verifier = form.get("code_verifier", [""])[0]
+                attempt = provider.codes.pop(code, None)
+                challenge = base64url(hashlib.sha256(verifier.encode()).digest())
+                if attempt is None or challenge != attempt["challenge"]:
+                    self.send_error(400)
+                    return
+                now = int(time.time())
+                claims = {
+                    "iss": OIDC_ISSUER,
+                    "sub": attempt["subject"],
+                    "aud": "acceptance-client",
+                    "exp": now + 300,
+                    "iat": now,
+                    "nonce": attempt["nonce"],
+                    "name": attempt["name"],
+                }
+                header = base64url(json.dumps({"alg": "RS256", "kid": "acceptance-key", "typ": "JWT"}, separators=(",", ":")).encode())
+                payload = base64url(json.dumps(claims, separators=(",", ":")).encode())
+                signing_input = f"{header}.{payload}".encode()
+                signature = subprocess.run(
+                    ["openssl", "dgst", "-sha256", "-sign", str(provider.key)],
+                    input=signing_input,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+                self.json_response({
+                    "access_token": "acceptance-access-token",
+                    "token_type": "Bearer",
+                    "expires_in": 300,
+                    "id_token": f"{header}.{payload}.{base64url(signature)}",
+                })
+
+        self.server = http.server.ThreadingHTTPServer((HOST, OIDC_PORT), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
 
 
 class WebSocket:
@@ -445,6 +593,15 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"mobile board scrolling is not contained: {layout!r}")
 
 
+def google_login(browser: Browser) -> None:
+    browser.navigate("/login")
+    google_href = browser.evaluate("document.querySelector('a[href^=\"/auth/google/start\"]')?.getAttribute('href')")
+    if not google_href:
+        raise AcceptanceError("Google login link is missing")
+    browser.navigate(google_href)
+    browser.wait("document.body.innerText.includes('Signed in as ')")
+
+
 def register(browser: Browser, username: str) -> None:
     browser.navigate("/register")
     browser.submit('form[hx-post="/register"]', {"username": username, "password": "correct horse battery staple"})
@@ -658,14 +815,19 @@ def run() -> None:
     with tempfile.TemporaryDirectory(prefix="wwmtf-browser-") as temporary:
         temp = pathlib.Path(temporary)
         database = temp / "acceptance.db"
+        oidc_provider = FakeOidcProvider(temp)
+        oidc_provider.start()
         environment = os.environ.copy()
         environment.update(
             {
                 "WWMTF_BIND_ADDRESS": HOST,
                 "WWMTF_PORT": str(PORT),
+                "WWMTF_PUBLIC_BASE_URL": BASE_URL,
                 "WWMTF_DATABASE_PATH": str(database),
                 "WWMTF_DEV_MODE": "true",
-                "WWMTF_ACCEPTANCE_DISABLE_OIDC": "true",
+                "WWMTF_GOOGLE_CLIENT_ID": "acceptance-client",
+                "WWMTF_GOOGLE_CLIENT_SECRET": "acceptance-secret",
+                "WWMTF_DEVELOPMENT_OIDC_ISSUER": OIDC_ISSUER,
             }
         )
         application_command = os.environ.get("WWMTF_ACCEPTANCE_SERVER")
@@ -700,12 +862,14 @@ def run() -> None:
             bob = Browser.launch(chrome, 19222, temp / "bob-profile")
             assert_responsive_shell(alice, "/login", "main", 390)
             set_viewport(alice, 1440)
-            alice.navigate("/register")
-            bob.navigate("/register")
             install_readiness_probe(alice)
             install_readiness_probe(bob)
-            register(alice, "acceptance-alice")
-            register(bob, "acceptance-bob")
+            google_login(alice)
+            google_login(bob)
+            alice_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            bob_text = bob.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            if "Acceptance Player 1" not in alice_text or "Acceptance Player 2" not in bob_text:
+                raise AcceptanceError("Google profile names were not initialized")
             assert_responsive_shell(alice, "/", "#dashboard-shell", 390)
             set_viewport(alice, 1440)
             alice.navigate("/")
@@ -720,10 +884,14 @@ def run() -> None:
                 raise AcceptanceError(
                     "authenticated dashboard subscription readiness was not emitted by HyperChad"
                 )
-            alice.submit('form[hx-post="/dashboard/action"]', {"action": "CHALLENGE", "username": "acceptance-bob"})
-            alice.wait("document.body.innerText.includes('Challenge sent to acceptance-bob')")
+            alice_handle = alice.evaluate("Array.from(document.body.innerText.matchAll(/@[a-z0-9-]+-[0-9a-f]{8}/g))[0]?.[0]?.slice(1)")
+            bob_handle = bob.evaluate("Array.from(document.body.innerText.matchAll(/@[a-z0-9-]+-[0-9a-f]{8}/g))[0]?.[0]?.slice(1)")
+            if not alice_handle or not bob_handle or alice_handle == bob_handle:
+                raise AcceptanceError("Google accounts did not expose unique stable handles")
+            alice.submit('form[hx-post="/dashboard/action"]', {"action": "CHALLENGE", "username": bob_handle})
+            alice.wait("document.body.innerText.includes('Challenge sent to Acceptance Player 2')")
             bob.wait("window.__acceptanceUpdates?.some?.(channel => channel.startsWith('dashboard:'))")
-            bob.wait("document.body.innerText.includes('Challenge from acceptance-alice')")
+            bob.wait("document.body.innerText.includes('Challenge from Acceptance Player 1')")
             bob.submit('form:has(input[value="ACCEPT_CHALLENGE"])', {})
             bob.wait(
                 "Array.from(document.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('/games/'))"
@@ -897,6 +1065,7 @@ def run() -> None:
                 except subprocess.TimeoutExpired:
                     server.kill()
                     server.wait(timeout=5)
+            oidc_provider.close()
 
 
 if __name__ == "__main__":

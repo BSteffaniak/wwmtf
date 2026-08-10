@@ -2433,7 +2433,11 @@ fn dashboard_page_content(
                                 input type="hidden" name="action" value="USE_GOOGLE_NAME";
                                 button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
                             }
-                            span color=#777b73 { "Custom picture upload becomes available when the pushed HyperChad multipart revision is pinned." }
+                            form method="post" action="/profile/avatar" enctype="multipart/form-data" gap="8px" {
+                                span { "Upload a profile picture" }
+                                input type="file" name="avatar";
+                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Upload picture" }
+                            }
                             form method="post" action="/dashboard/action" {
                                 input type="hidden" name="action" value="REMOVE_AVATAR";
                                 button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
