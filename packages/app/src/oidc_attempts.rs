@@ -324,6 +324,11 @@ mod tests {
                 Some(attempt.state.as_str())
             );
             assert!(
+                claim_oidc_attempt(&*db, "unknown-state", &attempt.browser_binding, now)
+                    .await
+                    .is_err()
+            );
+            assert!(
                 claim_oidc_attempt(&*db, &attempt.state, "wrong-binding", now)
                     .await
                     .is_err()
