@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hyperchad::{
     actions::ActionType,
     renderer::{Content, ResponseCookie, ResponseMetadata, View},
@@ -84,6 +85,11 @@ async fn refreshed_dashboard(
         )
 }
 
+#[derive(Debug, Deserialize)]
+struct AvatarUploadForm {
+    avatar: String,
+}
+
 async fn custom_avatar_route(
     database: &dyn Database,
     request: &RouteRequest,
@@ -95,10 +101,14 @@ async fn custom_avatar_route(
     if request.method.as_ref() != "POST" {
         return error_component("Profile picture uploads require a POST request.");
     }
-    let Some(bytes) = request.body.as_deref() else {
-        return error_component("Choose a profile picture to upload.");
+    let form: AvatarUploadForm = match request.parse_form() {
+        Ok(form) => form,
+        Err(_) => return error_component("Choose a profile picture to upload."),
     };
-    match crate::set_custom_avatar(database, &user_id, bytes, now).await {
+    let Ok(bytes) = BASE64.decode(form.avatar) else {
+        return error_component("The profile picture upload was invalid.");
+    };
+    match crate::set_custom_avatar(database, &user_id, &bytes, now).await {
         Ok(_) => refreshed_dashboard(database, request, now).await,
         Err(_) => error_component("The profile picture was invalid or could not be saved."),
     }
@@ -2421,7 +2431,11 @@ fn dashboard_page_content(
                                 input type="hidden" name="action" value="USE_GOOGLE_NAME";
                                 button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
                             }
-                            span color=#777b73 { "Custom picture upload becomes available when the pinned HyperChad revision includes renderer-neutral file inputs." }
+                            form method="post" action="/profile/avatar" enctype="multipart/form-data" gap="8px" {
+                                span { "Upload a profile picture" }
+                                input type="file" name="avatar";
+                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Upload picture" }
+                            }
                             form method="post" action="/dashboard/action" {
                                 input type="hidden" name="action" value="REMOVE_AVATAR";
                                 button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
