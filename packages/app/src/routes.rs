@@ -2431,7 +2431,7 @@ fn dashboard_page_content(
                                 input type="hidden" name="action" value="USE_GOOGLE_NAME";
                                 button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
                             }
-                            span color=#777b73 { "Custom picture upload becomes available when the pinned HyperChad revision includes renderer-neutral multipart file inputs." }
+                            span color=#777b73 { "Custom picture upload becomes available when the pushed HyperChad multipart revision is pinned." }
                             form method="post" action="/dashboard/action" {
                                 input type="hidden" name="action" value="REMOVE_AVATAR";
                                 button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
@@ -3337,6 +3337,62 @@ mod tests {
         );
         migrate_app(&*database).await.expect("migrations run");
         database
+    }
+
+    #[test]
+    fn custom_avatar_route_accepts_multipart_file_content() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let user = register(
+                &*database,
+                "avatar-route-user",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("user registers");
+            crate::create_google_profile(&*database, &user, "Avatar User", None, now)
+                .await
+                .expect("profile creates");
+            let session = create_session(&*database, &user, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let source = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+            let mut png = Vec::new();
+            source
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("PNG encodes");
+            let boundary = "wwmtf-avatar-boundary";
+            let mut body = format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"avatar\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .into_bytes();
+            body.extend_from_slice(&png);
+            body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+            let mut request = RouteRequest::from_path("/profile/avatar", RequestInfo::default());
+            request.method = "POST".parse().expect("POST parses");
+            request.headers.insert(
+                "content-type".to_string(),
+                format!("multipart/form-data; boundary={boundary}"),
+            );
+            request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            request.body = Some(std::sync::Arc::new(body.into()));
+
+            let rendered = custom_avatar_route(&*database, &request, now)
+                .await
+                .display_to_string(false, false)
+                .expect("dashboard renders");
+            assert!(rendered.contains("Profile"));
+            let profile = crate::load_profile(&*database, &user)
+                .await
+                .expect("profile loads")
+                .expect("profile exists");
+            assert_eq!(profile.avatar_source, crate::AvatarSource::Custom);
+        });
     }
 
     #[test]
