@@ -14,7 +14,9 @@ mod journal;
 mod migrations;
 #[cfg(feature = "metrics")]
 mod observability;
+mod oidc_attempts;
 mod presentation;
+mod profiles;
 mod projections;
 mod rack_preferences;
 mod routes;
@@ -53,10 +55,19 @@ pub use journal::{
 pub use migrations::{app_migrations, migrate_app};
 #[cfg(feature = "metrics")]
 pub use observability::{AppMetricsSnapshot, app_metrics_snapshot};
+pub use oidc_attempts::{
+    ClaimedOidcAttempt, NewOidcAttempt, OidcAttemptError, OidcAttemptPurpose, claim_oidc_attempt,
+    cleanup_oidc_attempts, consume_oidc_attempt, create_oidc_attempt,
+};
 pub use presentation::{
     AuthenticatedDashboard, AuthorizedGamePage, CSRF_COOKIE_NAME, CSRF_HEADER_NAME,
     PresentationError, SESSION_COOKIE_NAME, authenticated_user, load_authenticated_dashboard,
     load_authorized_game_page,
+};
+pub use profiles::{
+    AvatarSource, ProfileError, ProfileFieldSource, UserProfile, create_google_profile,
+    generate_unique_handle, load_profile, normalize_display_name, remove_custom_avatar,
+    set_custom_display_name, synchronize_google_profile,
 };
 pub use projections::{
     DashboardProjection, GameHistoryEntry, GameSummary, PendingItem, ProjectionError,
