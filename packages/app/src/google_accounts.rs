@@ -120,6 +120,59 @@ mod tests {
     }
 
     #[test]
+    fn migration_identity_conflict_preserves_password_and_existing_sessions() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .unwrap();
+            migrate_app(&*db).await.unwrap();
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let first = register(&*db, "first-user", "correct horse battery staple", now)
+                .await
+                .unwrap();
+            let second = register(&*db, "second-user", "correct horse battery staple", now)
+                .await
+                .unwrap();
+            let session = create_session(&*db, &second, now, Duration::days(30))
+                .await
+                .unwrap();
+            let identity = VerifiedExternalIdentity::google(
+                "https://accounts.google.com",
+                "shared-google-subject",
+                "First User",
+                None,
+            )
+            .unwrap();
+            complete_legacy_google_migration(&*db, &first, &identity, now, Duration::days(30))
+                .await
+                .unwrap();
+
+            let conflict =
+                complete_legacy_google_migration(&*db, &second, &identity, now, Duration::days(30))
+                    .await;
+            assert!(matches!(
+                conflict,
+                Err(GoogleAccountWorkflowError::Identity(
+                    crate::ExternalIdentityError::Conflict
+                ))
+            ));
+            assert_eq!(
+                authenticate(&*db, "second-user", "correct horse battery staple")
+                    .await
+                    .unwrap(),
+                second
+            );
+            assert_eq!(
+                resolve_session(&*db, session.expose(), now).await.unwrap(),
+                second
+            );
+        });
+    }
+
+    #[test]
     fn migration_preserves_user_removes_password_and_revokes_old_sessions() {
         block_on(async {
             let db = switchy_database_connection::builder()
