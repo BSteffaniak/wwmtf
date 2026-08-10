@@ -8,7 +8,9 @@ mod accounts;
 mod challenges;
 mod components;
 mod definitions;
+mod external_identities;
 mod game_service;
+mod google_accounts;
 mod invitations;
 mod journal;
 mod migrations;
@@ -42,7 +44,15 @@ pub use definitions::{
     DefinitionProvider, DefinitionUnavailableReason, FreeDictionaryProvider, WordDefinition,
     lookup_definition,
 };
+pub use external_identities::{
+    ExternalIdentityError, ResolvedExternalAccount, VerifiedExternalIdentity,
+    link_external_identity, resolve_or_create_external_account, user_for_external_identity,
+};
 pub use game_service::{GameServiceError, player_for_user, submit_game_command};
+pub use google_accounts::{
+    GoogleAccountWorkflowError, complete_legacy_google_migration, google_login_and_create_session,
+    prove_legacy_password_account,
+};
 pub use invitations::{
     InvitationError, InvitationToken, create_invitation, redeem_invitation,
     redeem_invitation_and_start_game, revoke_invitation,
@@ -84,7 +94,10 @@ pub use routes::{
     game_page, game_route, game_view_response, logged_out_response, login_page, logout_page,
     register_page, signed_out_page, turn_composer,
 };
-pub use sessions::{SessionError, SessionToken, create_session, resolve_session, revoke_session};
+pub use sessions::{
+    SessionError, SessionToken, create_session, resolve_session, revoke_session,
+    revoke_user_sessions,
+};
 pub use shared_state_security::{
     DashboardLiveView, GameSharedStateDispatcher, dashboard_channel, game_channel,
     shared_state_dispatcher,

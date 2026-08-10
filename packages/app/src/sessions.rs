@@ -98,6 +98,24 @@ pub async fn revoke_session(
     Ok(())
 }
 
+/// Revokes every active session for one user immediately.
+///
+/// # Errors
+///
+/// * Returns [`SessionError::Database`] when storage fails.
+pub async fn revoke_user_sessions(
+    db: &dyn Database,
+    user_id: &str,
+    now: OffsetDateTime,
+) -> Result<(), SessionError> {
+    db.update("auth_sessions")
+        .value("revoked_at_ms", timestamp_ms(now)?)
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 fn token_hash(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
@@ -197,6 +215,21 @@ mod tests {
                 .expect("session revokes");
             assert!(matches!(
                 resolve_session(&*db, token.expose(), OffsetDateTime::UNIX_EPOCH).await,
+                Err(SessionError::Invalid)
+            ));
+            let another = create_session(
+                &*db,
+                &user_id,
+                OffsetDateTime::UNIX_EPOCH,
+                Duration::hours(1),
+            )
+            .await
+            .expect("another session creates");
+            revoke_user_sessions(&*db, &user_id, OffsetDateTime::UNIX_EPOCH)
+                .await
+                .expect("user sessions revoke");
+            assert!(matches!(
+                resolve_session(&*db, another.expose(), OffsetDateTime::UNIX_EPOCH).await,
                 Err(SessionError::Invalid)
             ));
         });
