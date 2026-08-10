@@ -84,6 +84,26 @@ async fn refreshed_dashboard(
         )
 }
 
+async fn custom_avatar_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+) -> Container {
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return error_component("Your session expired. Sign in and try again.");
+    };
+    if request.method.as_ref() != "POST" {
+        return error_component("Profile picture uploads require a POST request.");
+    }
+    let Some(bytes) = request.body.as_deref() else {
+        return error_component("Choose a profile picture to upload.");
+    };
+    match crate::set_custom_avatar(database, &user_id, bytes, now).await {
+        Ok(_) => refreshed_dashboard(database, request, now).await,
+        Err(_) => error_component("The profile picture was invalid or could not be saved."),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn dashboard_action_route(
     database: &dyn Database,
@@ -1667,6 +1687,14 @@ pub fn create_product_router(
             .await) as Result<View, Box<dyn std::error::Error>>
         }
     });
+    let avatar_upload_database = database.clone();
+    router.add_route_result("/profile/avatar", move |request: RouteRequest| {
+        let database = avatar_upload_database.clone();
+        async move {
+            Ok(custom_avatar_route(&*database, &request, OffsetDateTime::now_utc()).await)
+                as Result<Container, Box<dyn std::error::Error>>
+        }
+    });
     let avatar_database = database.clone();
     router.add_route_result(
         RoutePath::LiteralPrefix("/profiles/".to_string()),
@@ -2283,9 +2311,12 @@ fn dashboard_page_content(
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
                             border-bottom=(("#e3ded2", 1)) padding-y=16 padding-x=4 gap="12px" {
                             div gap="3px" {
-                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_username.as_str()) }
+                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_display_name.as_str()) }
+                                @if game.opponent_display_name != game.opponent_username {
+                                    span color=#777b73 { "@" (game.opponent_display_name.as_str()) }
+                                }
                                 span color=#3f5735 font-weight=bold { (state) }
-                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_username.as_str()) }
+                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_display_name.as_str()) }
                             }
                             span color=#777b73 { (game.latest_activity.as_str()) }
                         }
@@ -2304,7 +2335,9 @@ fn dashboard_page_content(
                         }
                     }
                     @for item in &dashboard.projection.pending {
-                        @let counterparty = item.counterparty_username.as_deref().unwrap_or("Private invite");
+                        @let counterparty = item.counterparty_display_name.as_deref()
+                            .or(item.counterparty_username.as_deref())
+                            .unwrap_or("Private invite");
                         @let heading = if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
                             format!("Challenge from {counterparty}")
                         } else if item.kind == "CHALLENGE" {
@@ -2317,10 +2350,21 @@ fn dashboard_page_content(
                         div id=(format!("pending-item-{}", item.id)) class="pending-item" data-direction=(item.direction.as_str())
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                             border-bottom=(("#e3ded2", 1)) padding-y=14 padding-x=4 gap="12px" {
-                            div gap="3px" {
-                                span font-weight=bold { (heading) }
-                                @if item.kind == "INVITATION" && item.id != created_invitation_id {
-                                    span color=#777b73 { "Link hidden after creation for security." }
+                            div direction="row" align-items="center" gap="10px" {
+                                @if let Some(avatar_url) = item.counterparty_avatar_url.as_deref() {
+                                    image src=(avatar_url) alt="Challenge profile avatar" width="40" height="40" border-radius="999px";
+                                }
+                                div gap="3px" {
+                                    span font-weight=bold { (heading) }
+                                    @if let (Some(display_name), Some(handle)) = (
+                                        item.counterparty_display_name.as_deref(),
+                                        item.counterparty_username.as_deref(),
+                                    ) && display_name != handle {
+                                        span color=#777b73 { "@" (handle) }
+                                    }
+                                    @if item.kind == "INVITATION" && item.id != created_invitation_id {
+                                        span color=#777b73 { "Link hidden after creation for security." }
+                                    }
                                 }
                             }
                             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
@@ -2377,6 +2421,7 @@ fn dashboard_page_content(
                                 input type="hidden" name="action" value="USE_GOOGLE_NAME";
                                 button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
                             }
+                            span color=#777b73 { "Custom picture upload becomes available when the pinned HyperChad revision includes renderer-neutral file inputs." }
                             form method="post" action="/dashboard/action" {
                                 input type="hidden" name="action" value="REMOVE_AVATAR";
                                 button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
@@ -2899,13 +2944,17 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
             border-radius="999px" padding-y="8px" padding-x="13px" {
             div direction="row" justify-content="space-between" align-items="center" gap="12px" {
                 div direction="row" align-items="center" gap="10px" {
-                    span width="38px" height="38px" border-radius="999px"
-                        background=(if opponent_active { "#4d3821" } else { "#d6b361" })
-                        color=(if opponent_active { "#ffffff" } else { "#2d2515" })
-                        border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
-                        align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    @if let Some(avatar_url) = game.opponent_avatar_url.as_deref() {
+                        image src=(avatar_url) alt="Opponent profile avatar" width="38" height="38" border-radius="999px";
+                    } @else {
+                        span width="38px" height="38px" border-radius="999px"
+                            background=(if opponent_active { "#4d3821" } else { "#d6b361" })
+                            color=(if opponent_active { "#ffffff" } else { "#2d2515" })
+                            border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
+                            align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    }
                     div gap="1px" {
-                        span font-size="17px" font-weight=bold { (game.opponent_username.as_str()) }
+                        span font-size="17px" font-weight=bold { (game.opponent_display_name.as_str()) }
                         span id="named-turn-status" font-size="11px" font-weight=bold { (turn) }
                     }
                 }
@@ -2965,12 +3014,16 @@ fn viewer_bench_component(game: &AuthorizedGamePage) -> Container {
             border-radius="999px" padding-y="8px" padding-x="13px" {
             div direction="row" justify-content="space-between" align-items="center" gap="12px" {
                 div direction="row" align-items="center" gap="10px" {
-                    span width="38px" height="38px" border-radius="999px"
-                        background=(if viewer_active { "#2e7049" } else { "#d6b361" })
-                        color=#ffffff border=((if viewer_active { "#73ba8d" } else { "#f2d98d" }, 2))
-                        align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    @if let Some(avatar_url) = game.viewer_avatar_url.as_deref() {
+                        image src=(avatar_url) alt="Your profile avatar" width="38" height="38" border-radius="999px";
+                    } @else {
+                        span width="38px" height="38px" border-radius="999px"
+                            background=(if viewer_active { "#2e7049" } else { "#d6b361" })
+                            color=#ffffff border=((if viewer_active { "#73ba8d" } else { "#f2d98d" }, 2))
+                            align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                    }
                     div gap="1px" {
-                        span font-size="17px" font-weight=bold { (game.viewer_username.as_str()) }
+                        span font-size="17px" font-weight=bold { (game.viewer_display_name.as_str()) }
                         (viewer_turn)
                     }
                 }
@@ -3001,9 +3054,9 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
     let outcome = match game.view.winner {
         None => "Tie game".to_string(),
         Some(winner) if winner == game.viewer_player => {
-            format!("{} won", game.viewer_username)
+            format!("{} won", game.viewer_display_name)
         }
-        Some(_) => format!("{} won", game.opponent_username),
+        Some(_) => format!("{} won", game.opponent_display_name),
     };
     let viewer_adjustment = game
         .final_score_adjustments
@@ -3021,13 +3074,13 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                 span color=#5d6258 { "Completed by: " (reason.as_str()) }
             }
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="16px" {
-                span font-weight=bold { (game.viewer_username.as_str()) ": " (viewer_score) }
-                span font-weight=bold { (game.opponent_username.as_str()) ": " (opponent_score) }
+                span font-weight=bold { (game.viewer_display_name.as_str()) ": " (viewer_score) }
+                span font-weight=bold { (game.opponent_display_name.as_str()) ": " (opponent_score) }
             }
             @if viewer_adjustment != 0 || opponent_adjustment != 0 {
                 span color=#5d6258 {
-                    "Final adjustments — " (game.viewer_username.as_str()) ": " (format!("{viewer_adjustment:+}"))
-                    ", " (game.opponent_username.as_str()) ": " (format!("{opponent_adjustment:+}"))
+                    "Final adjustments — " (game.viewer_display_name.as_str()) ": " (format!("{viewer_adjustment:+}"))
+                    ", " (game.opponent_display_name.as_str()) ": " (format!("{opponent_adjustment:+}"))
                 }
             }
         }
@@ -3126,7 +3179,7 @@ fn visual_game_page(
                                 section id="turn-actions" class="turn-composer action-hud" min-height="54px"
                                     background=#173d2c border=(("#35674e", 2)) border-radius="14px"
                                     padding-y="9px" padding-x="12px" gap="2px" align-items="center" justify-content="center" {
-                                    span font-weight=bold { (game.opponent_username.as_str()) " is playing" }
+                                    span font-weight=bold { (game.opponent_display_name.as_str()) " is playing" }
                                     span color=#cfc7b4 font-size="11px" { "You can still rearrange your rack." }
                                 }
                             }
@@ -3152,7 +3205,7 @@ fn visual_game_page(
                         border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
                         div gap="2px" {
                             span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
-                            h2 { (game.opponent_username.as_str()) " vs " (game.viewer_username.as_str()) }
+                            h2 { (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str()) }
                         }
                         @if let Some(latest) = &game.latest_action {
                             section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))

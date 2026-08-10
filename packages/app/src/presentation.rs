@@ -49,7 +49,11 @@ pub struct AuthorizedGamePage {
     pub rack_order: Vec<u16>,
     pub exchange_available: bool,
     pub viewer_username: String,
+    pub viewer_display_name: String,
+    pub viewer_avatar_url: Option<String>,
     pub opponent_username: String,
+    pub opponent_display_name: String,
+    pub opponent_avatar_url: Option<String>,
     pub latest_action: Option<String>,
     pub latest_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
     pub viewer_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
@@ -233,17 +237,33 @@ pub async fn load_authorized_game_page(
         .find(|candidate| candidate != &user_id)
         .ok_or(PresentationError::Malformed)?;
     let opponent_username = username_for_user(db, &opponent_user_id).await?;
+    let viewer_display_name = crate::load_profile(db, &user_id)
+        .await?
+        .map_or_else(|| viewer_username.clone(), |profile| profile.display_name);
+    let opponent_display_name = crate::load_profile(db, &opponent_user_id)
+        .await?
+        .map_or_else(|| opponent_username.clone(), |profile| profile.display_name);
+    let viewer_avatar_url = crate::profile_image_hash(db, &user_id)
+        .await?
+        .map(|hash| format!("/profiles/{user_id}/avatar/{hash}"));
+    let opponent_avatar_url = crate::profile_image_hash(db, &opponent_user_id)
+        .await?
+        .map(|hash| format!("/profiles/{opponent_user_id}/avatar/{hash}"));
     let name = |event_player| {
         if event_player == player {
-            viewer_username.clone()
+            viewer_display_name.clone()
         } else {
-            opponent_username.clone()
+            opponent_display_name.clone()
         }
     };
     let history = move_history_view(&events, &rules, name)?;
     let final_score_adjustments = final_score_adjustments(&events)?;
-    let (latest_action, latest_play_coordinates) =
-        latest_public_action(&events, &viewer_username, &opponent_username, player);
+    let (latest_action, latest_play_coordinates) = latest_public_action(
+        &events,
+        &viewer_display_name,
+        &opponent_display_name,
+        player,
+    );
     let viewer_play_coordinates = player_play_coordinates(&events, player);
     let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
     let rack_order = crate::load_rack_order(db, game_id, &user_id).await?;
@@ -260,7 +280,11 @@ pub async fn load_authorized_game_page(
         rack_order,
         exchange_available,
         viewer_username,
+        viewer_display_name,
+        viewer_avatar_url,
         opponent_username,
+        opponent_display_name,
+        opponent_avatar_url,
         latest_action,
         latest_play_coordinates,
         viewer_play_coordinates,

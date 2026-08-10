@@ -257,6 +257,8 @@ pub struct PendingItem {
     pub direction: String,
     pub counterparty_user_id: Option<String>,
     pub counterparty_username: Option<String>,
+    pub counterparty_display_name: Option<String>,
+    pub counterparty_avatar_url: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -343,6 +345,20 @@ pub async fn game_history(
         .collect()
 }
 
+async fn profile_presentation(
+    db: &dyn Database,
+    user_id: &str,
+    fallback: &str,
+) -> Result<(String, Option<String>), ProjectionError> {
+    let display_name = crate::load_profile(db, user_id)
+        .await?
+        .map_or_else(|| fallback.to_string(), |profile| profile.display_name);
+    let avatar_url = crate::profile_image_hash(db, user_id)
+        .await?
+        .map(|hash| format!("/profiles/{user_id}/avatar/{hash}"));
+    Ok((display_name, avatar_url))
+}
+
 /// Loads pending challenge/invitation state and active/completed games for one user.
 ///
 /// # Errors
@@ -360,16 +376,22 @@ pub async fn dashboard_projection(
         .execute(db)
         .await?
     {
+        let counterparty_user_id = string_column(&row, "challenged_user_id")?;
+        let counterparty_username = username_for_user(db, &counterparty_user_id).await?;
+        let (counterparty_display_name, counterparty_avatar_url) = profile_presentation(
+            db,
+            &counterparty_user_id,
+            counterparty_username.as_deref().unwrap_or("Opponent"),
+        )
+        .await?;
         pending.push(PendingItem {
             id: string_column(&row, "challenge_id")?,
             kind: "CHALLENGE".to_string(),
             direction: "OUTGOING".to_string(),
-            counterparty_user_id: Some(string_column(&row, "challenged_user_id")?),
-            counterparty_username: username_for_user(
-                db,
-                &string_column(&row, "challenged_user_id")?,
-            )
-            .await?,
+            counterparty_user_id: Some(counterparty_user_id),
+            counterparty_username,
+            counterparty_display_name: Some(counterparty_display_name),
+            counterparty_avatar_url,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -380,16 +402,22 @@ pub async fn dashboard_projection(
         .execute(db)
         .await?
     {
+        let counterparty_user_id = string_column(&row, "challenger_user_id")?;
+        let counterparty_username = username_for_user(db, &counterparty_user_id).await?;
+        let (counterparty_display_name, counterparty_avatar_url) = profile_presentation(
+            db,
+            &counterparty_user_id,
+            counterparty_username.as_deref().unwrap_or("Opponent"),
+        )
+        .await?;
         pending.push(PendingItem {
             id: string_column(&row, "challenge_id")?,
             kind: "CHALLENGE".to_string(),
             direction: "INCOMING".to_string(),
-            counterparty_user_id: Some(string_column(&row, "challenger_user_id")?),
-            counterparty_username: username_for_user(
-                db,
-                &string_column(&row, "challenger_user_id")?,
-            )
-            .await?,
+            counterparty_user_id: Some(counterparty_user_id),
+            counterparty_username,
+            counterparty_display_name: Some(counterparty_display_name),
+            counterparty_avatar_url,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -406,6 +434,8 @@ pub async fn dashboard_projection(
             direction: "OUTGOING".to_string(),
             counterparty_user_id: None,
             counterparty_username: None,
+            counterparty_display_name: None,
+            counterparty_avatar_url: None,
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
@@ -432,6 +462,8 @@ pub struct GameSummary {
     pub winner_user_id: Option<String>,
     pub updated_at_ms: i64,
     pub opponent_username: String,
+    pub opponent_display_name: String,
+    pub opponent_avatar_url: Option<String>,
     pub viewer_score: u32,
     pub opponent_score: u32,
     pub latest_activity: String,
@@ -473,6 +505,8 @@ pub async fn user_game_summaries(
             let opponent_username = username_for_user(db, &opponent_user_id)
                 .await?
                 .unwrap_or_else(|| "Opponent".to_string());
+            let (opponent_display_name, opponent_avatar_url) =
+                profile_presentation(db, &opponent_user_id, &opponent_username).await?;
             let scores = db
                 .select("game_scores")
                 .where_eq("game_id", game_id.clone())
@@ -509,6 +543,8 @@ pub async fn user_game_summaries(
                 winner_user_id: optional_string(row, "winner_user_id"),
                 updated_at_ms: signed_column(row, "updated_at_ms")?,
                 opponent_username,
+                opponent_display_name,
+                opponent_avatar_url,
                 viewer_score: score_for(user_id),
                 opponent_score: score_for(&opponent_user_id),
                 latest_activity,
@@ -580,6 +616,8 @@ pub enum ProjectionError {
     Revision,
     #[error("projection row is malformed")]
     Malformed,
+    #[error(transparent)]
+    Profile(#[from] crate::ProfileError),
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
 }
