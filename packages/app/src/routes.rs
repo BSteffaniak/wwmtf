@@ -510,6 +510,10 @@ struct GoogleCallbackQuery {
     state: String,
 }
 
+fn google_callback_query(request: &RouteRequest) -> Result<GoogleCallbackQuery, ()> {
+    serde_json::from_value(serde_json::to_value(&request.query).unwrap_or_default()).map_err(|_| ())
+}
+
 #[derive(Debug, Deserialize)]
 struct MigrationForm {
     username: String,
@@ -598,11 +602,9 @@ async fn google_callback_route(
     csrf_token: &str,
     secure_cookies: bool,
 ) -> View {
-    let query = match serde_json::from_value::<GoogleCallbackQuery>(
-        serde_json::to_value(&request.query).unwrap_or_default(),
-    ) {
+    let query = match google_callback_query(request) {
         Ok(query) => query,
-        Err(_) => return View::from(login_page(Some("Google sign-in response was invalid."))),
+        Err(()) => return View::from(login_page(Some("Google sign-in response was invalid."))),
     };
     let Some(binding) = request.cookies.get(crate::OIDC_BINDING_COOKIE_NAME) else {
         return View::from(login_page(Some("Google sign-in session expired.")));
@@ -3337,6 +3339,23 @@ mod tests {
         );
         migrate_app(&*database).await.expect("migrations run");
         database
+    }
+
+    #[test]
+    fn google_callback_query_requires_code_and_state_without_reflecting_values() {
+        let malformed = RouteRequest::from_path("/auth/google/callback", RequestInfo::default());
+        assert!(google_callback_query(&malformed).is_err());
+
+        let mut valid = malformed;
+        valid
+            .query
+            .insert("code".to_string(), "private-code".to_string());
+        valid
+            .query
+            .insert("state".to_string(), "private-state".to_string());
+        let parsed = google_callback_query(&valid).expect("complete callback query parses");
+        assert_eq!(parsed.code, "private-code");
+        assert_eq!(parsed.state, "private-state");
     }
 
     #[test]
