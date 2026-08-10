@@ -19,6 +19,7 @@ required-features = ["actix"]
 argon2 = { workspace = true }
 async-lock = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 env_logger = { workspace = true }
 flume = { workspace = true }
 futures-lite = { workspace = true }
@@ -46,7 +47,9 @@ hyperchad = { workspace = true, features = [
     "transformer",
     "transformer-models",
 ] }
+image = { workspace = true }
 log = { workspace = true }
+openidconnect = { workspace = true }
 rand_core = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

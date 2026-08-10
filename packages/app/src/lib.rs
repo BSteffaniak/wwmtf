@@ -16,6 +16,7 @@ mod journal;
 mod migrations;
 #[cfg(feature = "metrics")]
 mod observability;
+mod oidc;
 mod oidc_attempts;
 mod presentation;
 mod profiles;
@@ -65,19 +66,22 @@ pub use journal::{
 pub use migrations::{app_migrations, migrate_app};
 #[cfg(feature = "metrics")]
 pub use observability::{AppMetricsSnapshot, app_metrics_snapshot};
+pub use oidc::{GOOGLE_ISSUER, GoogleOidcClient, GoogleOidcError};
 pub use oidc_attempts::{
     ClaimedOidcAttempt, NewOidcAttempt, OidcAttemptError, OidcAttemptPurpose, claim_oidc_attempt,
     cleanup_oidc_attempts, consume_oidc_attempt, create_oidc_attempt,
 };
 pub use presentation::{
     AuthenticatedDashboard, AuthorizedGamePage, CSRF_COOKIE_NAME, CSRF_HEADER_NAME,
-    PresentationError, SESSION_COOKIE_NAME, authenticated_user, load_authenticated_dashboard,
-    load_authorized_game_page,
+    OIDC_BINDING_COOKIE_NAME, PresentationError, SESSION_COOKIE_NAME, authenticated_user,
+    load_authenticated_dashboard, load_authorized_game_page,
 };
 pub use profiles::{
-    AvatarSource, ProfileError, ProfileFieldSource, UserProfile, create_google_profile,
-    generate_unique_handle, load_profile, normalize_display_name, remove_custom_avatar,
-    set_custom_display_name, synchronize_google_profile,
+    AvatarSource, ProfileError, ProfileFieldSource, ProfileImage, UserProfile,
+    can_view_profile_avatar, create_google_profile, download_google_avatar, generate_unique_handle,
+    load_profile, load_profile_image, normalize_avatar, normalize_display_name, profile_image_hash,
+    remove_custom_avatar, set_custom_avatar, set_custom_display_name, set_google_avatar,
+    synchronize_google_profile, use_google_avatar, use_google_display_name,
 };
 pub use projections::{
     DashboardProjection, GameHistoryEntry, GameSummary, PendingItem, ProjectionError,
@@ -92,7 +96,7 @@ pub use rack_preferences::{
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,
     game_page, game_route, game_view_response, logged_out_response, login_page, logout_page,
-    register_page, signed_out_page, turn_composer,
+    migration_page, register_page, signed_out_page, turn_composer,
 };
 pub use sessions::{
     SessionError, SessionToken, create_session, resolve_session, revoke_session,

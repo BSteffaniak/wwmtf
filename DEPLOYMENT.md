@@ -11,7 +11,9 @@ Words with More Than Friends is designed for an internet deployment behind a TLS
 | `WWMTF_PORT` | No; defaults to `8343` | Listener port. |
 | `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
 | `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
-| `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration and generated invitation links. |
+| `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration, generated invitation links, and the Google callback URI (`/auth/google/callback`). Register that exact callback URI in Google Cloud. |
+| `WWMTF_GOOGLE_CLIENT_ID` | Yes | Google OpenID Connect web client ID. The application fails startup when it is absent. |
+| `WWMTF_GOOGLE_CLIENT_SECRET` | Yes | Google OpenID Connect web client secret. Supply through the deployment secret store; never log or commit it. The application fails startup when it is absent. |
 | `WWMTF_DEFINITIONS_ENABLED` | No; defaults to enabled | Controls server-side played-word definition lookup. Set to `false`, `no`, or `0` to disable it; invalid values fail startup. |
 | `WWMTF_DEFINITION_PROVIDER_BASE_URL` | No; defaults to `https://api.dictionaryapi.dev` | HTTPS Free Dictionary API-compatible endpoint used only when definitions are enabled. |
 | `WWMTF_DEFINITION_TIMEOUT_MS` | No; defaults to `3000` | Connect and overall timeout for definition-provider requests. |
@@ -36,6 +38,8 @@ The binary opens the configured database and runs all application code migration
 Played-word definitions are enabled by default and use Free Dictionary API data derived from Wiktionary. Set `WWMTF_DEFINITIONS_ENABLED=false` to disable lookups explicitly. Successful responses are cached for 30 days and provider-confirmed misses for 24 hours. Disabled lookup, timeouts, connection failures, rate limits, provider failures or rejected configuration, malformed or oversized responses, missing attribution, and cache failures render distinct user-visible states and emit secret-safe reason logs; transient failures are not cached. Responses must include HTTPS source and CC BY-SA license metadata, which the UI displays. The public service advertises free use but does not publish a production SLA or guaranteed rate limit, so production operators must monitor availability, keep the short timeout enabled, and disable `WWMTF_DEFINITIONS_ENABLED` if provider terms or reliability become unsuitable. Definition availability never affects gameplay or game loading.
 
 The generic `switchy_http` client was evaluated but does not currently expose request timeouts or bounded response streaming. The application therefore uses a narrowly configured root `reqwest` dependency for this server-side integration; it remains isolated behind `DefinitionProvider` for deterministic tests and replacement.
+
+Google sign-in uses authorization code flow with PKCE and discovers Google's OpenID Connect metadata at startup. Configure a Google **Web application** OAuth client with the exact redirect URI `${WWMTF_PUBLIC_BASE_URL}/auth/google/callback`. The public base URL must therefore be the externally visible canonical origin, without a path. Rotate the client secret through the deployment secret store and restart the service; existing WWMTF sessions remain independently revocable and do not contain Google tokens. Google access and refresh tokens are not persisted.
 
 The production Fly deployment, volume/bootstrap commands, OpenTofu resources, backup commands, and launch checklist are documented in `PRODUCTION.md`.
 

@@ -171,11 +171,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
 
+        let google_client_id = std::env::var("WWMTF_GOOGLE_CLIENT_ID")
+            .map_err(|_| "WWMTF_GOOGLE_CLIENT_ID is required")?;
+        let google_client_secret = std::env::var("WWMTF_GOOGLE_CLIENT_SECRET")
+            .map_err(|_| "WWMTF_GOOGLE_CLIENT_SECRET is required")?;
+        let google_callback = format!(
+            "{}/auth/google/callback",
+            config.public_base_url.trim_end_matches('/')
+        );
+        let google_oidc = Arc::new(futures_lite::future::block_on(
+            wwmtf_app::GoogleOidcClient::discover(
+                &google_client_id,
+                &google_client_secret,
+                &google_callback,
+            ),
+        )?);
+
         let mut app_builder = AppBuilder::new()
             .with_router(create_product_router(
                 database.clone(),
                 dispatcher.clone(),
                 definition_provider,
+                Some(google_oidc),
                 csrf_token.clone(),
                 config.public_base_url,
                 secure_cookies,

@@ -21,11 +21,13 @@ use wwmtf_game_domain::{
 };
 
 use crate::{
-    AccountWorkflowError, AuthenticatedDashboard, AuthorizedGamePage, PresentationError,
-    ProductWorkflowError, UserScoreTotals, accept_pending_challenge, cancel_pending_challenge,
-    challenge_username, create_shareable_invitation, decline_pending_challenge, error_component,
-    load_authenticated_dashboard, load_authorized_game_page, login_and_create_session,
-    logout_session, move_history_component, redeem_shareable_invitation,
+    AccountWorkflowError, AuthenticatedDashboard, AuthorizedGamePage, GoogleOidcClient,
+    OidcAttemptPurpose, PresentationError, ProductWorkflowError, UserScoreTotals,
+    accept_pending_challenge, cancel_pending_challenge, challenge_username, claim_oidc_attempt,
+    cleanup_oidc_attempts, complete_legacy_google_migration, consume_oidc_attempt,
+    create_oidc_attempt, create_shareable_invitation, decline_pending_challenge, error_component,
+    google_login_and_create_session, load_authenticated_dashboard, load_authorized_game_page,
+    login_and_create_session, logout_session, move_history_component, redeem_shareable_invitation,
     register_and_create_session, revoke_shareable_invitation, viewer_turn_component,
 };
 
@@ -40,6 +42,8 @@ struct DashboardActionForm {
     invitation_id: String,
     #[serde(default)]
     invitation_token: String,
+    #[serde(default)]
+    display_name: String,
 }
 
 #[derive(Debug)]
@@ -67,6 +71,20 @@ const fn product_error_message(error: &ProductWorkflowError) -> &'static str {
     }
 }
 
+async fn refreshed_dashboard(
+    database: &dyn Database,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+) -> Container {
+    load_authenticated_dashboard(database, &request.cookies, now)
+        .await
+        .map_or_else(
+            |_| error_component("The profile changed, but the dashboard could not be refreshed."),
+            |dashboard| dashboard_page(&dashboard),
+        )
+}
+
+#[allow(clippy::too_many_lines)]
 async fn dashboard_action_route(
     database: &dyn Database,
     dispatcher: &crate::GameSharedStateDispatcher,
@@ -115,6 +133,32 @@ async fn dashboard_action_route(
             revoke_shareable_invitation(database, &form.invitation_id, &user_id, now)
                 .await
                 .map(|()| DashboardActionSuccess::Updated)
+        }
+        "SET_DISPLAY_NAME" => {
+            return match crate::set_custom_display_name(database, &user_id, &form.display_name, now)
+                .await
+            {
+                Ok(()) => refreshed_dashboard(database, request, now).await,
+                Err(_) => error_component("The display name was invalid or could not be saved."),
+            };
+        }
+        "USE_GOOGLE_NAME" => {
+            return match crate::use_google_display_name(database, &user_id, now).await {
+                Ok(()) => refreshed_dashboard(database, request, now).await,
+                Err(_) => error_component("Google name synchronization could not be restored."),
+            };
+        }
+        "REMOVE_AVATAR" => {
+            return match crate::remove_custom_avatar(database, &user_id, now).await {
+                Ok(()) => refreshed_dashboard(database, request, now).await,
+                Err(_) => error_component("The profile picture could not be removed."),
+            };
+        }
+        "USE_GOOGLE_AVATAR" => {
+            return match crate::use_google_avatar(database, &user_id, now).await {
+                Ok(()) => refreshed_dashboard(database, request, now).await,
+                Err(_) => error_component("Google picture synchronization could not be restored."),
+            };
         }
         _ => return error_component("The dashboard action is unknown."),
     };
@@ -430,6 +474,18 @@ struct AccountForm {
     invitation_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GoogleCallbackQuery {
+    code: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MigrationForm {
+    username: String,
+    password: String,
+}
+
 const fn account_error_message(error: &AccountWorkflowError) -> &'static str {
     match error {
         AccountWorkflowError::Account(crate::AccountError::InvalidCredentials) => {
@@ -446,6 +502,196 @@ const fn account_error_message(error: &AccountWorkflowError) -> &'static str {
         }
         _ => "Account request could not be completed. Please try again.",
     }
+}
+
+const fn profile_error_reason(error: &crate::ProfileError) -> &'static str {
+    match error {
+        crate::ProfileError::InvalidImageUrl => "invalid_url",
+        crate::ProfileError::InvalidImage => "invalid_image",
+        crate::ProfileError::Http(_) => "provider_unavailable",
+        crate::ProfileError::Database(_) => "storage_unavailable",
+        _ => "profile_invalid",
+    }
+}
+
+#[allow(clippy::manual_let_else)]
+async fn google_start_route(
+    database: &dyn Database,
+    oidc: &GoogleOidcClient,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+    secure_cookies: bool,
+) -> View {
+    let invitation_id = request.query.get("invite").map(String::as_str);
+    let _ = cleanup_oidc_attempts(database, now).await;
+    let attempt = match create_oidc_attempt(
+        database,
+        OidcAttemptPurpose::Login,
+        None,
+        invitation_id,
+        now,
+        Duration::minutes(10),
+    )
+    .await
+    {
+        Ok(attempt) => attempt,
+        Err(_) => {
+            return View::from(login_page(Some(
+                "Google sign-in could not be started. Please try again.",
+            )));
+        }
+    };
+    let mut binding = ResponseCookie::secure(
+        crate::OIDC_BINDING_COOKIE_NAME,
+        attempt.browser_binding.clone(),
+    );
+    binding.same_site = hyperchad::renderer::SameSite::Lax;
+    binding.secure = secure_cookies;
+    View::builder()
+        .with_primary(login_page(None))
+        .with_response(ResponseMetadata {
+            cookies: vec![binding],
+            navigation: Some(
+                hyperchad::renderer::ResponseNavigation::external(oidc.authorization_url(&attempt))
+                    .expect("OIDC authorization URL is a validated external URL"),
+            ),
+        })
+        .build()
+}
+
+#[allow(clippy::manual_let_else)]
+async fn google_callback_route(
+    database: &dyn Database,
+    oidc: &GoogleOidcClient,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+    csrf_token: &str,
+    secure_cookies: bool,
+) -> View {
+    let query = match serde_json::from_value::<GoogleCallbackQuery>(
+        serde_json::to_value(&request.query).unwrap_or_default(),
+    ) {
+        Ok(query) => query,
+        Err(_) => return View::from(login_page(Some("Google sign-in response was invalid."))),
+    };
+    let Some(binding) = request.cookies.get(crate::OIDC_BINDING_COOKIE_NAME) else {
+        return View::from(login_page(Some("Google sign-in session expired.")));
+    };
+    let attempt = match claim_oidc_attempt(database, &query.state, binding, now).await {
+        Ok(attempt) => attempt,
+        Err(_) => return View::from(login_page(Some("Google sign-in session expired."))),
+    };
+    let identity = match oidc.exchange_callback(&query.code, &attempt).await {
+        Ok(identity) => identity,
+        Err(_) => return View::from(login_page(Some("Google sign-in could not be verified."))),
+    };
+    let result = match attempt.purpose {
+        OidcAttemptPurpose::Login => {
+            google_login_and_create_session(database, &identity, now, Duration::days(30))
+                .await
+                .map(|(_, session)| session)
+        }
+        OidcAttemptPurpose::MigratePassword => {
+            let Some(user_id) = attempt.existing_user_id.as_deref() else {
+                return View::from(login_page(Some("Account migration session is invalid.")));
+            };
+            complete_legacy_google_migration(database, user_id, &identity, now, Duration::days(30))
+                .await
+        }
+    };
+    let session = match result {
+        Ok(session) => session,
+        Err(_) => return View::from(login_page(Some("Google account could not be connected."))),
+    };
+    if let Some(picture_url) = identity.picture_url.as_deref()
+        && let Ok(bytes) =
+            crate::download_google_avatar(picture_url, std::time::Duration::from_secs(5)).await
+    {
+        let user_id = match crate::resolve_session(database, session.expose(), now).await {
+            Ok(user_id) => user_id,
+            Err(_) => {
+                return View::from(login_page(Some("Google sign-in could not be completed.")));
+            }
+        };
+        if let Err(error) = crate::set_google_avatar(database, &user_id, &bytes, now).await {
+            log::warn!(target: "wwmtf::profiles", "google_avatar_sync_failed reason={}", profile_error_reason(&error));
+        }
+    }
+    if consume_oidc_attempt(database, &attempt.attempt_id, now)
+        .await
+        .is_err()
+    {
+        return View::from(login_page(Some("Google sign-in could not be completed.")));
+    }
+    let mut response = authenticated_session_response(session.expose(), csrf_token, secure_cookies);
+    let mut binding = ResponseCookie::expired(crate::OIDC_BINDING_COOKIE_NAME);
+    binding.same_site = hyperchad::renderer::SameSite::Lax;
+    binding.secure = secure_cookies;
+    response.cookies.push(binding);
+    response.navigation = Some(
+        hyperchad::renderer::ResponseNavigation::internal("/")
+            .expect("dashboard is a valid internal path"),
+    );
+    View::builder()
+        .with_primary(dashboard_after_authentication(database, session.expose(), "", now).await)
+        .with_response(response)
+        .build()
+}
+
+#[allow(clippy::manual_let_else)]
+async fn migration_start_route(
+    database: &dyn Database,
+    oidc: &GoogleOidcClient,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+    secure_cookies: bool,
+) -> View {
+    if request.method.as_ref() != "POST" {
+        return View::from(migration_page(None));
+    }
+    let form: MigrationForm = match request.parse_form() {
+        Ok(form) => form,
+        Err(_) => return View::from(migration_page(Some("Enter your existing credentials."))),
+    };
+    let user_id = match crate::prove_legacy_password_account(
+        database,
+        &form.username,
+        &form.password,
+    )
+    .await
+    {
+        Ok(user_id) => user_id,
+        Err(_) => return View::from(migration_page(Some("Existing credentials are incorrect."))),
+    };
+    let attempt = match create_oidc_attempt(
+        database,
+        OidcAttemptPurpose::MigratePassword,
+        Some(&user_id),
+        None,
+        now,
+        Duration::minutes(10),
+    )
+    .await
+    {
+        Ok(attempt) => attempt,
+        Err(_) => return View::from(migration_page(Some("Migration could not be started."))),
+    };
+    let mut binding = ResponseCookie::secure(
+        crate::OIDC_BINDING_COOKIE_NAME,
+        attempt.browser_binding.clone(),
+    );
+    binding.same_site = hyperchad::renderer::SameSite::Lax;
+    binding.secure = secure_cookies;
+    View::builder()
+        .with_primary(migration_page(None))
+        .with_response(ResponseMetadata {
+            cookies: vec![binding],
+            navigation: Some(
+                hyperchad::renderer::ResponseNavigation::external(oidc.authorization_url(&attempt))
+                    .expect("OIDC authorization URL is a validated external URL"),
+            ),
+        })
+        .build()
 }
 
 async fn login_route(
@@ -1234,6 +1480,7 @@ pub fn create_product_router(
     database: Arc<dyn Database>,
     dispatcher: Arc<crate::GameSharedStateDispatcher>,
     definition_provider: Option<Arc<dyn crate::DefinitionProvider>>,
+    google_oidc: Option<Arc<GoogleOidcClient>>,
     csrf_token: String,
     public_base_url: String,
     secure_cookies: bool,
@@ -1322,6 +1569,59 @@ pub fn create_product_router(
         }
     });
     let csrf_token = Arc::new(csrf_token);
+    if let Some(oidc) = google_oidc {
+        let google_start_database = database.clone();
+        let google_start_oidc = oidc.clone();
+        router.add_route_result("/auth/google/start", move |request: RouteRequest| {
+            let database = google_start_database.clone();
+            let oidc = google_start_oidc.clone();
+            async move {
+                Ok(google_start_route(
+                    &*database,
+                    &oidc,
+                    &request,
+                    OffsetDateTime::now_utc(),
+                    secure_cookies,
+                )
+                .await) as Result<View, Box<dyn std::error::Error>>
+            }
+        });
+        let google_callback_database = database.clone();
+        let google_callback_oidc = oidc.clone();
+        let google_callback_csrf = csrf_token.clone();
+        router.add_route_result("/auth/google/callback", move |request: RouteRequest| {
+            let database = google_callback_database.clone();
+            let oidc = google_callback_oidc.clone();
+            let csrf = google_callback_csrf.clone();
+            async move {
+                Ok(google_callback_route(
+                    &*database,
+                    &oidc,
+                    &request,
+                    OffsetDateTime::now_utc(),
+                    &csrf,
+                    secure_cookies,
+                )
+                .await) as Result<View, Box<dyn std::error::Error>>
+            }
+        });
+        let migration_database = database.clone();
+        let migration_oidc = oidc;
+        router.add_route_result("/account/migrate", move |request: RouteRequest| {
+            let database = migration_database.clone();
+            let oidc = migration_oidc.clone();
+            async move {
+                Ok(migration_start_route(
+                    &*database,
+                    &oidc,
+                    &request,
+                    OffsetDateTime::now_utc(),
+                    secure_cookies,
+                )
+                .await) as Result<View, Box<dyn std::error::Error>>
+            }
+        });
+    }
     let login_database = database.clone();
     let login_csrf = csrf_token.clone();
     router.add_route_result("/login", move |request: RouteRequest| {
@@ -1367,6 +1667,55 @@ pub fn create_product_router(
             .await) as Result<View, Box<dyn std::error::Error>>
         }
     });
+    let avatar_database = database.clone();
+    router.add_route_result(
+        RoutePath::LiteralPrefix("/profiles/".to_string()),
+        move |request: RouteRequest| {
+            let database = avatar_database.clone();
+            async move {
+                let segments = request
+                    .path
+                    .strip_prefix("/profiles/")
+                    .unwrap_or_default()
+                    .split('/')
+                    .collect::<Vec<_>>();
+                let image = match segments.as_slice() {
+                    [profile_user_id, "avatar", content_hash] => {
+                        let viewer = crate::authenticated_user(
+                            &*database,
+                            &request.cookies,
+                            OffsetDateTime::now_utc(),
+                        )
+                        .await
+                        .ok();
+                        if let Some(viewer) = viewer
+                            && crate::can_view_profile_avatar(&*database, &viewer, profile_user_id)
+                                .await?
+                        {
+                            crate::load_profile_image(&*database, profile_user_id, content_hash)
+                                .await?
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let (data, content_type) = image.map_or_else(
+                    || {
+                        (
+                            b"not found\n".to_vec(),
+                            "text/plain; charset=utf-8".to_string(),
+                        )
+                    },
+                    |image| (image.bytes, image.content_type),
+                );
+                Ok(Content::Raw {
+                    data: data.into(),
+                    content_type,
+                }) as Result<Content, Box<dyn std::error::Error>>
+            }
+        },
+    );
     let game_dispatcher = dispatcher;
     let game_definition_provider = definition_provider;
     router.add_route_result(
@@ -1628,10 +1977,10 @@ pub fn login_page(error: Option<&str>) -> Container {
 
 fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Container {
     let message = error.unwrap_or_default();
-    let register_href = if invitation_token.is_empty() {
-        "/register".to_string()
+    let google_href = if invitation_token.is_empty() {
+        "/auth/google/start".to_string()
     } else {
-        format!("/register?invite={invitation_token}")
+        format!("/auth/google/start?invite={invitation_token}")
     };
     container! {
         div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
@@ -1643,22 +1992,41 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                     h1 { "Welcome back" }
                     span color=#5d6258 { "Sign in to continue your private games." }
                 }
-                form hx-post="/login" hx-target="#app-page" gap="12px" {
-                    input type=hidden name="invitation_token" value=(invitation_token);
-                    span font-weight=bold { "Username" }
-                    input type=text name="username" placeholder="Username" padding-y=13 padding-x=14
-                        border=(("#cfc8b8", 1)) border-radius="10px";
-                    span font-weight=bold { "Password" }
-                    input type=password name="password" placeholder="Password" padding-y=13 padding-x=14
-                        border=(("#cfc8b8", 1)) border-radius="10px";
-                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
-                        border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Sign in" }
+                anchor href=(google_href) color=#ffffff background=#526243 border=(("#526243", 1))
+                    border-radius="10px" padding-y=13 padding-x=18 text-align="center" { "Continue with Google" }
+                span color=#5d6258 { "Already have a username/password account? "
+                    anchor href="/account/migrate" color=#526243 { "Migrate it to Google" }
                 }
                 @if !message.is_empty() {
                     section id="account-result" background=#fff3e8 border=(("#e2b98f", 1))
                         border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
                 }
-                span { "New here? " anchor href=(register_href) color=#526243 { "Create an account" } }
+            }
+        }
+    }
+    .into()
+}
+
+/// Renders the explicit legacy-account migration form.
+#[must_use]
+pub fn migration_page(error: Option<&str>) -> Container {
+    let message = error.unwrap_or_default();
+    container! {
+        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
+            main width="100%" max-width="480px" background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
+                anchor href="/login" color=#526243 { "← Back to sign in" }
+                h1 { "Migrate your existing account" }
+                span color=#5d6258 { "Confirm your existing credentials, then connect Google without losing your games." }
+                form hx-post="/account/migrate" hx-target="#app-page" gap="12px" {
+                    span font-weight=bold { "Username" }
+                    input type=text name="username" placeholder="Username" padding-y=13 padding-x=14 border=(("#cfc8b8", 1)) border-radius="10px";
+                    span font-weight=bold { "Password" }
+                    input type=password name="password" placeholder="Password" padding-y=13 padding-x=14 border=(("#cfc8b8", 1)) border-radius="10px";
+                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Continue with Google" }
+                }
+                @if !message.is_empty() {
+                    section background=#fff3e8 border=(("#e2b98f", 1)) border-radius="10px" padding="12px" { (message) }
+                }
             }
         }
     }
@@ -1831,12 +2199,15 @@ fn start_game_component() -> Container {
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::large_stack_frames)]
 fn dashboard_page_content(
     dashboard: &AuthenticatedDashboard,
     created_invitation: Option<(&str, &str, &str)>,
 ) -> Container {
     let user_id = dashboard.user_id.as_str();
     let username = dashboard.username.as_str();
+    let display_name = dashboard.display_name.as_str();
+    let avatar_url = dashboard.avatar_url.as_deref();
     let totals = score_totals_label(dashboard.score_totals.as_ref());
     let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
     let created_invitation_id = created_invitation.map(|(id, _, _)| id).unwrap_or_default();
@@ -1855,10 +2226,18 @@ fn dashboard_page_content(
             div id="dashboard-shell" width="100%" max-width="1080px" gap="28px" {
                 header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                     background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
-                    div gap="4px" {
-                        span color=#2f8a57 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
-                        h1 { "Your games" }
-                        span color=#5d6258 { "Signed in as " (username) }
+                    div direction="row" align-items="center" gap="12px" {
+                        @if let Some(avatar_url) = avatar_url {
+                            image src=(avatar_url) alt="Profile avatar" width="48" height="48" border-radius="999px";
+                        }
+                        div gap="4px" {
+                            span color=#2f8a57 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
+                            h1 { "Your games" }
+                            span color=#5d6258 { "Signed in as " (display_name) }
+                            @if display_name != username {
+                                span color=#747a71 { "@" (username) }
+                            }
+                        }
                     }
                     anchor href="/logout" color=#526243 { "Sign out" }
                 }
@@ -1982,6 +2361,31 @@ fn dashboard_page_content(
                         border-radius="16px" padding="20px" {
                         summary cursor="pointer" font-weight=bold { "New game" }
                         div padding-top="14px" { (start_game_component()) }
+                    }
+                    details id="profile-settings" width="100%" background=#ffffff border=(("#ded8c9", 1))
+                        border-radius="16px" padding="20px" {
+                        summary cursor="pointer" font-weight=bold { "Profile" }
+                        div padding-top="14px" gap="12px" {
+                            form method="post" action="/dashboard/action" gap="8px" {
+                                input type="hidden" name="action" value="SET_DISPLAY_NAME";
+                                span { "Display name" }
+                                input type="text" id="profile-display-name" name="display_name" value=(display_name)
+                                    required=true padding="10px" border=(("#b9b3a5", 1)) border-radius="8px";
+                                button type="submit" background=#526243 color=#ffffff border-radius="8px" padding="10px" { "Save display name" }
+                            }
+                            form method="post" action="/dashboard/action" {
+                                input type="hidden" name="action" value="USE_GOOGLE_NAME";
+                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
+                            }
+                            form method="post" action="/dashboard/action" {
+                                input type="hidden" name="action" value="REMOVE_AVATAR";
+                                button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
+                            }
+                            form method="post" action="/dashboard/action" {
+                                input type="hidden" name="action" value="USE_GOOGLE_AVATAR";
+                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google photo again" }
+                            }
+                        }
                     }
                     details id="score-totals" width="100%" background=#ffffff border=(("#ded8c9", 1))
                         border-radius="16px" padding="20px" {
@@ -2816,11 +3220,15 @@ pub fn authenticated_session_response(
     csrf_cookie.secure = secure_cookies;
     ResponseMetadata {
         cookies: vec![session_cookie, csrf_cookie],
-        redirect: None,
+        navigation: None,
     }
 }
 
 /// Builds cookie-expiration effects for logout using the runtime transport policy.
+///
+/// # Panics
+///
+/// Panics only if the static `/login` application path ceases to be a valid internal navigation.
 #[must_use]
 pub fn logged_out_response(secure_cookies: bool) -> ResponseMetadata {
     let mut session_cookie = ResponseCookie::expired(crate::SESSION_COOKIE_NAME);
@@ -2829,7 +3237,10 @@ pub fn logged_out_response(secure_cookies: bool) -> ResponseMetadata {
     csrf_cookie.secure = secure_cookies;
     ResponseMetadata {
         cookies: vec![session_cookie, csrf_cookie],
-        redirect: Some("/login".to_string()),
+        navigation: Some(
+            hyperchad::renderer::ResponseNavigation::internal("/login")
+                .expect("login is a valid internal navigation path"),
+        ),
     }
 }
 
@@ -2930,7 +3341,7 @@ mod tests {
         let login = login_page_with_invitation(None, token)
             .display_to_string(false, false)
             .expect("login renders");
-        assert!(login.contains("name=\"invitation_token\""));
+        assert!(login.contains(&format!("/auth/google/start?invite={token}")));
         assert!(login.contains(token));
     }
 
@@ -4142,6 +4553,7 @@ mod tests {
                 database,
                 dispatcher,
                 None,
+                None,
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,
@@ -4180,6 +4592,7 @@ mod tests {
             let router = create_product_router(
                 database,
                 dispatcher,
+                None,
                 None,
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
@@ -4227,7 +4640,7 @@ mod tests {
                 true,
             )
             .await;
-            assert_eq!(response.response.redirect, None);
+            assert_eq!(response.response.navigation, None);
             assert_eq!(response.response.cookies.len(), 2);
             let session = response.response.cookies[0].value.clone();
             assert!(response.response.cookies[0].http_only);
@@ -4240,7 +4653,14 @@ mod tests {
                 .insert(crate::SESSION_COOKIE_NAME.to_string(), session);
             let response =
                 logout_route(&*database, &logout, OffsetDateTime::UNIX_EPOCH, true).await;
-            assert_eq!(response.response.redirect.as_deref(), Some("/login"));
+            assert_eq!(
+                response
+                    .response
+                    .navigation
+                    .as_ref()
+                    .map(hyperchad::renderer::ResponseNavigation::location),
+                Some("/login")
+            );
             assert!(
                 response
                     .response
@@ -4254,7 +4674,7 @@ mod tests {
     #[test]
     fn account_session_effects_are_secure_and_expirable() {
         let signed_in = authenticated_session_response("opaque-test-session", "csrf-test", true);
-        assert_eq!(signed_in.redirect, None);
+        assert_eq!(signed_in.navigation, None);
         assert_eq!(signed_in.cookies.len(), 2);
         assert!(signed_in.cookies[0].secure);
         assert!(signed_in.cookies[0].http_only);
@@ -4267,7 +4687,13 @@ mod tests {
         assert!(!development.cookies[1].http_only);
 
         let signed_out = logged_out_response(true);
-        assert_eq!(signed_out.redirect.as_deref(), Some("/login"));
+        assert_eq!(
+            signed_out
+                .navigation
+                .as_ref()
+                .map(hyperchad::renderer::ResponseNavigation::location),
+            Some("/login")
+        );
         assert!(
             signed_out
                 .cookies
@@ -4287,8 +4713,16 @@ mod tests {
 
     #[test]
     fn account_pages_expose_renderer_neutral_forms() {
+        let login = login_page(None)
+            .display_to_string(false, false)
+            .expect("login page renders");
+        assert!(login.contains("href=\"/auth/google/start\""));
+        assert!(login.contains("Continue with Google"));
+        assert!(login.contains("href=\"/account/migrate\""));
+        assert!(!login.contains("script"));
+
         for (page, route) in [
-            (login_page(None), "/login"),
+            (migration_page(None), "/account/migrate"),
             (register_page(None), "/register"),
             (logout_page(), "/logout"),
         ] {

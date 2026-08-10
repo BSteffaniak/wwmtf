@@ -1,4 +1,4 @@
-//! Durable, browser-bound OpenID Connect login attempts.
+//! Durable, browser-bound `OpenID` Connect login attempts.
 
 use std::fmt::Write as _;
 

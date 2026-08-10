@@ -22,12 +22,16 @@ pub const SESSION_COOKIE_NAME: &str = "wwmtf-session";
 pub const CSRF_COOKIE_NAME: &str = "wwmtf-csrf";
 /// Header name used by `HyperChad`'s renderer-owned CSRF client.
 pub const CSRF_HEADER_NAME: &str = "x-hyperchad-csrf-token";
+/// Browser-binding cookie used only for the short OIDC authorization callback.
+pub const OIDC_BINDING_COOKIE_NAME: &str = "wwmtf-oidc-binding";
 
 /// Signed-in dashboard presentation data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedDashboard {
     pub user_id: String,
     pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
     pub projection: DashboardProjection,
     pub score_totals: Option<UserScoreTotals>,
 }
@@ -167,11 +171,20 @@ pub async fn load_authenticated_dashboard(
         .and_then(|row| row.get("username_display"))
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .ok_or(PresentationError::Malformed)?;
+    let profile = crate::load_profile(db, &user_id).await?;
+    let display_name = profile
+        .as_ref()
+        .map_or_else(|| username.clone(), |profile| profile.display_name.clone());
+    let avatar_url = crate::profile_image_hash(db, &user_id)
+        .await?
+        .map(|hash| format!("/profiles/{user_id}/avatar/{hash}"));
     Ok(AuthenticatedDashboard {
         projection: dashboard_projection(db, &user_id).await?,
         score_totals: user_score_totals(db, &user_id).await?,
         user_id,
         username,
+        display_name,
+        avatar_url,
     })
 }
 
@@ -403,6 +416,8 @@ pub enum PresentationError {
     Journal(#[from] crate::JournalError),
     #[error(transparent)]
     Projection(#[from] crate::ProjectionError),
+    #[error(transparent)]
+    Profile(#[from] crate::ProfileError),
     #[error(transparent)]
     MoveHistory(#[from] crate::MoveHistoryError),
     #[error(transparent)]

@@ -18,6 +18,7 @@ argon2 = { version = "0.5.3", default-features = false, features = [
 ] }
 async-lock = { version = "3.4.2", default-features = false }
 async-trait = { version = "0.1.89", default-features = false }
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 env_logger = { version = "0.11.11", default-features = false, features = [
     "auto-color",
     "humantime",
@@ -27,8 +28,17 @@ futures-lite = { version = "2.6.1", default-features = false, features = [
     "std",
 ] }
 hyperchad = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
+image = { version = "0.25.10", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+] }
 log = { version = "0.4.33", default-features = false, features = [
     "release_max_level_trace",
+] }
+openidconnect = { version = "4.0.1", default-features = false, features = [
+    "reqwest",
+    "rustls-tls",
 ] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 rand_core = { version = "0.6.4", default-features = false, features = [
