@@ -28,11 +28,14 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
+OIDC_HOST = "localhost"
 PORT = 18343
 OIDC_PORT = 18344
 AVATAR_PORT = 18345
 BASE_URL = f"http://{HOST}:{PORT}"
-OIDC_ISSUER = f"http://{HOST}:{OIDC_PORT}"
+# Keep the fake provider on a different browser site so callback cookie behavior
+# matches the production cross-site OIDC redirect chain.
+OIDC_ISSUER = f"http://{OIDC_HOST}:{OIDC_PORT}"
 AVATAR_URL = f"{OIDC_ISSUER}/avatar.png"
 TIMEOUT = 20.0
 
@@ -711,7 +714,8 @@ def google_login(browser: Browser) -> None:
     if not google_href:
         raise AcceptanceError("Google login link is missing")
     browser.navigate(google_href)
-    browser.wait("document.body.innerText.includes('Signed in as ')")
+    browser.wait("location.origin === " + json.dumps(BASE_URL))
+    browser.wait("location.pathname === '/' && document.body.innerText.includes('Signed in as ')")
 
 
 def failed_google_login(
@@ -785,7 +789,8 @@ def migrate_legacy_account(browser: Browser, provider: FakeOidcProvider) -> None
             "password": "correct horse battery staple",
         },
     )
-    browser.wait("document.body.innerText.includes('Signed in as ')")
+    browser.wait("location.origin === " + json.dumps(BASE_URL))
+    browser.wait("location.pathname === '/' && document.body.innerText.includes('Signed in as ')")
     text = browser.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
     if "@legacy-acceptance" not in text or "Acceptance Player 4" not in text:
         raise AcceptanceError("legacy migration did not preserve the account handle and initialize its profile")

@@ -3107,6 +3107,7 @@ pub fn authenticated_session_response(
 ) -> ResponseMetadata {
     let mut session_cookie = ResponseCookie::secure(crate::SESSION_COOKIE_NAME, session);
     session_cookie.secure = secure_cookies;
+    session_cookie.same_site = hyperchad::renderer::SameSite::Lax;
     let mut csrf_cookie = ResponseCookie::secure(crate::CSRF_COOKIE_NAME, csrf_token);
     csrf_cookie.http_only = false;
     csrf_cookie.secure = secure_cookies;
@@ -4806,6 +4807,10 @@ mod tests {
         assert_eq!(signed_in.cookies.len(), 2);
         assert!(signed_in.cookies[0].secure);
         assert!(signed_in.cookies[0].http_only);
+        assert_eq!(
+            signed_in.cookies[0].same_site,
+            hyperchad::renderer::SameSite::Lax
+        );
         assert!(!signed_in.cookies[1].http_only);
         assert!(signed_in.cookies.iter().all(|cookie| cookie.secure));
 
