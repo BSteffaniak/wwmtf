@@ -2392,7 +2392,7 @@ fn visual_board(
     let board_frame_width = board_grid_width + 12;
     container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
-            width="100%" height="100%" min-height=0 flex-grow=1 flex-shrink=1 flex-basis=0 position="relative" {
+            position="absolute" top=0 right=0 bottom=0 left=0 {
             div class="board-zoom-controls" position="absolute" top=8 left=8 direction="row" gap="7px" {
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     (compose_form_fields(game, draft, "ZOOM_OUT"))
@@ -2410,7 +2410,7 @@ fn visual_board(
                         background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
                 }
             }
-            div class="board-viewport" width="100%" height="100%" min-height=0 flex-grow=1 flex-shrink=1 flex-basis=0
+            div class="board-viewport" position="absolute" top=0 right=0 bottom=0 left=0
                 overflow-x="auto" overflow-y="auto" {
                 div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
                     width=(board_frame_width) height=(board_frame_width) margin="auto"
@@ -2922,8 +2922,9 @@ fn visual_game_page(
     container! {
         div id="app-page" class="game-scene" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-event=(refresh_game)
-            direction="column" overflow-x="hidden" overflow-y="hidden"
-            height="100vh" background=#123b2a color=#f4f0df gap="6px" {
+            direction="column" position="fixed" top=0 right=0 bottom=0 left=0
+            overflow-x="hidden" overflow-y="hidden"
+            background=#123b2a color=#f4f0df gap="6px" {
             header id="scene-controls" width="100%" direction="row"
                 justify-content="space-between" align-items="center" gap="12px" padding-y="8px" padding-x="10px" {
                 anchor href="/" background=#173326 color=#f4f0df border=(("#436854", 1))
@@ -2958,10 +2959,8 @@ fn visual_game_page(
                 }
             }
             main id="game-layout" class="game-arena" width="100%" min-height=0
-                flex-grow=1 flex-shrink=1 flex-basis=0
-                overflow-x="hidden" overflow-y="hidden" {
-                section id="board-region" width="100%" height="100%" min-height=0
-                    flex-grow=1 flex-shrink=1 flex-basis=0
+                flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
+                section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
                     overflow-x="hidden" overflow-y="hidden" {
                     (board)
                     @if let Some(completed_summary) = completed_summary {
@@ -2972,7 +2971,7 @@ fn visual_game_page(
                     }
                 }
             }
-            section id="turn-dock-layer" width="100%" flex-shrink=0 align-items="center" padding-x="10px" padding-bottom="8px" {
+            section id="turn-dock-layer" width="100%" flex-shrink=0 align-items="center" padding-x="10px" {
                 section id="play-console" class="game-console turn-dock" width="100%"
                     background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
                     padding-y="6px" padding-x="8px" gap="5px" {
@@ -3856,7 +3855,10 @@ mod tests {
             assert!(!page.contains("sx-max-height=\"40vh\""));
             assert!(!page.contains("sx-max-height=\"300px\""));
             assert!(page.contains("sx-flex-grow=\"1\""));
+            assert!(page.contains("sx-position=\"fixed\""));
             assert!(page.contains("sx-position=\"absolute\""));
+            assert!(page.contains("sx-top=\"0\""));
+            assert!(page.contains("sx-bottom=\"0\""));
             assert!(page.contains("sx-max-height=\"78vh\""));
             assert!(page.contains("sx-overflow-y=\"auto\""));
             assert!(page.contains("board-viewport"));
