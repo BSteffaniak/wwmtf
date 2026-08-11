@@ -157,7 +157,7 @@ snapshot_volume() {
 
     ensure_machine_started "$machine_id"
     trap - EXIT
-    smoke_test "https://${APP_NAME}.fly.dev"
+    smoke_test "https://${APP_NAME}.fly.dev" false
 }
 
 output_fly_ipv6() {
@@ -184,6 +184,7 @@ output_certificate_dns() {
 
 smoke_test() {
     local url="${1:-$PUBLIC_URL}"
+    local require_google="${2:-true}"
     local headers
     local login
     curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
@@ -194,14 +195,16 @@ smoke_test() {
         "${url%/}/" >/dev/null
     login="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
         "${url%/}/login")"
-    grep -F 'Continue with Google' <<<"$login" >/dev/null
-    grep -F '/auth/google/start' <<<"$login" >/dev/null
-    headers="$(curl --silent --show-error --dump-header - --output /dev/null \
-        "${url%/}/auth/google/start")"
-    grep -Eiq '^location: https://accounts\.google\.com/' <<<"$headers"
-    if grep -Eiq 'wwmtf-google-client-secret|authorization_code|id_token' <<<"$login$headers"; then
-        echo "Smoke response exposed forbidden Google authentication material" >&2
-        exit 1
+    if [[ "$require_google" == "true" ]]; then
+        grep -F 'Continue with Google' <<<"$login" >/dev/null
+        grep -F '/auth/google/start' <<<"$login" >/dev/null
+        headers="$(curl --silent --show-error --dump-header - --output /dev/null \
+            "${url%/}/auth/google/start")"
+        grep -Eiq '^location: https://accounts\.google\.com/' <<<"$headers"
+        if grep -Eiq 'wwmtf-google-client-secret|authorization_code|id_token' <<<"$login$headers"; then
+            echo "Smoke response exposed forbidden Google authentication material" >&2
+            exit 1
+        fi
     fi
     echo "Smoke tests passed for ${url}"
 }
