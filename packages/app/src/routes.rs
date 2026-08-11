@@ -2414,7 +2414,7 @@ fn visual_board(
                 overflow-x="auto" overflow-y="auto" {
                 div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
                     width=(board_frame_width) height=(board_frame_width) margin="auto"
-                    flex-shrink=0 background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
+                    flex="0 0 auto" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -2972,7 +2972,7 @@ fn visual_game_page(
                     }
                 }
             }
-            section id="turn-dock-layer" width="100%" flex-shrink=0 align-items="center" padding-x="10px" {
+            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
                 section id="play-console" class="game-console turn-dock" width="100%"
                     background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
                     padding-y="6px" padding-x="8px" gap="5px" {
@@ -3852,6 +3852,9 @@ mod tests {
             assert!(page.contains("game-menu"));
             assert!(page.contains("activity-rail"));
             assert!(page.contains("turn-dock"));
+            assert!(page.contains("id=\"turn-dock-layer\""));
+            assert!(page.contains("sx-flex-grow=\"0\""));
+            assert!(page.contains("sx-flex-shrink=\"0\""));
             assert!(!page.contains("sx-padding-bottom=\"330\""));
             assert!(!page.contains("sx-max-height=\"40vh\""));
             assert!(!page.contains("sx-max-height=\"300px\""));
