@@ -28,16 +28,6 @@ case "$*" in
         echo "machine still attempting to start" >&2
         exit 1
         ;;
-    "machine cordon --app wwmtf machine-1")
-        printf 'cordon\n' >>"$LOG_FILE"
-        ;;
-    "machine uncordon --app wwmtf machine-1")
-        printf 'uncordon\n' >>"$LOG_FILE"
-        ;;
-    "machine stop --app wwmtf --signal SIGTERM --timeout 30 machine-1")
-        printf 'stop\n' >>"$LOG_FILE"
-        printf 'stopped\n' >"$STATE_FILE"
-        ;;
     "volumes list --app wwmtf --json")
         printf '[{"id":"volume-1","name":"wwmtf_data"}]\n'
         ;;
@@ -62,7 +52,35 @@ MOCK
 cat >"$TEST_DIR/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-case "${*: -1}" in
+
+args="$*"
+url="${*: -1}"
+if [[ "$url" == */machines/machine-1 ]]; then
+    if [[ "$args" == *"--request POST"* ]]; then
+        body="$(cat)"
+        if [[ "$(jq -r '.skip_launch' <<<"$body")" != "true" ]]; then
+            echo "Machine update did not suppress launch: $body" >&2
+            exit 1
+        fi
+        if jq -e '.config.services[] | select(.autostart == false and .min_machines_running == 0)' <<<"$body" >/dev/null; then
+            printf 'quiesce\n' >>"${MOCK_FLY_LOG_FILE:?MOCK_FLY_LOG_FILE is required}"
+            printf 'stopped\n' >"${MOCK_FLY_STATE_FILE:?MOCK_FLY_STATE_FILE is required}"
+        elif jq -e '.config.services[] | select(.autostart == true and .min_machines_running == 1)' <<<"$body" >/dev/null; then
+            printf 'restore-config\n' >>"${MOCK_FLY_LOG_FILE:?MOCK_FLY_LOG_FILE is required}"
+        else
+            echo "unexpected Machine update body: $body" >&2
+            exit 1
+        fi
+        printf '{"id":"machine-1"}\n'
+    else
+        cat <<'JSON'
+{"id":"machine-1","config":{"image":"registry.example/wwmtf:test","services":[{"protocol":"tcp","internal_port":8080,"autostart":true,"min_machines_running":1}]}}
+JSON
+    fi
+    exit 0
+fi
+
+case "$url" in
     */snapshots)
         if [[ "${MOCK_SNAPSHOT_FAIL:-false}" == "true" ]]; then
             exit 22
@@ -99,11 +117,10 @@ PATH="$TEST_DIR/bin:$PATH" \
     "$ROOT_DIR/scripts/deploy.sh" snapshot
 
 [[ "$(cat "$TEST_DIR/state")" == "started" ]]
-[[ "$(grep -c '^cordon$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^quiesce$' "$TEST_DIR/log")" -eq 1 ]]
 [[ "$(grep -c '^backup$' "$TEST_DIR/log")" -eq 1 ]]
-[[ "$(grep -c '^stop$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^restore-config$' "$TEST_DIR/log")" -eq 1 ]]
 [[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 2 ]]
-[[ "$(grep -c '^uncordon$' "$TEST_DIR/log")" -eq 1 ]]
 
 : >"$TEST_DIR/log"
 printf 'started\n' >"$TEST_DIR/state"
@@ -118,10 +135,9 @@ if PATH="$TEST_DIR/bin:$PATH" \
     exit 1
 fi
 [[ "$(cat "$TEST_DIR/state")" == "started" ]]
-[[ "$(grep -c '^cordon$' "$TEST_DIR/log")" -eq 1 ]]
-[[ "$(grep -c '^stop$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^quiesce$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^restore-config$' "$TEST_DIR/log")" -eq 1 ]]
 [[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 1 ]]
-[[ "$(grep -c '^uncordon$' "$TEST_DIR/log")" -eq 1 ]]
 
 PATH="$TEST_DIR/bin:$PATH" \
     MOCK_FLY_STATE_FILE="$TEST_DIR/state" \

@@ -22,13 +22,36 @@ volume_id() {
         | jq -r --arg name "$VOLUME_NAME" '[.[] | select((.Name // .name) == $name)][0].ID // [ .[] | select((.name // .Name) == $name)][0].id // empty'
 }
 
+fly_api_token() {
+    printf '%s' "${FLY_API_TOKEN:-$(fly auth token --quiet)}"
+}
+
+machine_config() {
+    local machine_id="$1"
+    curl --fail --silent --show-error \
+        --header "Authorization: Bearer $(fly_api_token)" \
+        "https://api.machines.dev/v1/apps/${APP_NAME}/machines/${machine_id}" \
+        | jq '.config'
+}
+
+update_machine_config() {
+    local machine_id="$1"
+    local config_file="$2"
+    jq -n --slurpfile config "$config_file" \
+        '{config: $config[0], skip_launch: true}' \
+        | curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $(fly_api_token)" \
+            --header "Content-Type: application/json" \
+            --data-binary @- \
+            "https://api.machines.dev/v1/apps/${APP_NAME}/machines/${machine_id}"
+}
+
 create_volume_snapshot() {
     local volume="$1"
-    local token
-    token="${FLY_API_TOKEN:-$(fly auth token --quiet)}"
     curl --fail --silent --show-error \
         --request POST \
-        --header "Authorization: Bearer ${token}" \
+        --header "Authorization: Bearer $(fly_api_token)" \
         --header "Content-Type: application/json" \
         "https://api.machines.dev/v1/apps/${APP_NAME}/volumes/${volume}/snapshots"
 }
@@ -71,8 +94,9 @@ restart_machine_best_effort() {
 
 restore_machine_after_snapshot_best_effort() {
     local machine_id="$1"
+    local config_file="$2"
+    update_machine_config "$machine_id" "$config_file" >/dev/null 2>&1 || true
     restart_machine_best_effort "$machine_id"
-    fly machine uncordon --app "$APP_NAME" "$machine_id" >/dev/null 2>&1 || true
 }
 
 ensure_app() {
@@ -147,10 +171,23 @@ snapshot_volume() {
     fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"
 
     local machine_id="${machines[0]}"
-    trap "restore_machine_after_snapshot_best_effort '$machine_id'" EXIT
+    local original_config
+    local quiesced_config
+    original_config="$(mktemp)"
+    quiesced_config="$(mktemp)"
+    machine_config "$machine_id" >"$original_config"
+    # Updating with skip_launch stops the Machine. Disable both proxy triggers
+    # first so it remains stopped while the attached volume is snapshotted.
+    jq '
+        .services = [
+            .services[]
+            | .autostart = false
+            | .min_machines_running = 0
+        ]
+    ' "$original_config" >"$quiesced_config"
+    trap "restore_machine_after_snapshot_best_effort '$machine_id' '$original_config'; rm -f '$original_config' '$quiesced_config'" EXIT
 
-    fly machine cordon --app "$APP_NAME" "$machine_id"
-    fly machine stop --app "$APP_NAME" --signal SIGTERM --timeout 30 "$machine_id"
+    update_machine_config "$machine_id" "$quiesced_config" >/dev/null
     for _ in $(seq 1 30); do
         if [[ "$(machine_state "$machine_id")" == "stopped" ]]; then
             break
@@ -162,8 +199,9 @@ snapshot_volume() {
     snapshot="$(create_volume_snapshot "$id")"
     echo "$snapshot"
 
+    update_machine_config "$machine_id" "$original_config" >/dev/null
     ensure_machine_started "$machine_id"
-    fly machine uncordon --app "$APP_NAME" "$machine_id"
+    rm -f "$original_config" "$quiesced_config"
     trap - EXIT
     smoke_test "https://${APP_NAME}.fly.dev" false
 }
