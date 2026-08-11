@@ -69,6 +69,12 @@ restart_machine_best_effort() {
     ensure_machine_started "$1" >/dev/null 2>&1 || true
 }
 
+restore_machine_after_snapshot_best_effort() {
+    local machine_id="$1"
+    restart_machine_best_effort "$machine_id"
+    fly machine uncordon --app "$APP_NAME" "$machine_id" >/dev/null 2>&1 || true
+}
+
 ensure_app() {
     if app_exists; then
         echo "Fly app ${APP_NAME} already exists"
@@ -141,8 +147,9 @@ snapshot_volume() {
     fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"
 
     local machine_id="${machines[0]}"
-    trap "restart_machine_best_effort '$machine_id'" EXIT
+    trap "restore_machine_after_snapshot_best_effort '$machine_id'" EXIT
 
+    fly machine cordon --app "$APP_NAME" "$machine_id"
     fly machine stop --app "$APP_NAME" --signal SIGTERM --timeout 30 "$machine_id"
     for _ in $(seq 1 30); do
         if [[ "$(machine_state "$machine_id")" == "stopped" ]]; then
@@ -156,6 +163,7 @@ snapshot_volume() {
     echo "$snapshot"
 
     ensure_machine_started "$machine_id"
+    fly machine uncordon --app "$APP_NAME" "$machine_id"
     trap - EXIT
     smoke_test "https://${APP_NAME}.fly.dev" false
 }

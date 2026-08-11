@@ -28,6 +28,24 @@ case "$*" in
         echo "machine still attempting to start" >&2
         exit 1
         ;;
+    "machine cordon --app wwmtf machine-1")
+        printf 'cordon\n' >>"$LOG_FILE"
+        ;;
+    "machine uncordon --app wwmtf machine-1")
+        printf 'uncordon\n' >>"$LOG_FILE"
+        ;;
+    "machine stop --app wwmtf --signal SIGTERM --timeout 30 machine-1")
+        printf 'stop\n' >>"$LOG_FILE"
+        printf 'stopped\n' >"$STATE_FILE"
+        ;;
+    "volumes list --app wwmtf --json")
+        printf '[{"id":"volume-1","name":"wwmtf_data"}]\n'
+        ;;
+    "ssh console --app wwmtf --command sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)'")
+        printf 'backup\n' >>"$LOG_FILE"
+        ;;
+    "ssh console --app wwmtf --command test -s /data/backups/database.tar.gz")
+        ;;
     "secrets import --app wwmtf --stage")
         cat >"${MOCK_FLY_SECRET_FILE:?MOCK_FLY_SECRET_FILE is required}"
         printf 'secrets-imported\n' >>"$LOG_FILE"
@@ -45,6 +63,12 @@ cat >"$TEST_DIR/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${*: -1}" in
+    */snapshots)
+        if [[ "${MOCK_SNAPSHOT_FAIL:-false}" == "true" ]]; then
+            exit 22
+        fi
+        printf '{"snapshot":"created"}\n'
+        ;;
     */health/live) printf 'live\n' ;;
     */health/ready) printf 'ready\n' ;;
     */login) printf '<a href="/auth/google/start">Continue with Google</a>\n' ;;
@@ -66,6 +90,38 @@ PATH="$TEST_DIR/bin:$PATH" \
 
 [[ "$(cat "$TEST_DIR/state")" == "started" ]]
 [[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 1 ]]
+
+PATH="$TEST_DIR/bin:$PATH" \
+    MOCK_FLY_STATE_FILE="$TEST_DIR/state" \
+    MOCK_FLY_LOG_FILE="$TEST_DIR/log" \
+    MOCK_FLY_SECRET_FILE="$TEST_DIR/secrets" \
+    FLY_API_TOKEN=test-token \
+    "$ROOT_DIR/scripts/deploy.sh" snapshot
+
+[[ "$(cat "$TEST_DIR/state")" == "started" ]]
+[[ "$(grep -c '^cordon$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^backup$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^stop$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 2 ]]
+[[ "$(grep -c '^uncordon$' "$TEST_DIR/log")" -eq 1 ]]
+
+: >"$TEST_DIR/log"
+printf 'started\n' >"$TEST_DIR/state"
+if PATH="$TEST_DIR/bin:$PATH" \
+    MOCK_FLY_STATE_FILE="$TEST_DIR/state" \
+    MOCK_FLY_LOG_FILE="$TEST_DIR/log" \
+    MOCK_FLY_SECRET_FILE="$TEST_DIR/secrets" \
+    MOCK_SNAPSHOT_FAIL=true \
+    FLY_API_TOKEN=test-token \
+    "$ROOT_DIR/scripts/deploy.sh" snapshot 2>/dev/null; then
+    echo "snapshot unexpectedly succeeded when the Fly API failed" >&2
+    exit 1
+fi
+[[ "$(cat "$TEST_DIR/state")" == "started" ]]
+[[ "$(grep -c '^cordon$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^stop$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^uncordon$' "$TEST_DIR/log")" -eq 1 ]]
 
 PATH="$TEST_DIR/bin:$PATH" \
     MOCK_FLY_STATE_FILE="$TEST_DIR/state" \
