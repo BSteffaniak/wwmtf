@@ -2392,7 +2392,7 @@ fn visual_board(
     let board_frame_width = board_grid_width + 12;
     container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
-            width="100%" height="100%" flex-grow=1 position="relative" {
+            width="100%" height="100%" min-height=0 flex-grow=1 flex-shrink=1 flex-basis=0 position="relative" {
             div class="board-zoom-controls" position="absolute" top=8 left=8 direction="row" gap="7px" {
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     (compose_form_fields(game, draft, "ZOOM_OUT"))
@@ -2410,10 +2410,11 @@ fn visual_board(
                         background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
                 }
             }
-            div class="board-viewport" width="100%" height="100%" flex-grow=1
-                align-items="center" justify-content="center" overflow-x="auto" overflow-y="auto" {
+            div class="board-viewport" width="100%" height="100%" min-height=0 flex-grow=1 flex-shrink=1 flex-basis=0
+                overflow-x="auto" overflow-y="auto" {
                 div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
-                    width=(board_frame_width) background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
+                    width=(board_frame_width) height=(board_frame_width) margin="auto"
+                    flex-shrink=0 background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -2956,9 +2957,11 @@ fn visual_game_page(
                     }
                 }
             }
-            main id="game-layout" class="game-arena" width="100%" flex-grow=1 flex-shrink=1
+            main id="game-layout" class="game-arena" width="100%" min-height=0
+                flex-grow=1 flex-shrink=1 flex-basis=0
                 overflow-x="hidden" overflow-y="hidden" {
-                section id="board-region" width="100%" height="100%" flex-grow=1 flex-shrink=1
+                section id="board-region" width="100%" height="100%" min-height=0
+                    flex-grow=1 flex-shrink=1 flex-basis=0
                     overflow-x="hidden" overflow-y="hidden" {
                     (board)
                     @if let Some(completed_summary) = completed_summary {
