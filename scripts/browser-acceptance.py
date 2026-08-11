@@ -484,7 +484,6 @@ class Browser:
                 }}
                 form.method = 'POST';
                 form.action = '/account/migrate';
-                form.removeAttribute('hx-post');
                 form.submit();
                 return true;
             }})()"""
@@ -780,7 +779,7 @@ def migrate_legacy_account(browser: Browser, provider: FakeOidcProvider) -> None
     browser.navigate("/account/migrate")
     provider.next_login_subjects.append(4)
     browser.full_submit(
-        'form[hx-post="/account/migrate"]',
+        'form[action="/account/migrate"]',
         {
             "username": "legacy-acceptance",
             "password": "correct horse battery staple",

@@ -1927,7 +1927,7 @@ pub fn migration_page(error: Option<&str>) -> Container {
                 anchor href="/login" color=#526243 { "← Back to sign in" }
                 h1 { "Migrate your existing account" }
                 span color=#5d6258 { "Confirm your existing credentials, then connect Google without losing your games." }
-                form hx-post="/account/migrate" hx-target="#app-page" gap="12px" {
+                form method="post" action="/account/migrate" gap="12px" {
                     span font-weight=bold { "Username" }
                     input type=text name="username" placeholder="Username" padding-y=13 padding-x=14 border=(("#cfc8b8", 1)) border-radius="10px";
                     span font-weight=bold { "Password" }
@@ -4849,16 +4849,18 @@ mod tests {
         assert!(login.contains("href=\"/account/migrate\""));
         assert!(!login.contains("script"));
 
-        for (page, route) in [
-            (migration_page(None), "/account/migrate"),
-            (logout_page(), "/logout"),
-        ] {
-            let rendered = page
-                .display_to_string(false, false)
-                .expect("account page renders");
-            assert!(rendered.contains(&format!("hx-post=\"{route}\"")));
-            assert!(!rendered.contains("script"));
-        }
+        let logout = logout_page()
+            .display_to_string(false, false)
+            .expect("logout page renders");
+        assert!(logout.contains("hx-post=\"/logout\""));
+        assert!(!logout.contains("script"));
+        let migration = migration_page(None)
+            .display_to_string(false, false)
+            .expect("migration page renders");
+        assert!(migration.contains("method=\"post\""));
+        assert!(migration.contains("action=\"/account/migrate\""));
+        assert!(!migration.contains("hx-post"));
+        assert!(!migration.contains("script"));
     }
 
     #[test]
