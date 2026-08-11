@@ -18,6 +18,7 @@ Create these credentials without placing their values in source control:
 
 - A Cloudflare API token for the account containing `hyperchad.dev`. It needs account R2 bucket edit plus zone read, DNS edit, zone settings edit, and **Single Redirect Edit** (also labelled **Dynamic URL Redirects Write** in some Cloudflare token interfaces) for `hyperchad.dev`.
 - R2 S3 credentials with object read/write access. Because the workflow creates the state bucket, these credentials must initially be account-scoped.
+- A Google Cloud OAuth 2.0 **Web application** client whose exact authorized redirect URI is `https://wwmtf.hyperchad.dev/auth/google/callback`. Add a separate explicit development callback only for each development origin that is actually supported; do not use wildcard origins or callbacks.
 - A Fly organization-scoped token that can create the application and its resources.
 - A high-entropy OpenTofu state-encryption passphrase. Losing it makes state unreadable.
 
@@ -32,6 +33,8 @@ Create or open the protected GitHub environment named `production`, restrict it 
 - `TOFU_STATE_ACCESS_KEY_ID`
 - `TOFU_STATE_SECRET_ACCESS_KEY`
 - `TOFU_STATE_ENCRYPTION_PASSPHRASE`
+- `WWMTF_GOOGLE_CLIENT_ID`
+- `WWMTF_GOOGLE_CLIENT_SECRET`
 - `FLY_API_TOKEN`
 - `FLY_ORG`
 
@@ -92,17 +95,18 @@ Follow the recovery obligations in `DEPLOYMENT.md` before attaching a restored v
 
 ## Runtime security
 
-The container's internal nginx proxy exposes port 8080, validates host and same-origin requests, limits account POSTs, applies a 64 KiB body limit, strips permissive CORS headers, and adds CSP/privacy/security headers. It forwards the authenticated HyperChad shared-state transport to the renderer-neutral application on `127.0.0.1:8343`; production does not enable HyperChad's separate broadcast renderer SSE channel. Every request receives an `X-Request-ID`; nginx access logs include that ID, upstream status and timing, and the secret-free shared-state diagnostic classification when present. The application logs its release and Fly Machine identity at startup. Builds that explicitly enable the non-default `metrics` feature expose secret-safe aggregate counters from `/metrics`; transport logs and metrics must never include session, CSRF, invitation, rack, bag, or canonical-event values.
+The container's internal nginx proxy exposes port 8080, validates host and same-origin requests, rate-limits migration POSTs and Google initiation/callback GETs, applies a 3 MiB request-body ceiling so the application's stricter 2 MiB decoded-avatar limit remains authoritative after multipart overhead, strips permissive CORS headers, and adds CSP/privacy/security headers. It forwards the authenticated HyperChad shared-state transport to the renderer-neutral application on `127.0.0.1:8343`; production does not enable HyperChad's separate broadcast renderer SSE channel. Every request receives an `X-Request-ID`; nginx access logs include that ID, upstream status and timing, and the secret-free shared-state diagnostic classification when present. The application logs its release and Fly Machine identity at startup. Builds that explicitly enable the non-default `metrics` feature expose secret-safe aggregate counters from `/metrics`; transport logs and metrics must never include session, CSRF, invitation, OIDC state/nonce/code/token/subject, source-picture URL, rack, bag, or canonical-event values.
 
 Production fails closed unless configured with:
 
 - `WWMTF_PRODUCTION_MODE=true`
 - `WWMTF_DATABASE_PATH=/data/wwmtf.db`
 - `WWMTF_PUBLIC_BASE_URL=https://wwmtf.hyperchad.dev`
+- `WWMTF_GOOGLE_CLIENT_ID` and `WWMTF_GOOGLE_CLIENT_SECRET` supplied as staged Fly secrets by the protected deployment workflow
 - `WWMTF_DEV_MODE` absent or false
 
 ## Launch checks
 
-After bootstrap, manually verify registration, login, invitation redemption, two-player live updates, a persisted turn, and persistence across a redeploy. Confirm Cloudflare does not cache application responses and logs do not expose invitation, session, CSRF, rack, bag, or canonical-event secrets.
+After bootstrap, manually verify Google login, existing-account migration, invitation redemption, two-player live updates, a persisted turn, and persistence across a redeploy. Confirm Cloudflare does not cache application responses and logs do not expose invitation, session, CSRF, OIDC state/nonce/code/token/subject, source-picture URL, rack, bag, or canonical-event secrets.
 
 The direct `<app>.fly.dev` origin remains reachable. Cloudflare controls are defense in depth, not the application's only authentication or authorization boundary.

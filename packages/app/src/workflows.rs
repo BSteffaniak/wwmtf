@@ -4,18 +4,21 @@ use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    AccountError, ChallengeError, InvitationError, InvitationToken, SessionError, SessionToken,
-    accept_challenge, authenticate, cancel_challenge, create_challenge, create_invitation,
-    decline_challenge, find_user_by_username, normalize_username, redeem_invitation_and_start_game,
-    register, revoke_invitation, revoke_session,
+    AccountError, ChallengeError, InvitationError, InvitationToken, SessionError, accept_challenge,
+    cancel_challenge, create_challenge, create_invitation, decline_challenge,
+    find_user_by_username, normalize_username, redeem_invitation_and_start_game,
+    redeem_invitation_and_start_game_by_id, revoke_invitation, revoke_session,
 };
+#[cfg(test)]
+use crate::{SessionToken, authenticate, register};
 
 /// Registers a user and immediately creates a durable browser session.
 ///
 /// # Errors
 ///
 /// * Returns account or session persistence/validation failures.
-pub async fn register_and_create_session(
+#[cfg(test)]
+async fn register_and_create_session(
     db: &dyn Database,
     username: &str,
     password: &str,
@@ -32,7 +35,8 @@ pub async fn register_and_create_session(
 /// # Errors
 ///
 /// * Returns uniform invalid-credential or session persistence failures.
-pub async fn login_and_create_session(
+#[cfg(test)]
+async fn login_and_create_session(
     db: &dyn Database,
     username: &str,
     password: &str,
@@ -152,6 +156,24 @@ pub async fn redeem_shareable_invitation(
     now: OffsetDateTime,
 ) -> Result<wwmtf_game_domain::GameId, ProductWorkflowError> {
     Ok(redeem_invitation_and_start_game(db, token, user_id, now, random_seed()).await?)
+}
+
+/// Redeems a shareable invitation by its private internal identity and creates its game exactly
+/// once.
+///
+/// # Errors
+///
+/// * Returns invalid/reused/expired invitation, compatibility, or persistence failures.
+pub async fn redeem_shareable_invitation_by_id(
+    db: &dyn Database,
+    invitation_id: &str,
+    user_id: &str,
+    now: OffsetDateTime,
+) -> Result<wwmtf_game_domain::GameId, ProductWorkflowError> {
+    Ok(
+        redeem_invitation_and_start_game_by_id(db, invitation_id, user_id, now, random_seed())
+            .await?,
+    )
 }
 
 /// Revokes an owned shareable invitation.

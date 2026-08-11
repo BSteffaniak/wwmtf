@@ -55,8 +55,8 @@ pub use google_accounts::{
     prove_legacy_password_account,
 };
 pub use invitations::{
-    InvitationError, InvitationToken, create_invitation, redeem_invitation,
-    redeem_invitation_and_start_game, revoke_invitation,
+    InvitationError, InvitationToken, active_invitation_id, create_invitation, redeem_invitation,
+    redeem_invitation_and_start_game, redeem_invitation_and_start_game_by_id, revoke_invitation,
 };
 pub use journal::{
     JournalError, PersistedGameEvent, PersistedPayloadCompatibility, append_events,
@@ -78,10 +78,11 @@ pub use presentation::{
 };
 pub use profiles::{
     AvatarSource, ProfileError, ProfileFieldSource, ProfileImage, UserProfile,
-    can_view_profile_avatar, create_google_profile, download_google_avatar, generate_unique_handle,
-    load_profile, load_profile_image, normalize_avatar, normalize_display_name, profile_image_hash,
-    remove_custom_avatar, set_custom_avatar, set_custom_display_name, set_google_avatar,
-    synchronize_google_profile, use_google_avatar, use_google_display_name,
+    can_view_profile_avatar, create_google_profile, download_google_avatar,
+    download_provider_avatar, generate_unique_handle, load_profile, load_profile_image,
+    normalize_avatar, normalize_display_name, profile_image_hash, remove_custom_avatar,
+    set_custom_avatar, set_custom_display_name, set_google_avatar, synchronize_google_profile,
+    use_google_avatar, use_google_display_name,
 };
 pub use projections::{
     DashboardProjection, GameHistoryEntry, GameSummary, PendingItem, ProjectionError,
@@ -96,7 +97,7 @@ pub use rack_preferences::{
 pub use routes::{
     authenticated_session_response, create_product_router, dashboard_page, dashboard_route,
     game_page, game_route, game_view_response, logged_out_response, login_page, logout_page,
-    migration_page, register_page, signed_out_page, turn_composer,
+    migration_page, signed_out_page, turn_composer,
 };
 pub use sessions::{
     SessionError, SessionToken, create_session, resolve_session, revoke_session,
@@ -108,7 +109,131 @@ pub use shared_state_security::{
 };
 pub use workflows::{
     AccountWorkflowError, ProductWorkflowError, accept_pending_challenge, cancel_pending_challenge,
-    challenge_username, create_shareable_invitation, decline_pending_challenge,
-    login_and_create_session, logout_session, redeem_shareable_invitation,
-    register_and_create_session, revoke_shareable_invitation,
+    challenge_username, create_shareable_invitation, decline_pending_challenge, logout_session,
+    redeem_shareable_invitation, redeem_shareable_invitation_by_id, revoke_shareable_invitation,
 };
+
+#[cfg(test)]
+mod recovery_tests {
+    use std::{io::Cursor, path::Path, sync::Arc};
+
+    use futures_lite::future::block_on;
+    use image::{ImageFormat, Rgba, RgbaImage};
+    use switchy_database::Database;
+    use time::{Duration, OffsetDateTime};
+
+    use crate::{
+        OidcAttemptPurpose, VerifiedExternalIdentity, claim_oidc_attempt, create_oidc_attempt,
+        google_login_and_create_session, load_profile, load_profile_image, migrate_app,
+        profile_image_hash, resolve_session, set_google_avatar, user_for_external_identity,
+    };
+
+    async fn open_database(path: &Path) -> Arc<Box<dyn Database>> {
+        Arc::new(
+            switchy_database_connection::builder()
+                .turso()
+                .with_path(path)
+                .build()
+                .await
+                .expect("file-backed Turso opens"),
+        )
+    }
+
+    #[test]
+    fn restored_database_retains_google_identity_profile_avatar_and_session() {
+        block_on(async {
+            let directory = std::env::temp_dir()
+                .join(format!("wwmtf-google-recovery-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).expect("recovery directory creates");
+            let source_path = directory.join("source.db");
+            let restored_path = directory.join("restored.db");
+            let now = OffsetDateTime::UNIX_EPOCH + Duration::days(20_000);
+
+            let db = open_database(&source_path).await;
+            migrate_app(&**db).await.expect("schema migrates");
+            let identity = VerifiedExternalIdentity::google(
+                "https://accounts.google.com",
+                "recovery-subject",
+                "Recovery Player",
+                Some("https://lh3.googleusercontent.com/recovery".to_string()),
+            )
+            .expect("identity validates");
+            let (user_id, session) =
+                google_login_and_create_session(&**db, &identity, now, Duration::days(30))
+                    .await
+                    .expect("Google session creates");
+            let mut source = RgbaImage::new(2, 2);
+            for pixel in source.pixels_mut() {
+                *pixel = Rgba([20, 40, 60, 255]);
+            }
+            let mut avatar = Vec::new();
+            image::DynamicImage::ImageRgba8(source)
+                .write_to(&mut Cursor::new(&mut avatar), ImageFormat::Png)
+                .expect("avatar fixture encodes");
+            set_google_avatar(&**db, &user_id, &avatar, now)
+                .await
+                .expect("avatar stores");
+            let image_hash = profile_image_hash(&**db, &user_id)
+                .await
+                .expect("image hash loads")
+                .expect("image exists");
+            let attempt = create_oidc_attempt(
+                &**db,
+                OidcAttemptPurpose::Login,
+                None,
+                None,
+                now,
+                Duration::minutes(1),
+            )
+            .await
+            .expect("attempt creates");
+            db.close().await.expect("source database closes");
+            drop(db);
+            std::fs::copy(&source_path, &restored_path).expect("database backup restores");
+
+            let restored = open_database(&restored_path).await;
+            assert_eq!(
+                user_for_external_identity(
+                    &**restored,
+                    "https://accounts.google.com",
+                    "recovery-subject"
+                )
+                .await
+                .expect("identity loads"),
+                Some(user_id.clone())
+            );
+            assert_eq!(
+                load_profile(&**restored, &user_id)
+                    .await
+                    .expect("profile loads")
+                    .expect("profile exists")
+                    .display_name,
+                "Recovery Player"
+            );
+            assert!(
+                load_profile_image(&**restored, &user_id, &image_hash)
+                    .await
+                    .expect("image loads")
+                    .is_some()
+            );
+            assert_eq!(
+                resolve_session(&**restored, session.expose(), now)
+                    .await
+                    .expect("session survives"),
+                user_id
+            );
+            assert!(
+                claim_oidc_attempt(
+                    &**restored,
+                    &attempt.state,
+                    &attempt.browser_binding,
+                    now + Duration::minutes(2)
+                )
+                .await
+                .is_err()
+            );
+            drop(restored);
+            std::fs::remove_dir_all(directory).expect("recovery directory removes");
+        });
+    }
+}

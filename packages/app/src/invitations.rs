@@ -66,6 +66,37 @@ pub async fn create_invitation(
     Err(InvitationError::Collision)
 }
 
+/// Resolves an active invitation token to its private internal identity.
+///
+/// This is used before an external authentication redirect so the raw invitation secret does not
+/// enter OIDC attempt storage or provider-facing URLs.
+///
+/// # Errors
+///
+/// * Returns [`InvitationError::Invalid`] for unknown, expired, revoked, or consumed invitations.
+/// * Returns [`InvitationError::Database`] when storage fails.
+pub async fn active_invitation_id(
+    db: &dyn Database,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<String, InvitationError> {
+    let rows = db
+        .select("invitations")
+        .where_eq("token_hash", token_hash(token))
+        .where_eq("status", "ACTIVE")
+        .execute(db)
+        .await?;
+    let row = rows.first().ok_or(InvitationError::Invalid)?;
+    let expires = row
+        .get("expires_at_ms")
+        .and_then(|value| value.as_i64())
+        .ok_or(InvitationError::Invalid)?;
+    if expires <= timestamp_ms(now)? {
+        return Err(InvitationError::Invalid);
+    }
+    string_column(row, "invitation_id")
+}
+
 /// Redeems one active invitation exactly once for an authenticated user.
 ///
 /// # Errors
@@ -120,23 +151,21 @@ pub async fn redeem_invitation(
 ///
 /// * Returns [`InvitationError::Invalid`] for an invalid invitation.
 /// * Returns [`InvitationError::GameCreation`] when pinned game initialization fails.
-pub async fn redeem_invitation_and_start_game(
+pub async fn redeem_invitation_and_start_game_by_id(
     db: &dyn Database,
-    token: &str,
+    invitation_id: &str,
     redeemer_user_id: &str,
     now: OffsetDateTime,
     shuffle_seed: u64,
 ) -> Result<wwmtf_game_domain::GameId, InvitationError> {
-    let token_hash = token_hash(token);
     let tx = db.begin_transaction().await?;
     let rows = tx
         .select("invitations")
-        .where_eq("token_hash", token_hash)
+        .where_eq("invitation_id", invitation_id)
         .where_eq("status", "ACTIVE")
         .execute(&*tx)
         .await?;
     let row = rows.first().ok_or(InvitationError::Invalid)?;
-    let invitation_id = string_column(row, "invitation_id")?;
     let creator_user_id = string_column(row, "creator_user_id")?;
     let expires = row
         .get("expires_at_ms")
@@ -150,7 +179,7 @@ pub async fn redeem_invitation_and_start_game(
         .update("invitations")
         .value("status", "REDEEMED")
         .value("redeemed_by_user_id", redeemer_user_id)
-        .where_eq("invitation_id", invitation_id.clone())
+        .where_eq("invitation_id", invitation_id)
         .where_eq("status", "ACTIVE")
         .execute(&*tx)
         .await?;
@@ -169,6 +198,25 @@ pub async fn redeem_invitation_and_start_game(
     .await?;
     tx.commit().await?;
     Ok(game_id)
+}
+
+/// Redeems an active invitation by token and starts its game exactly once.
+///
+/// # Errors
+///
+/// * Returns [`InvitationError::Invalid`] for unknown, expired, revoked, consumed, or self-issued
+///   invitations.
+/// * Returns [`InvitationError::Database`] when storage fails.
+pub async fn redeem_invitation_and_start_game(
+    db: &dyn Database,
+    token: &str,
+    redeemer_user_id: &str,
+    now: OffsetDateTime,
+    shuffle_seed: u64,
+) -> Result<wwmtf_game_domain::GameId, InvitationError> {
+    let invitation_id = active_invitation_id(db, token, now).await?;
+    redeem_invitation_and_start_game_by_id(db, &invitation_id, redeemer_user_id, now, shuffle_seed)
+        .await
 }
 
 /// Revokes an active invitation owned by the authenticated creator.
@@ -311,6 +359,64 @@ mod tests {
             assert!(matches!(
                 redeem_invitation(&*db, token.expose(), &redeemer, OffsetDateTime::UNIX_EPOCH)
                     .await,
+                Err(InvitationError::Invalid)
+            ));
+        });
+    }
+
+    #[test]
+    fn invitation_continuation_uses_internal_identity_without_persisting_the_token() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let (creator, redeemer) = users(&*db).await;
+            let (invitation_id, token) = create_invitation(
+                &*db,
+                &creator,
+                OffsetDateTime::UNIX_EPOCH,
+                Duration::days(1),
+            )
+            .await
+            .expect("invitation creates");
+
+            assert_eq!(
+                active_invitation_id(&*db, token.expose(), OffsetDateTime::UNIX_EPOCH)
+                    .await
+                    .expect("token resolves privately"),
+                invitation_id
+            );
+            let game = redeem_invitation_and_start_game_by_id(
+                &*db,
+                &invitation_id,
+                &redeemer,
+                OffsetDateTime::UNIX_EPOCH,
+                17,
+            )
+            .await
+            .expect("internal invitation identity redeems");
+            assert_eq!(
+                db.select("game_players")
+                    .where_eq("game_id", game.to_string())
+                    .execute(&*db)
+                    .await
+                    .expect("players load")
+                    .len(),
+                2
+            );
+            assert!(matches!(
+                redeem_invitation_and_start_game_by_id(
+                    &*db,
+                    &invitation_id,
+                    &redeemer,
+                    OffsetDateTime::UNIX_EPOCH,
+                    17,
+                )
+                .await,
                 Err(InvitationError::Invalid)
             ));
         });

@@ -80,6 +80,28 @@ fn password_needs_upgrade(stored_hash: &str) -> bool {
     })
 }
 
+/// Inserts the renderer-neutral user identity record without attaching credentials.
+///
+/// # Errors
+///
+/// * Returns database failures, including unique handle conflicts.
+pub async fn create_user_record(
+    db: &dyn Database,
+    user_id: &str,
+    username_normalized: &str,
+    username_display: &str,
+    created_at_ms: i64,
+) -> Result<(), switchy_database::DatabaseError> {
+    db.insert("users")
+        .value("user_id", user_id)
+        .value("username_normalized", username_normalized)
+        .value("username_display", username_display)
+        .value("created_at_ms", created_at_ms)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Registers a unique account through portable `switchy` builders.
 ///
 /// # Errors
@@ -108,13 +130,7 @@ pub async fn register(
     let now = now.unix_timestamp_nanos() / 1_000_000;
     let now = i64::try_from(now).map_err(|_| AccountError::InvalidTimestamp)?;
     let tx = db.begin_transaction().await?;
-    tx.insert("users")
-        .value("user_id", user_id.clone())
-        .value("username_normalized", normalized)
-        .value("username_display", username.trim())
-        .value("created_at_ms", now)
-        .execute(&*tx)
-        .await?;
+    create_user_record(&*tx, &user_id, &normalized, username.trim(), now).await?;
     tx.insert("password_credentials")
         .value("user_id", user_id.clone())
         .value("password_hash", password_hash)

@@ -184,13 +184,35 @@ output_certificate_dns() {
 
 smoke_test() {
     local url="${1:-$PUBLIC_URL}"
+    local headers
+    local login
     curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
         "${url%/}/health/live"
     curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
         "${url%/}/health/ready"
     curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
         "${url%/}/" >/dev/null
+    login="$(curl --fail --silent --show-error --retry 12 --retry-all-errors --retry-delay 5 \
+        "${url%/}/login")"
+    grep -F 'Continue with Google' <<<"$login" >/dev/null
+    grep -F '/auth/google/start' <<<"$login" >/dev/null
+    headers="$(curl --silent --show-error --dump-header - --output /dev/null \
+        "${url%/}/auth/google/start")"
+    grep -Eiq '^location: https://accounts\.google\.com/' <<<"$headers"
+    if grep -Eiq 'wwmtf-google-client-secret|authorization_code|id_token' <<<"$login$headers"; then
+        echo "Smoke response exposed forbidden Google authentication material" >&2
+        exit 1
+    fi
     echo "Smoke tests passed for ${url}"
+}
+
+sync_google_secrets() {
+    : "${WWMTF_GOOGLE_CLIENT_ID:?WWMTF_GOOGLE_CLIENT_ID is required}"
+    : "${WWMTF_GOOGLE_CLIENT_SECRET:?WWMTF_GOOGLE_CLIENT_SECRET is required}"
+    printf '%s\n' \
+        "WWMTF_GOOGLE_CLIENT_ID=${WWMTF_GOOGLE_CLIENT_ID}" \
+        "WWMTF_GOOGLE_CLIENT_SECRET=${WWMTF_GOOGLE_CLIENT_SECRET}" \
+        | fly secrets import --app "$APP_NAME" --stage
 }
 
 bootstrap() {
@@ -204,6 +226,7 @@ bootstrap() {
 deploy() {
     local release
     release="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+    sync_google_secrets
     fly deploy --app "$APP_NAME" --ha=false --strategy immediate --wait-timeout 10m \
         --build-arg "WWMTF_RELEASE=${release}"
     smoke_test "https://${APP_NAME}.fly.dev"

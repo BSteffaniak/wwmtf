@@ -40,7 +40,9 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/*.yml
       - name: Test production infrastructure preparation
         run: ./scripts/test-production-infra.sh
-      - name: Test Fly restart recovery
+      - name: Test application-consistent database backup and restore
+        run: ./scripts/test-backup.sh
+      - name: Test Fly restart, Google secret, and smoke recovery
         run: ./scripts/test-deploy.sh
       - name: Test Cloudflare redirect adoption guard
         run: ./scripts/test-cloudflare-redirects.sh

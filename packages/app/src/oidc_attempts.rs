@@ -323,6 +323,13 @@ mod tests {
                     .as_deref(),
                 Some(attempt.state.as_str())
             );
+            assert_eq!(
+                stored[0]
+                    .get("continuation_invitation_id")
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                    .as_deref(),
+                Some("invitation-id")
+            );
             assert!(
                 claim_oidc_attempt(&*db, "unknown-state", &attempt.browser_binding, now)
                     .await

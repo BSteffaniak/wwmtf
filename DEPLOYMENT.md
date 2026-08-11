@@ -39,7 +39,7 @@ Played-word definitions are enabled by default and use Free Dictionary API data 
 
 The generic `switchy_http` client was evaluated but does not currently expose request timeouts or bounded response streaming. The application therefore uses a narrowly configured root `reqwest` dependency for this server-side integration; it remains isolated behind `DefinitionProvider` for deterministic tests and replacement.
 
-Google sign-in uses authorization code flow with PKCE and discovers Google's OpenID Connect metadata at startup. Configure a Google **Web application** OAuth client with the exact redirect URI `${WWMTF_PUBLIC_BASE_URL}/auth/google/callback`. The public base URL must therefore be the externally visible canonical origin, without a path. Rotate the client secret through the deployment secret store and restart the service; existing WWMTF sessions remain independently revocable and do not contain Google tokens. Google access and refresh tokens are not persisted.
+Google sign-in uses authorization code flow with PKCE and discovers Google's OpenID Connect metadata at startup. Configure a Google **Web application** OAuth client with the exact production redirect URI `https://wwmtf.hyperchad.dev/auth/google/callback`. For local development, register only the exact origin in use, for example `http://127.0.0.1:8343/auth/google/callback`; do not register wildcard callbacks. The public base URL must be an origin without credentials, path, query, or fragment. Rotate the client secret through the protected GitHub `production` environment: the deployment workflow stages `WWMTF_GOOGLE_CLIENT_ID` and `WWMTF_GOOGLE_CLIENT_SECRET` as Fly secrets immediately before deploy without printing their values. Existing WWMTF sessions remain independently revocable and do not contain Google tokens. Google access and refresh tokens are not persisted.
 
 The production Fly deployment, volume/bootstrap commands, OpenTofu resources, backup commands, and launch checklist are documented in `PRODUCTION.md`.
 
@@ -70,6 +70,8 @@ Restore drill:
 9. retain the drill date, backup identity, release revision, and results outside source control.
 
 The file-backed automated recovery tests now cover a stopped database-plus-sidecar backup restored to a new path, idempotent migration startup, intended durable sessions, canonical active-game/history recovery, private game and dashboard live rehydration for both players, and a successful persisted turn after restore. Repeat the same drill against the actual production backup mechanism for every deployment before relying on that backup operationally.
+
+The backup archive path and restore set are validated by `scripts/test-backup.sh`, which exercises the same supervisor signal path used by production and proves the database, WAL, and SHM files round-trip together. This file-level test complements product-level recovery tests; it does not replace the required production restore drill with identity/profile/avatar data.
 
 ## Local development
 

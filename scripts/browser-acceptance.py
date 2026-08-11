@@ -30,8 +30,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
 PORT = 18343
 OIDC_PORT = 18344
+AVATAR_PORT = 18345
 BASE_URL = f"http://{HOST}:{PORT}"
 OIDC_ISSUER = f"http://{HOST}:{OIDC_PORT}"
+AVATAR_URL = f"{OIDC_ISSUER}/avatar.png"
 TIMEOUT = 20.0
 
 
@@ -57,31 +59,22 @@ class FakeOidcProvider:
 
     def __init__(self, directory: pathlib.Path) -> None:
         self.key = directory / "oidc-key.pem"
-        subprocess.run(
-            ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(self.key)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        details = subprocess.run(
-            ["openssl", "pkey", "-in", str(self.key), "-pubout", "-text", "-noout"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        modulus_text = details.split("Modulus:", 1)[1].split("Exponent:", 1)[0]
-        modulus = bytes.fromhex("".join(modulus_text.replace(":", " ").split()))
-        exponent = int(details.split("Exponent:", 1)[1].split()[0])
-        self.jwk = {
-            "kty": "RSA",
-            "kid": "acceptance-key",
-            "use": "sig",
-            "alg": "RS256",
-            "n": base64url(modulus),
-            "e": base64url(exponent.to_bytes((exponent.bit_length() + 7) // 8, "big")),
-        }
+        self.key_id = "acceptance-key"
+        self._generate_key()
         self.codes: dict[str, dict[str, str]] = {}
         self.next_subject = 1
+        self.next_login_subjects: list[int] = []
+        self.next_authorization_faults: list[str] = []
+        self.next_token_faults: list[str] = []
+        self.next_token_delays: list[float] = []
+        self.next_avatar_failures = 0
+        self.subject_names: dict[int, str] = {}
+        self.avatar_requests = 0
+        self.authorization_requests: list[dict[str, list[str]]] = []
+        self.last_callback_url: str | None = None
+        self.avatar_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGNg+A+FMAYAQ84H+fei4u8AAAAASUVORK5CYII="
+        )
         provider = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -109,23 +102,54 @@ class FakeOidcProvider:
                         "id_token_signing_alg_values_supported": ["RS256"],
                         "scopes_supported": ["openid", "profile"],
                         "token_endpoint_auth_methods_supported": ["client_secret_basic"],
-                        "claims_supported": ["iss", "sub", "aud", "exp", "iat", "nonce", "name"],
+                        "claims_supported": ["iss", "sub", "aud", "exp", "iat", "nonce", "name", "picture"],
                         "code_challenge_methods_supported": ["S256"],
                     })
                     return
                 if parsed.path == "/jwks":
                     self.json_response({"keys": [provider.jwk]})
                     return
+                if parsed.path == "/avatar.png":
+                    provider.avatar_requests += 1
+                    if provider.next_avatar_failures:
+                        provider.next_avatar_failures -= 1
+                        self.send_error(503)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(provider.avatar_png)))
+                    self.end_headers()
+                    self.wfile.write(provider.avatar_png)
+                    return
                 if parsed.path == "/authorize":
                     query = urllib.parse.parse_qs(parsed.query)
-                    subject = provider.next_subject
-                    provider.next_subject += 1
+                    provider.authorization_requests.append(query)
+                    fault = provider.next_authorization_faults.pop(0) if provider.next_authorization_faults else None
+                    if fault == "denied":
+                        location = query["redirect_uri"][0] + "?" + urllib.parse.urlencode(
+                            {
+                                "error": "access_denied",
+                                "error_description": "acceptance denial secret must not be reflected",
+                                "state": query["state"][0],
+                            }
+                        )
+                        provider.last_callback_url = location
+                        self.send_response(302)
+                        self.send_header("Location", location)
+                        self.end_headers()
+                        return
+                    if provider.next_login_subjects:
+                        subject = provider.next_login_subjects.pop(0)
+                    else:
+                        subject = provider.next_subject
+                        provider.next_subject += 1
+                    name = provider.subject_names.get(subject, f"Acceptance Player {subject}")
                     code = base64url(os.urandom(24))
                     provider.codes[code] = {
                         "nonce": query["nonce"][0],
                         "challenge": query["code_challenge"][0],
                         "subject": f"acceptance-subject-{subject}",
-                        "name": f"Acceptance Player {subject}",
+                        "name": name,
                     }
                     separator = "&" if "?" in query["redirect_uri"][0] else "?"
                     location = (
@@ -136,8 +160,8 @@ class FakeOidcProvider:
                     self.send_response(302)
                     self.send_header("Location", location)
                     self.end_headers()
+                    provider.last_callback_url = location
                     return
-                self.send_error(404)
 
             def do_POST(self) -> None:
                 if self.path != "/token":
@@ -152,6 +176,20 @@ class FakeOidcProvider:
                 if attempt is None or challenge != attempt["challenge"]:
                     self.send_error(400)
                     return
+                fault = provider.next_token_faults.pop(0) if provider.next_token_faults else None
+                if provider.next_token_delays:
+                    time.sleep(provider.next_token_delays.pop(0))
+                if fault == "outage":
+                    self.send_error(503)
+                    return
+                if fault == "malformed":
+                    body = b"not-json"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 now = int(time.time())
                 claims = {
                     "iss": OIDC_ISSUER,
@@ -161,8 +199,28 @@ class FakeOidcProvider:
                     "iat": now,
                     "nonce": attempt["nonce"],
                     "name": attempt["name"],
+                    "picture": AVATAR_URL,
                 }
-                header = base64url(json.dumps({"alg": "RS256", "kid": "acceptance-key", "typ": "JWT"}, separators=(",", ":")).encode())
+                if fault == "wrong_nonce":
+                    claims["nonce"] = "wrong-acceptance-nonce"
+                elif fault == "wrong_issuer":
+                    claims["iss"] = "https://wrong-issuer.example"
+                elif fault == "wrong_audience":
+                    claims["aud"] = "wrong-acceptance-client"
+                elif fault == "wrong_authorized_party":
+                    claims["aud"] = ["acceptance-client", "another-client"]
+                    claims["azp"] = "wrong-acceptance-client"
+                elif fault == "missing_authorized_party":
+                    claims["aud"] = ["acceptance-client", "another-client"]
+                elif fault == "expired":
+                    claims["exp"] = now - 1
+                elif fault == "future_issued_at":
+                    claims["iat"] = now + 3600
+                elif fault == "old_issued_at":
+                    claims["iat"] = now - 3600
+                elif fault == "empty_subject":
+                    claims["sub"] = ""
+                header = base64url(json.dumps({"alg": "RS256", "kid": provider.key_id, "typ": "JWT"}, separators=(",", ":")).encode())
                 payload = base64url(json.dumps(claims, separators=(",", ":")).encode())
                 signing_input = f"{header}.{payload}".encode()
                 signature = subprocess.run(
@@ -171,6 +229,8 @@ class FakeOidcProvider:
                     check=True,
                     capture_output=True,
                 ).stdout
+                if fault == "bad_signature":
+                    signature = bytes([signature[0] ^ 1]) + signature[1:]
                 self.json_response({
                     "access_token": "acceptance-access-token",
                     "token_type": "Bearer",
@@ -180,6 +240,35 @@ class FakeOidcProvider:
 
         self.server = http.server.ThreadingHTTPServer((HOST, OIDC_PORT), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def _generate_key(self) -> None:
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(self.key)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        details = subprocess.run(
+            ["openssl", "pkey", "-in", str(self.key), "-pubout", "-text", "-noout"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        modulus_text = details.split("Modulus:", 1)[1].split("Exponent:", 1)[0]
+        modulus = bytes.fromhex("".join(modulus_text.replace(":", " ").split()))
+        exponent = int(details.split("Exponent:", 1)[1].split()[0])
+        self.jwk = {
+            "kty": "RSA",
+            "kid": self.key_id,
+            "use": "sig",
+            "alg": "RS256",
+            "n": base64url(modulus),
+            "e": base64url(exponent.to_bytes((exponent.bit_length() + 7) // 8, "big")),
+        }
+
+    def rotate_key(self) -> None:
+        self.key_id = f"acceptance-key-{time.time_ns()}"
+        self._generate_key()
 
     def start(self) -> None:
         self.thread.start()
@@ -349,11 +438,15 @@ class Browser:
         deadline = time.monotonic() + timeout
         last: Any = None
         while time.monotonic() < deadline:
-            last = self.evaluate(expression)
+            try:
+                last = self.evaluate(expression)
+            except AcceptanceError:
+                time.sleep(0.1)
+                continue
             if last:
                 return last
             time.sleep(0.1)
-        context = self.evaluate("({ url: location.href, text: document.body.innerText.slice(0, 2000), html: document.body.innerHTML.slice(0, 2000) })")
+        context = self.evaluate("({ url: location.href, text: document.body?.innerText?.slice(0, 2000) ?? '', html: document.body?.innerHTML?.slice(0, 2000) ?? '' })")
         raise AcceptanceError(
             f"timed out waiting for {expression}; last value: {last!r}; browser: {context!r}"
         )
@@ -373,6 +466,26 @@ class Browser:
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
                 form.querySelector('[type=submit]').click();
+                return true;
+            }})()"""
+        )
+
+    def full_submit(self, selector: str, values: dict[str, str]) -> None:
+        values_json = json.dumps(values)
+        selector_json = json.dumps(selector)
+        self.evaluate(
+            f"""(() => {{
+                const form = document.querySelector({selector_json});
+                if (!form) throw new Error('missing form: ' + {selector_json});
+                for (const [name, value] of Object.entries({values_json})) {{
+                    const input = form.elements.namedItem(name);
+                    if (!input) throw new Error('missing input: ' + name);
+                    input.value = value;
+                }}
+                form.method = 'POST';
+                form.action = '/account/migrate';
+                form.removeAttribute('hx-post');
+                form.submit();
                 return true;
             }})()"""
         )
@@ -602,10 +715,92 @@ def google_login(browser: Browser) -> None:
     browser.wait("document.body.innerText.includes('Signed in as ')")
 
 
-def register(browser: Browser, username: str) -> None:
-    browser.navigate("/register")
-    browser.submit('form[hx-post="/register"]', {"username": username, "password": "correct horse battery staple"})
+def failed_google_login(
+    browser: Browser,
+    provider: FakeOidcProvider,
+    *,
+    authorization_fault: str | None = None,
+    token_fault: str | None = None,
+    token_delay: float | None = None,
+) -> None:
+    before_authorizations = len(provider.authorization_requests)
+    if authorization_fault:
+        provider.next_authorization_faults.append(authorization_fault)
+    if token_fault:
+        provider.next_login_subjects.append(99)
+        provider.next_token_faults.append(token_fault)
+    if token_delay is not None:
+        provider.next_login_subjects.append(99)
+        provider.next_token_delays.append(token_delay)
+    browser.navigate("/login")
+    google_href = browser.evaluate("document.querySelector('a[href^=\"/auth/google/start\"]')?.getAttribute('href')")
+    if not google_href:
+        raise AcceptanceError("Google login link is missing")
+    browser.navigate(google_href)
+    browser.wait("document.body.innerText.includes('Google sign-in')")
+    body = browser.evaluate("document.body.innerText")
+    if "acceptance denial secret" in body or "acceptance-access-token" in body:
+        raise AcceptanceError("OIDC failure reflected provider secrets")
+    if len(provider.authorization_requests) != before_authorizations + 1:
+        raise AcceptanceError("failed Google login did not reach the fake provider exactly once")
+
+
+def logout(browser: Browser) -> None:
+    browser.navigate("/logout")
+    browser.submit('form[hx-post="/logout"]')
+    browser.wait("document.body.innerText.includes('Sign in required')")
+
+
+def profile_avatar_url(browser: Browser) -> str | None:
+    return browser.evaluate(
+        "document.querySelector('#dashboard-shell img[alt=\"Profile avatar\"]')?.getAttribute('src') ?? null"
+    )
+
+
+def create_invitation_link(browser: Browser) -> str:
+    browser.submit('form:has(input[value="CREATE_INVITATION"])')
+    browser.wait("document.body.innerText.includes('Invitation ready')")
+    link = browser.evaluate(
+        "document.querySelector('#created-invitation a[href*=\"/join?invite=\"]')?.getAttribute('href') ?? null"
+    )
+    if not link:
+        raise AcceptanceError("private invitation link was not returned")
+    return link
+
+
+def set_display_name(browser: Browser, name: str) -> None:
+    browser.submit(
+        'form:has(input[value="SET_DISPLAY_NAME"])',
+        {"display_name": name},
+    )
+    browser.wait(f"document.body.innerText.includes({json.dumps(name)})")
+
+
+def migrate_legacy_account(browser: Browser, provider: FakeOidcProvider) -> None:
+    browser.navigate("/account/migrate")
+    provider.next_login_subjects.append(4)
+    browser.full_submit(
+        'form[hx-post="/account/migrate"]',
+        {
+            "username": "legacy-acceptance",
+            "password": "correct horse battery staple",
+        },
+    )
     browser.wait("document.body.innerText.includes('Signed in as ')")
+    text = browser.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+    if "@legacy-acceptance" not in text or "Acceptance Player 4" not in text:
+        raise AcceptanceError("legacy migration did not preserve the account handle and initialize its profile")
+    logout(browser)
+    browser.navigate("/login")
+    browser.evaluate(
+        "fetch('/login', {method: 'POST', headers: {'content-type': 'application/x-www-form-urlencoded'}, body: 'username=legacy-acceptance&password=correct+horse+battery+staple'}).then(response => response.text()).then(html => { document.open(); document.write(html); document.close(); })"
+    )
+    browser.wait("document.body.innerText.includes('Password sign-in is no longer available')")
+    provider.next_login_subjects.append(4)
+    google_login(browser)
+    returning = browser.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+    if "@legacy-acceptance" not in returning:
+        raise AcceptanceError("migrated Google identity did not return to the existing account")
 
 
 def install_readiness_probe(browser: Browser) -> None:
@@ -828,6 +1023,8 @@ def run() -> None:
                 "WWMTF_GOOGLE_CLIENT_ID": "acceptance-client",
                 "WWMTF_GOOGLE_CLIENT_SECRET": "acceptance-secret",
                 "WWMTF_DEVELOPMENT_OIDC_ISSUER": OIDC_ISSUER,
+                "WWMTF_DEV_BOOTSTRAP_USERNAME": "legacy-acceptance",
+                "WWMTF_DEV_BOOTSTRAP_PASSWORD": "correct horse battery staple",
             }
         )
         application_command = os.environ.get("WWMTF_ACCEPTANCE_SERVER")
@@ -856,6 +1053,8 @@ def run() -> None:
         )
         alice: Browser | None = None
         bob: Browser | None = None
+        invitee: Browser | None = None
+        migrant: Browser | None = None
         try:
             wait_for_server(server)
             alice = Browser.launch(chrome, 19221, temp / "alice-profile")
@@ -864,12 +1063,130 @@ def run() -> None:
             set_viewport(alice, 1440)
             install_readiness_probe(alice)
             install_readiness_probe(bob)
+            for fault in (
+                "wrong_nonce",
+                "wrong_issuer",
+                "wrong_audience",
+                "wrong_authorized_party",
+                "missing_authorized_party",
+                "expired",
+                "future_issued_at",
+                "old_issued_at",
+                "empty_subject",
+                "bad_signature",
+                "malformed",
+                "outage",
+            ):
+                failed_google_login(alice, oidc_provider, token_fault=fault)
+            replay_url = oidc_provider.last_callback_url
+            if not replay_url:
+                raise AcceptanceError("failed OIDC callback URL was not recorded")
+            alice.navigate(replay_url.removeprefix(BASE_URL))
+            alice.wait("document.body.innerText.includes('Google sign-in session expired')")
+            failed_google_login(alice, oidc_provider, authorization_fault="denied")
+            failed_google_login(alice, oidc_provider, token_delay=11.0)
+            oidc_provider.rotate_key()
+            oidc_provider.next_login_subjects.append(99)
             google_login(alice)
+            logout(alice)
+            alice.navigate("/auth/google/callback?code=unknown&state=unknown")
+            alice.wait("document.body.innerText.includes('Google sign-in session expired')")
+            migrant = Browser.launch(chrome, 19224, temp / "migrant-profile")
+            migrate_legacy_account(migrant, oidc_provider)
+            migrant.close()
+            migrant = None
+            oidc_provider.next_avatar_failures = 1
+            oidc_provider.next_login_subjects.append(1)
+            google_login(alice)
+            if profile_avatar_url(alice) is not None:
+                raise AcceptanceError("failed provider avatar was unexpectedly persisted")
+            alice_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            if "Acceptance Player 1" not in alice_text:
+                raise AcceptanceError("avatar failure prevented otherwise valid Google login")
+            oidc_provider.next_login_subjects.append(1)
+            logout(alice)
+            google_login(alice)
+            oidc_provider.next_login_subjects.append(2)
             google_login(bob)
             alice_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
             bob_text = bob.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
             if "Acceptance Player 1" not in alice_text or "Acceptance Player 2" not in bob_text:
-                raise AcceptanceError("Google profile names were not initialized")
+                raise AcceptanceError(
+                    f"Google profile names were not initialized: alice={alice_text!r}; bob={bob_text!r}"
+                )
+            alice_avatar = profile_avatar_url(alice)
+            bob_avatar = profile_avatar_url(bob)
+            if not alice_avatar or not bob_avatar:
+                raise AcceptanceError(
+                    f"Google profile avatars were not mirrored; provider requests={oidc_provider.avatar_requests}; "
+                    f"alice={alice_avatar!r}; bob={bob_avatar!r}; alice_text={alice_text!r}"
+                )
+            if alice.evaluate(
+                f"document.querySelector('img[src={json.dumps(alice_avatar)}]')?.naturalWidth !== 128"
+            ):
+                raise AcceptanceError("normalized Google avatar dimensions were not rendered")
+            alice_identity = alice.evaluate(
+                "document.querySelector('#dashboard-shell')?.innerText?.match(/@[a-z0-9-]+-[0-9a-f]{8}/)?.[0] ?? null"
+            )
+            oidc_provider.next_login_subjects.append(1)
+            logout(alice)
+            google_login(alice)
+            returning_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            if alice_identity not in returning_text or "Acceptance Player 1" not in returning_text:
+                raise AcceptanceError("returning Google login did not resolve the same WWMTF account")
+            if profile_avatar_url(alice) != alice_avatar:
+                raise AcceptanceError("returning Google login did not retain the mirrored avatar")
+
+            set_display_name(alice, "Custom Acceptance Name")
+            alice.submit('form:has(input[value="REMOVE_AVATAR"])')
+            alice.wait("!document.querySelector('#dashboard-shell img[alt=\"Profile avatar\"]')")
+            oidc_provider.subject_names[1] = "Provider Name After Customization"
+            oidc_provider.next_login_subjects.append(1)
+            logout(alice)
+            google_login(alice)
+            customized_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            if "Custom Acceptance Name" not in customized_text:
+                raise AcceptanceError("returning Google login overwrote a custom display name")
+            if profile_avatar_url(alice) is not None:
+                raise AcceptanceError("returning Google login restored an explicitly removed avatar")
+            alice.submit('form:has(input[value="USE_GOOGLE_NAME"])')
+            alice.submit('form:has(input[value="USE_GOOGLE_AVATAR"])')
+            oidc_provider.subject_names[1] = "Restored Provider Name"
+            oidc_provider.next_login_subjects.append(1)
+            logout(alice)
+            google_login(alice)
+            restored_text = alice.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
+            if "Restored Provider Name" not in restored_text or not profile_avatar_url(alice):
+                raise AcceptanceError("explicit Google profile synchronization was not restored")
+
+            invitation_link = create_invitation_link(alice)
+            invitation_token = urllib.parse.parse_qs(urllib.parse.urlparse(invitation_link).query)["invite"][0]
+            before_invitation_authorizations = len(oidc_provider.authorization_requests)
+            invitee = Browser.launch(chrome, 19223, temp / "invitee-profile")
+            try:
+                invitee.navigate(f"/join?invite={urllib.parse.quote(invitation_token)}")
+                invitee.navigate(f"/login?invite={urllib.parse.quote(invitation_token)}")
+                google_href = invitee.evaluate(
+                    "document.querySelector('a[href^=\"/auth/google/start\"]')?.getAttribute('href')"
+                )
+                if not google_href:
+                    raise AcceptanceError("invitation Google login link is missing")
+                oidc_provider.next_login_subjects.append(3)
+                invitee.navigate(google_href)
+                invitee.wait("document.body.innerText.includes('Game with ')")
+                authorization = oidc_provider.authorization_requests[before_invitation_authorizations]
+                if invitation_token in json.dumps(authorization):
+                    raise AcceptanceError("invitation token was disclosed to the OIDC provider")
+                invitation_game = invitee.evaluate(
+                    "document.querySelector('#active-games a[href^=\"/games/\"]')?.getAttribute('href')"
+                )
+                if not invitation_game:
+                    raise AcceptanceError("invitation login did not create a private game")
+                invitee.navigate(invitation_game)
+                invitee.wait("Boolean(document.querySelector('#game-board'))")
+            finally:
+                invitee.close()
+                invitee = None
             assert_responsive_shell(alice, "/", "#dashboard-shell", 390)
             set_viewport(alice, 1440)
             alice.navigate("/")
@@ -891,7 +1208,7 @@ def run() -> None:
             alice.submit('form[hx-post="/dashboard/action"]', {"action": "CHALLENGE", "username": bob_handle})
             alice.wait("document.body.innerText.includes('Challenge sent to Acceptance Player 2')")
             bob.wait("window.__acceptanceUpdates?.some?.(channel => channel.startsWith('dashboard:'))")
-            bob.wait("document.body.innerText.includes('Challenge from Acceptance Player 1')")
+            bob.wait("document.body.innerText.includes('Challenge from Restored Provider Name')")
             bob.submit('form:has(input[value="ACCEPT_CHALLENGE"])', {})
             bob.wait(
                 "Array.from(document.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('/games/'))"
@@ -1058,6 +1375,10 @@ def run() -> None:
                 alice.close()
             if bob:
                 bob.close()
+            if invitee:
+                invitee.close()
+            if migrant:
+                migrant.close()
             if server.poll() is None:
                 server.terminate()
                 try:

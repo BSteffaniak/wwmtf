@@ -17,6 +17,7 @@ const MAX_HANDLE_ATTEMPTS: usize = 8;
 const AVATAR_SIZE: u32 = 128;
 const MAX_AVATAR_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_AVATAR_PIXELS: u64 = 16_000_000;
+const MAX_AVATAR_REDIRECTS: usize = 3;
 const GOOGLE_AVATAR_HOSTS: &[&str] = &["lh3.googleusercontent.com"];
 
 /// Downloads a Google profile picture with strict host, redirect, timeout, and byte bounds.
@@ -31,21 +32,67 @@ pub async fn download_google_avatar(
     picture_url: &str,
     timeout: std::time::Duration,
 ) -> Result<Vec<u8>, ProfileError> {
-    let url = reqwest::Url::parse(picture_url).map_err(|_| ProfileError::InvalidImageUrl)?;
-    if url.scheme() != "https"
-        || !GOOGLE_AVATAR_HOSTS.contains(&url.host_str().unwrap_or_default())
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(ProfileError::InvalidImageUrl);
-    }
+    download_provider_avatar(picture_url, timeout, None).await
+}
+
+/// Downloads an avatar from Google, or from the exact deterministic development issuer origin.
+///
+/// # Errors
+///
+/// * Returns [`ProfileError::InvalidImageUrl`] unless the URL matches the applicable origin policy.
+/// * Returns [`ProfileError::InvalidImage`] for unsuccessful or oversized responses.
+/// * Returns [`ProfileError::Http`] for transport failures.
+pub async fn download_provider_avatar(
+    picture_url: &str,
+    timeout: std::time::Duration,
+    development_issuer: Option<&str>,
+) -> Result<Vec<u8>, ProfileError> {
+    let mut url = reqwest::Url::parse(picture_url).map_err(|_| ProfileError::InvalidImageUrl)?;
+    let development_origin = development_issuer
+        .map(reqwest::Url::parse)
+        .transpose()
+        .map_err(|_| ProfileError::InvalidImageUrl)?;
+    validate_avatar_url(&url, development_origin.as_ref())?;
     let client = reqwest::Client::builder()
         .connect_timeout(timeout)
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let mut response = client.get(url).send().await?;
+    let mut redirects = 0;
+    let mut response = loop {
+        let response = client.get(url.clone()).send().await?;
+        if response.status().is_redirection() {
+            if redirects == MAX_AVATAR_REDIRECTS {
+                return Err(ProfileError::InvalidImageUrl);
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or(ProfileError::InvalidImageUrl)?;
+            url = url
+                .join(location)
+                .map_err(|_| ProfileError::InvalidImageUrl)?;
+            validate_avatar_url(&url, development_origin.as_ref())?;
+            redirects += 1;
+            continue;
+        }
+        break response;
+    };
     if !response.status().is_success() {
+        return Err(ProfileError::InvalidImage);
+    }
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            matches!(
+                value.split(';').next().map(str::trim),
+                Some("image/jpeg" | "image/png" | "image/webp")
+            )
+        })
+    {
         return Err(ProfileError::InvalidImage);
     }
     if let Some(length) = response.content_length()
@@ -61,6 +108,29 @@ pub async fn download_google_avatar(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+fn validate_avatar_url(
+    url: &reqwest::Url,
+    development_origin: Option<&reqwest::Url>,
+) -> Result<(), ProfileError> {
+    let allowed = development_origin.map_or_else(
+        || {
+            url.scheme() == "https"
+                && GOOGLE_AVATAR_HOSTS.contains(&url.host_str().unwrap_or_default())
+        },
+        |issuer| {
+            url.scheme() == issuer.scheme()
+                && url.host_str() == issuer.host_str()
+                && url.port_or_known_default() == issuer.port_or_known_default()
+        },
+    );
+    if allowed && url.username().is_empty() && url.password().is_none() && url.fragment().is_none()
+    {
+        Ok(())
+    } else {
+        Err(ProfileError::InvalidImageUrl)
+    }
 }
 
 /// Normalized profile image stored without source metadata.
@@ -721,6 +791,25 @@ mod tests {
                     .unwrap()
             );
         });
+    }
+
+    #[test]
+    fn avatar_url_policy_rejects_untrusted_redirect_targets_and_credentials() {
+        let google = reqwest::Url::parse("https://lh3.googleusercontent.com/avatar.png").unwrap();
+        assert!(validate_avatar_url(&google, None).is_ok());
+        for url in [
+            "http://lh3.googleusercontent.com/avatar.png",
+            "https://example.com/avatar.png",
+            "https://user@lh3.googleusercontent.com/avatar.png",
+            "https://lh3.googleusercontent.com/avatar.png#fragment",
+        ] {
+            assert!(validate_avatar_url(&reqwest::Url::parse(url).unwrap(), None).is_err());
+        }
+        let issuer = reqwest::Url::parse("http://127.0.0.1:18344").unwrap();
+        let local = reqwest::Url::parse("http://127.0.0.1:18344/avatar.png").unwrap();
+        let other_port = reqwest::Url::parse("http://127.0.0.1:18345/avatar.png").unwrap();
+        assert!(validate_avatar_url(&local, Some(&issuer)).is_ok());
+        assert!(validate_avatar_url(&other_port, Some(&issuer)).is_err());
     }
 
     #[test]

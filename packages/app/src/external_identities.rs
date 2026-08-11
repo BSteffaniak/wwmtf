@@ -100,13 +100,7 @@ pub async fn resolve_or_create_external_account(
     let now_ms = timestamp_ms(now)?;
     let tx = db.begin_transaction().await?;
     let creation = async {
-        tx.insert("users")
-            .value("user_id", user_id.clone())
-            .value("username_normalized", handle.clone())
-            .value("username_display", handle)
-            .value("created_at_ms", now_ms)
-            .execute(&*tx)
-            .await?;
+        crate::accounts::create_user_record(&*tx, &user_id, &handle, &handle, now_ms).await?;
         tx.insert("user_profiles")
             .value("user_id", user_id.clone())
             .value("display_name", display_name)
@@ -133,7 +127,7 @@ pub async fn resolve_or_create_external_account(
     }
     .await;
     if let Err(error) = creation {
-        drop(tx);
+        tx.rollback().await?;
         if let Some(winner) =
             user_for_external_identity(db, &identity.issuer, &identity.subject).await?
         {
@@ -192,6 +186,33 @@ pub async fn link_external_identity(
     identity: &VerifiedExternalIdentity,
     now: OffsetDateTime,
 ) -> Result<(), ExternalIdentityError> {
+    let tx = db.begin_transaction().await?;
+    match link_external_identity_in_database(&*tx, user_id, identity, now).await {
+        Ok(()) => {
+            tx.commit().await?;
+            Ok(())
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+/// Links an external identity using the caller's database or active transaction.
+///
+/// This internal workflow entry point lets migration include profile/link creation, credential
+/// removal, session revocation, and replacement-session issuance in one transaction.
+///
+/// # Errors
+///
+/// * Returns identity conflicts, validation failures, or persistence failures.
+pub async fn link_external_identity_in_database(
+    db: &dyn Database,
+    user_id: &str,
+    identity: &VerifiedExternalIdentity,
+    now: OffsetDateTime,
+) -> Result<(), ExternalIdentityError> {
     validate_identity(identity)?;
     if user_for_external_identity(db, &identity.issuer, &identity.subject)
         .await?
@@ -208,8 +229,7 @@ pub async fn link_external_identity(
     }
     let display_name = crate::normalize_display_name(&identity.display_name)?;
     let now_ms = timestamp_ms(now)?;
-    let tx = db.begin_transaction().await?;
-    tx.insert("user_profiles")
+    db.insert("user_profiles")
         .value("user_id", user_id)
         .value("display_name", display_name)
         .value("display_name_source", "GOOGLE")
@@ -217,9 +237,9 @@ pub async fn link_external_identity(
         .value("provider_picture_url", identity.picture_url.as_deref())
         .value("provider_picture_checked_at_ms", Option::<i64>::None)
         .value("updated_at_ms", now_ms)
-        .execute(&*tx)
+        .execute(db)
         .await?;
-    tx.insert("external_identities")
+    db.insert("external_identities")
         .value("external_identity_id", Uuid::new_v4().to_string())
         .value("provider", identity.provider.clone())
         .value("issuer", identity.issuer.clone())
@@ -229,9 +249,8 @@ pub async fn link_external_identity(
         .value("provider_picture_url", identity.picture_url.as_deref())
         .value("created_at_ms", now_ms)
         .value("last_authenticated_at_ms", now_ms)
-        .execute(&*tx)
+        .execute(db)
         .await?;
-    tx.commit().await?;
     Ok(())
 }
 
@@ -318,6 +337,133 @@ mod tests {
                     .await
                     .unwrap()
                     .is_empty()
+            );
+        });
+    }
+
+    async fn open_database(path: &std::path::Path) -> Box<dyn Database> {
+        switchy_database_connection::builder()
+            .turso()
+            .with_path(path)
+            .with_busy_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn concurrent_first_login_resolves_one_winner_without_orphans() {
+        block_on(async {
+            let directory = std::env::temp_dir()
+                .join(format!("wwmtf-concurrent-google-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("accounts.db");
+            let setup = open_database(&path).await;
+            migrate_app(&*setup).await.unwrap();
+            setup.close().await.unwrap();
+
+            let first_db = open_database(&path).await;
+            let second_db = open_database(&path).await;
+            let identity = VerifiedExternalIdentity::google(
+                "https://accounts.google.com",
+                "simultaneous-subject",
+                "Simultaneous User",
+                None,
+            )
+            .unwrap();
+            let (first, second) = futures_lite::future::zip(
+                resolve_or_create_external_account(
+                    &*first_db,
+                    &identity,
+                    OffsetDateTime::UNIX_EPOCH,
+                ),
+                resolve_or_create_external_account(
+                    &*second_db,
+                    &identity,
+                    OffsetDateTime::UNIX_EPOCH,
+                ),
+            )
+            .await;
+            let first = first.unwrap();
+            let second = second.unwrap();
+            assert_eq!(first.user_id, second.user_id);
+            assert_ne!(first.created, second.created);
+            assert_eq!(
+                first_db
+                    .select("users")
+                    .execute(&*first_db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                first_db
+                    .select("external_identities")
+                    .execute(&*first_db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                first_db
+                    .select("user_profiles")
+                    .execute(&*first_db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            first_db.close().await.unwrap();
+            second_db.close().await.unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+        });
+    }
+
+    #[test]
+    fn first_login_identity_conflict_rolls_back_without_orphan_users() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .unwrap();
+            migrate_app(&*db).await.unwrap();
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let identity = VerifiedExternalIdentity::google(
+                "https://accounts.google.com",
+                "race-subject",
+                "Concurrent User",
+                None,
+            )
+            .unwrap();
+            let first = resolve_or_create_external_account(&*db, &identity, now)
+                .await
+                .unwrap();
+            let second = resolve_or_create_external_account(&*db, &identity, now)
+                .await
+                .unwrap();
+            assert_eq!(first.user_id, second.user_id);
+            assert!(first.created);
+            assert!(!second.created);
+            assert_eq!(db.select("users").execute(&*db).await.unwrap().len(), 1);
+            assert_eq!(
+                db.select("external_identities")
+                    .execute(&*db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                db.select("user_profiles")
+                    .execute(&*db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
             );
         });
     }

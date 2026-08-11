@@ -10,6 +10,10 @@ use thiserror::Error;
 use crate::{ClaimedOidcAttempt, NewOidcAttempt, VerifiedExternalIdentity};
 
 pub const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+const MAX_ID_TOKEN_AGE_SECS: i64 = 10 * 60;
+const MAX_ID_TOKEN_FUTURE_SKEW_SECS: i64 = 5 * 60;
+const PROVIDER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROVIDER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Server-side Google OIDC client configuration and discovered provider metadata.
 pub struct GoogleOidcClient {
@@ -22,6 +26,8 @@ pub struct GoogleOidcClient {
         EndpointMaybeSet,
     >,
     issuer: String,
+    client_id: String,
+    client_secret: String,
 }
 
 impl GoogleOidcClient {
@@ -94,8 +100,8 @@ impl GoogleOidcClient {
             let runtime_guard = runtime.enter();
             let client = openidconnect::reqwest::ClientBuilder::new()
                 .redirect(openidconnect::reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(PROVIDER_CONNECT_TIMEOUT)
+                .timeout(PROVIDER_REQUEST_TIMEOUT)
                 .build()
                 .map_err(|_| GoogleOidcError::HttpClient)?;
             drop(runtime_guard);
@@ -122,6 +128,63 @@ impl GoogleOidcClient {
         Ok(Self {
             client,
             issuer: discovered_issuer,
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+        })
+    }
+
+    /// Downloads one verified profile picture using the same bounded HTTP policy as production.
+    ///
+    /// Google uses its fixed HTTPS allowlist. Deterministic development issuers may serve a
+    /// picture only from their exact origin; production wiring cannot construct such a client.
+    ///
+    /// # Errors
+    ///
+    /// * Returns profile URL, transport, response, or image-bound failures.
+    pub async fn download_avatar(
+        &self,
+        picture_url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<u8>, crate::ProfileError> {
+        let development_origin = (self.issuer != GOOGLE_ISSUER).then_some(self.issuer.as_str());
+        crate::download_provider_avatar(picture_url, timeout, development_origin).await
+    }
+
+    fn provider_http_client() -> Result<openidconnect::reqwest::Client, GoogleOidcError> {
+        openidconnect::reqwest::ClientBuilder::new()
+            .redirect(openidconnect::reqwest::redirect::Policy::none())
+            .connect_timeout(PROVIDER_CONNECT_TIMEOUT)
+            .timeout(PROVIDER_REQUEST_TIMEOUT)
+            .build()
+            .map_err(|_| GoogleOidcError::HttpClient)
+    }
+
+    async fn refresh_provider_keys(&self) -> Result<Self, GoogleOidcError> {
+        let provider_metadata = CoreProviderMetadata::discover_async(
+            IssuerUrl::new(self.issuer.clone()).map_err(|_| GoogleOidcError::Configuration)?,
+            &Self::provider_http_client()?,
+        )
+        .await
+        .map_err(|_| GoogleOidcError::Discovery)?;
+        if provider_metadata.issuer().as_str() != self.issuer {
+            return Err(GoogleOidcError::Discovery);
+        }
+        let client = CoreClient::from_provider_metadata(
+            provider_metadata,
+            ClientId::new(self.client_id.clone()),
+            Some(ClientSecret::new(self.client_secret.clone())),
+        )
+        .set_redirect_uri(
+            self.client
+                .redirect_uri()
+                .cloned()
+                .ok_or(GoogleOidcError::Configuration)?,
+        );
+        Ok(Self {
+            client,
+            issuer: self.issuer.clone(),
+            client_id: self.client_id.clone(),
+            client_secret: self.client_secret.clone(),
         })
     }
 
@@ -160,27 +223,60 @@ impl GoogleOidcClient {
         if code.trim().is_empty() {
             return Err(GoogleOidcError::Callback);
         }
-        let http_client = openidconnect::reqwest::ClientBuilder::new()
-            .redirect(openidconnect::reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|_| GoogleOidcError::HttpClient)?;
         let token = self
             .client
             .exchange_code(AuthorizationCode::new(code.to_string()))
             .map_err(|_| GoogleOidcError::Callback)?
             .set_pkce_verifier(PkceCodeVerifier::new(attempt.pkce_verifier.clone()))
-            .request_async(&http_client)
+            .request_async(&Self::provider_http_client()?)
             .await
             .map_err(|_| GoogleOidcError::TokenExchange)?;
         let id_token = token.id_token().ok_or(GoogleOidcError::MissingIdToken)?;
+        match self.validate_id_token(id_token, attempt) {
+            Err(GoogleOidcError::InvalidIdToken) => self
+                .refresh_provider_keys()
+                .await?
+                .validate_id_token(id_token, attempt),
+            result => result,
+        }
+    }
+
+    fn validate_id_token(
+        &self,
+        id_token: &openidconnect::core::CoreIdToken,
+        attempt: &ClaimedOidcAttempt,
+    ) -> Result<VerifiedExternalIdentity, GoogleOidcError> {
+        let verifier = self
+            .client
+            .id_token_verifier()
+            .set_issue_time_verifier_fn(|issue_time| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| "system clock precedes Unix epoch".to_string())?;
+                let now = i64::try_from(now.as_secs())
+                    .map_err(|_| "system clock is out of range".to_string())?;
+                let issue_time = issue_time.timestamp();
+                if issue_time > now.saturating_add(MAX_ID_TOKEN_FUTURE_SKEW_SECS) {
+                    return Err("ID token issue time is in the future".to_string());
+                }
+                if issue_time < now.saturating_sub(MAX_ID_TOKEN_AGE_SECS) {
+                    return Err("ID token issue time is too old".to_string());
+                }
+                Ok(())
+            });
         let claims = id_token
-            .claims(
-                &self.client.id_token_verifier(),
-                &Nonce::new(attempt.nonce.clone()),
-            )
+            .claims(&verifier, &Nonce::new(attempt.nonce.clone()))
             .map_err(|_| GoogleOidcError::InvalidIdToken)?;
+        let audiences = claims.audiences();
+        let requires_authorized_party = audiences.len() > 1;
+        let authorized_party_matches = claims
+            .authorized_party()
+            .is_none_or(|authorized_party| authorized_party.as_str() == self.client_id);
+        if (requires_authorized_party && claims.authorized_party().is_none())
+            || !authorized_party_matches
+        {
+            return Err(GoogleOidcError::InvalidIdToken);
+        }
         let subject = claims.subject().as_str();
         if subject.trim().is_empty() {
             return Err(GoogleOidcError::InvalidIdToken);
