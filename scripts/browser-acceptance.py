@@ -779,7 +779,7 @@ def migrate_legacy_account(browser: Browser, provider: FakeOidcProvider) -> None
     browser.navigate("/account/migrate")
     provider.next_login_subjects.append(4)
     browser.full_submit(
-        'form[action="/account/migrate"]',
+        'form[method="post"]',
         {
             "username": "legacy-acceptance",
             "password": "correct horse battery staple",
