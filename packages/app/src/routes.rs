@@ -2922,7 +2922,8 @@ fn visual_game_page(
     container! {
         div id="app-page" class="game-scene" data-shared-state-channel=(game_channel.as_str())
             fx-global-shared-state-event=(refresh_game)
-            direction="column" position="fixed" top=0 right=0 bottom=0 left=0
+            direction="column" width=vw100 height=dvh100 min-height=dvh100
+            position="fixed" top=0 right=0 bottom=0 left=0
             overflow-x="hidden" overflow-y="hidden"
             background=#123b2a color=#f4f0df gap="6px" {
             header id="scene-controls" width="100%" direction="row"
@@ -3856,6 +3857,8 @@ mod tests {
             assert!(!page.contains("sx-max-height=\"300px\""));
             assert!(page.contains("sx-flex-grow=\"1\""));
             assert!(page.contains("sx-position=\"fixed\""));
+            assert!(page.contains("sx-height=\"100dvh\""));
+            assert!(page.contains("sx-min-height=\"100dvh\""));
             assert!(page.contains("sx-position=\"absolute\""));
             assert!(page.contains("sx-top=\"0\""));
             assert!(page.contains("sx-bottom=\"0\""));
