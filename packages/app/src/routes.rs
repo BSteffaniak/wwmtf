@@ -1902,7 +1902,7 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                     h1 { "Welcome back" }
                     span color=#5d6258 { "Sign in to continue your private games." }
                 }
-                anchor href=(google_href) color=#ffffff background=#526243 border=(("#526243", 1))
+                anchor href=(google_href) target="_top" color=#ffffff background=#526243 border=(("#526243", 1))
                     border-radius="10px" padding-y=13 padding-x=18 text-align="center" { "Continue with Google" }
                 span color=#5d6258 { "Already have a username/password account? "
                     anchor href="/account/migrate" color=#526243 { "Migrate it to Google" }
@@ -4845,6 +4845,7 @@ mod tests {
             .display_to_string(false, false)
             .expect("login page renders");
         assert!(login.contains("href=\"/auth/google/start\""));
+        assert!(login.contains("target=\"_top\""));
         assert!(login.contains("Continue with Google"));
         assert!(login.contains("href=\"/account/migrate\""));
         assert!(!login.contains("script"));
