@@ -92,4 +92,12 @@ if PATH="$TEST_DIR/bin:$PATH" \
     exit 1
 fi
 
+grep -F 'map $request_method:$http_sec_fetch_site $fetch_site_allowed' "$ROOT_DIR/config/nginx.conf" >/dev/null
+grep -F "'POST:same-origin' 1;" "$ROOT_DIR/config/nginx.conf" >/dev/null
+grep -F 'if ($fetch_site_allowed = 0)' "$ROOT_DIR/config/nginx.conf" >/dev/null
+if grep -Fq '$http_origin $origin_allowed' "$ROOT_DIR/config/nginx.conf"; then
+    echo "nginx still requires the optional Origin header for native form POSTs" >&2
+    exit 1
+fi
+
 echo "deployment restart, secret, and Google smoke tests passed"
