@@ -2935,35 +2935,15 @@ fn visual_game_page(
             background=#123b2a color=#f4f0df gap="6px" {
             header id="scene-controls" width="100%" min-width=0 direction="row"
                 align-items="center" gap="6px" padding-y="8px" padding-x="6px" {
-                anchor href="/" flex="0 0 auto" background=#173326 color=#f4f0df border=(("#436854", 1))
-                    border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
+                div class="header-action-slot header-action-left" min-width=0 flex=1 direction="row" justify-content="start" {
+                    anchor href="/" flex="0 0 auto" background=#173326 color=#f4f0df border=(("#436854", 1))
+                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
+                }
                 (opponent_hud)
-                details id="game-menu" flex="0 0 auto" position="relative" align-items="end" {
-                    summary cursor=pointer background=#173326 color=#f4f0df border=(("#436854", 1))
-                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "Menu ···" }
-                    aside id="activity-rail" position="absolute" top=46 right=0 width="340px" max-width="92vw"
-                        max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
-                        border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
-                        div gap="2px" {
-                            span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
-                            h2 { (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str()) }
-                        }
-                        @if let Some(latest) = &game.latest_action {
-                            section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))
-                                border-radius="12px" padding="12px" gap="3px" {
-                                span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
-                                span font-weight=bold { (latest.as_str()) }
-                            }
-                        }
-                        section id="recent-activity" gap="8px" {
-                            h3 { "Move history" }
-                            (history)
-                        }
-                        section id="game-reference" width="100%" border-top=(("#d8c9a7", 1))
-                            padding-top="12px" gap="10px" {
-                            (rules_component(game))
-                        }
-                    }
+                div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" {
+                    button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
+                        background=#173326 color=#f4f0df border=(("#436854", 1))
+                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer { "Menu ···" }
                 }
             }
             main id="game-layout" class="game-arena" width="100%" min-height=0
@@ -3009,6 +2989,34 @@ fn visual_game_page(
                             }
                         }
                     }
+                }
+            }
+            aside id="activity-rail" hidden position="fixed" top=62 right=6 width="340px" max-width="92vw"
+                max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
+                border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
+                div direction="row" justify-content="space-between" align-items="start" gap="8px" {
+                    div gap="2px" {
+                        span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
+                        h2 { (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str()) }
+                    }
+                    button type=button fx-click=(ActionType::no_display_by_id("activity-rail"))
+                        background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
+                        padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
+                }
+                @if let Some(latest) = &game.latest_action {
+                    section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))
+                        border-radius="12px" padding="12px" gap="3px" {
+                        span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
+                        span font-weight=bold { (latest.as_str()) }
+                    }
+                }
+                section id="recent-activity" gap="8px" {
+                    h3 { "Move history" }
+                    (history)
+                }
+                section id="game-reference" width="100%" border-top=(("#d8c9a7", 1))
+                    padding-top="12px" gap="10px" {
+                    (rules_component(game))
                 }
             }
             aside id="game-definition-layer" hidden position="fixed" top=68 right="2%"
@@ -3856,7 +3864,8 @@ mod tests {
             assert!(page.contains("game-arena"));
             assert!(page.contains("player-hud"));
             assert!(page.contains("action-hud"));
-            assert!(page.contains("game-menu"));
+            assert!(page.contains("header-action-left"));
+            assert!(page.contains("header-action-right"));
             assert!(page.contains("activity-rail"));
             assert!(page.contains("turn-dock"));
             assert!(page.contains("id=\"turn-dock-layer\""));
