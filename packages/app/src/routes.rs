@@ -2533,8 +2533,8 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" width="100%" position="relative" {
-            div class="rack-tray" direction="row" overflow-x="auto" overflow-y="hidden"
+        section id="player-rack" max-width="100%" position="relative" {
+            div class="rack-tray" max-width="100%" direction="row" overflow-x="auto" overflow-y="hidden"
                 justify-content="center" gap="7px"
                 background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="11px" padding-x="14px" {
                 @for (tile_id, letter, points) in rack {
@@ -2602,7 +2602,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
         .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
         .map(|candidate| candidate.play.score);
     container! {
-        section id="turn-actions" class="turn-composer action-hud" width="100%" padding-y="4px" padding-x="6px"
+        section id="turn-actions" class="turn-composer action-hud" max-width="100%" padding-y="4px" padding-x="6px"
             background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { "#173d2c" })
             color=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#402c1e" } else { "#f4f0df" })
             border=((if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f3b66e" } else { "#35674e" }, 1))
@@ -2960,7 +2960,7 @@ fn visual_game_page(
                 }
             }
             section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
-                section id="play-console" class="game-console turn-dock" width="100%"
+                section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
                     background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
                     padding-y="6px" padding-x="8px" gap="5px" {
                     @if error.is_some() {
@@ -2980,7 +2980,7 @@ fn visual_game_page(
                         (actions)
                     } @else if !game.completed {
                         @let compose_action = format!("/games/{}/compose", game.game_id);
-                        section id="turn-actions" class="primary-action-row" width="100%" direction="row"
+                        section id="turn-actions" class="primary-action-row" max-width="100%" direction="row"
                             justify-content="center" overflow-x="auto" overflow-y="hidden" {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "SHUFFLE_RACK"))
