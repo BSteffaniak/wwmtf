@@ -2392,8 +2392,9 @@ fn visual_board(
     let board_frame_width = board_grid_width + 12;
     container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
-            position="absolute" top=0 right=0 bottom=0 left=0 {
-            div class="board-zoom-controls" position="absolute" top=8 left=8 direction="row" gap="7px" {
+            position="absolute" top=0 right=0 bottom=0 left=0 direction="column" {
+            div class="board-zoom-controls" width="100%" flex="0 0 auto" direction="row"
+                justify-content="center" gap="7px" padding-y="6px" {
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     (compose_form_fields(game, draft, "ZOOM_OUT"))
                     button type=submit padding-y="6px" padding-x="11px"
@@ -2410,11 +2411,13 @@ fn visual_board(
                         background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
                 }
             }
-            div class="board-viewport" position="absolute" top=0 right=0 bottom=0 left=0
+            div class="board-viewport" width="100%" min-height=0 flex=1
                 overflow-x="auto" overflow-y="auto" {
-                div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
-                    width=(board_frame_width) height=(board_frame_width) margin="auto"
-                    flex="0 0 auto" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
+                div class="board-scroll-content" width="100%" height="100%" min-width=(board_frame_width)
+                    min-height=(board_frame_width) align-items="center" justify-content="center" {
+                    div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
+                        width=(board_frame_width) height=(board_frame_width)
+                        flex="0 0 auto" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
                             @for x in 0..game.rules.board_size {
@@ -2511,6 +2514,7 @@ fn visual_board(
                 }
             }
         }
+    }
     }
     .into()
 }
@@ -3868,6 +3872,8 @@ mod tests {
             assert!(page.contains("sx-max-height=\"78vh\""));
             assert!(page.contains("sx-overflow-y=\"auto\""));
             assert!(page.contains("board-viewport"));
+            assert!(page.contains("board-scroll-content"));
+            assert!(page.contains("board-zoom-controls"));
             assert!(page.contains("value=\"ZOOM_OUT\""));
             assert!(page.contains("value=\"ZOOM_RESET\""));
             assert!(page.contains("value=\"ZOOM_IN\""));
