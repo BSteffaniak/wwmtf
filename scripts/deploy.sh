@@ -13,6 +13,18 @@ fly() {
     flyctl "$@"
 }
 
+machine_exec() {
+    local machine_id="$1"
+    local command="$2"
+    local output
+    if ! output="$(fly machine exec --app "$APP_NAME" "$machine_id" "$command" --timeout 45 --json)"; then
+        return 1
+    fi
+    jq -rj '.stdout // empty' <<<"$output"
+    jq -rj '.stderr // empty' <<<"$output" >&2
+    jq -e '(.exit_code // 0) == 0' <<<"$output" >/dev/null
+}
+
 app_exists() {
     fly apps list --json | jq -e --arg app "$APP_NAME" '.[] | select((.Name // .name) == $app)' >/dev/null
 }
@@ -159,18 +171,25 @@ snapshot_volume() {
         exit 1
     }
 
-    local snapshot
+    local machine_id="${machines[0]}"
+    local backup_started_at
+    backup_started_at="$(date +%s)"
     echo "Creating an application-consistent backup before the volume snapshot"
-    fly ssh console --app "$APP_NAME" --command "sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)'"
+    machine_exec "$machine_id" "sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)'"
+    local backup_ready=false
     for _ in $(seq 1 30); do
-        if fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"; then
+        if machine_exec "$machine_id" "sh -c 'test -s /data/backups/database.tar.gz && test \$(stat -c %Y /data/backups/database.tar.gz) -ge $backup_started_at'"; then
+            backup_ready=true
             break
         fi
         sleep 1
     done
-    fly ssh console --app "$APP_NAME" --command "test -s /data/backups/database.tar.gz"
+    [[ "$backup_ready" == "true" ]] || {
+        echo "Application-consistent backup did not complete within 30 seconds" >&2
+        exit 1
+    }
 
-    local machine_id="${machines[0]}"
+    local snapshot
     local original_config
     local quiesced_config
     original_config="$(mktemp)"

@@ -31,10 +31,17 @@ case "$*" in
     "volumes list --app wwmtf --json")
         printf '[{"id":"volume-1","name":"wwmtf_data"}]\n'
         ;;
-    "ssh console --app wwmtf --command sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)'")
+    "machine exec --app wwmtf machine-1 sh -c 'kill -USR1 \$(cat /tmp/wwmtf-supervisor.pid)' --timeout 45 --json")
         printf 'backup\n' >>"$LOG_FILE"
+        printf '{"stdout":""}\n'
         ;;
-    "ssh console --app wwmtf --command test -s /data/backups/database.tar.gz")
+    "machine exec --app wwmtf machine-1 sh -c 'test -s /data/backups/database.tar.gz && test \$(stat -c %Y /data/backups/database.tar.gz) -ge "*"' --timeout 45 --json")
+        printf 'backup-check\n' >>"$LOG_FILE"
+        if [[ "$(grep -c '^backup-check$' "$LOG_FILE")" -eq 1 ]]; then
+            printf '{"exit_code":1}\n'
+        else
+            printf '{"stdout":""}\n'
+        fi
         ;;
     "secrets import --app wwmtf --stage")
         cat >"${MOCK_FLY_SECRET_FILE:?MOCK_FLY_SECRET_FILE is required}"
@@ -119,6 +126,7 @@ PATH="$TEST_DIR/bin:$PATH" \
 [[ "$(cat "$TEST_DIR/state")" == "started" ]]
 [[ "$(grep -c '^quiesce$' "$TEST_DIR/log")" -eq 1 ]]
 [[ "$(grep -c '^backup$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^backup-check$' "$TEST_DIR/log")" -eq 2 ]]
 [[ "$(grep -c '^restore-config$' "$TEST_DIR/log")" -eq 1 ]]
 [[ "$(grep -c '^start$' "$TEST_DIR/log")" -eq 2 ]]
 
