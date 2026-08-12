@@ -2764,13 +2764,14 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
         .to_uppercase()
         .to_string();
     container! {
-        section id="game-awareness" class="player-hud opponent-hud" width="720px" max-width="100%"
+        section id="game-awareness" class="player-hud opponent-hud" min-width=0 flex=1
+            overflow-x="hidden"
             background=(if opponent_active { "#f4c95d" } else { "#214c38" })
             color=(if opponent_active { "#2d2515" } else { "#f4f0df" })
             border=((if opponent_active { "#ffe29a" } else { "#376d53" }, 2))
             border-radius="999px" padding-y="8px" padding-x="13px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                div direction="row" align-items="center" gap="10px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="6px" min-width=0 {
+                div direction="row" align-items="center" gap="6px" min-width=0 flex=1 overflow-x="hidden" {
                     @if let Some(avatar_url) = game.opponent_avatar_url.as_deref() {
                         image src=(avatar_url) alt="Opponent profile avatar" width="38" height="38" border-radius="999px";
                     } @else {
@@ -2780,13 +2781,15 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
                             border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
                             align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
                     }
-                    div gap="1px" {
-                        span font-size="17px" font-weight=bold { (game.opponent_display_name.as_str()) }
+                    div gap="1px" min-width=0 flex=1 overflow-x="hidden" {
+                        span font-size="17px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
+                            (game.opponent_display_name.as_str())
+                        }
                         span id="named-turn-status" font-size="11px" font-weight=bold { (turn) }
                     }
                 }
-                div direction="row" align-items="center" gap="11px" {
-                    div id="live-status" font-size="11px" {
+                div direction="row" align-items="center" gap="5px" flex="0 0 auto" {
+                    div id="live-status" font-size="11px" overflow-x="hidden" {
                         span id="live-status-connecting"
                             fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
                             "● Connecting"
@@ -2806,10 +2809,10 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
                             "● Offline"
                         }
                     }
-                    span min-width="56px" align-items="center" justify-content="center"
+                    span min-width="38px" align-items="center" justify-content="center"
                         background=(if opponent_active { "#fff1bd" } else { "#163a2a" })
-                        border-radius="999px" padding-y="4px" padding-x="12px"
-                        font-size="25px" font-weight=bold { (opponent_score) }
+                        border-radius="999px" padding-y="3px" padding-x="7px"
+                        font-size="20px" font-weight=bold { (opponent_score) }
                 }
             }
         }
@@ -2930,12 +2933,12 @@ fn visual_game_page(
             position="fixed" top=0 right=0 bottom=0 left=0
             overflow-x="hidden" overflow-y="hidden"
             background=#123b2a color=#f4f0df gap="6px" {
-            header id="scene-controls" width="100%" direction="row"
-                justify-content="space-between" align-items="center" gap="12px" padding-y="8px" padding-x="10px" {
-                anchor href="/" background=#173326 color=#f4f0df border=(("#436854", 1))
+            header id="scene-controls" width="100%" min-width=0 direction="row"
+                align-items="center" gap="6px" padding-y="8px" padding-x="6px" {
+                anchor href="/" flex="0 0 auto" background=#173326 color=#f4f0df border=(("#436854", 1))
                     border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
                 (opponent_hud)
-                details id="game-menu" position="relative" align-items="end" {
+                details id="game-menu" flex="0 0 auto" position="relative" align-items="end" {
                     summary cursor=pointer background=#173326 color=#f4f0df border=(("#436854", 1))
                         border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "Menu ···" }
                     aside id="activity-rail" position="absolute" top=46 right=0 width="340px" max-width="92vw"
