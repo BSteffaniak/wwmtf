@@ -2741,7 +2741,13 @@ fn confirmed_command_forms(
     .into()
 }
 
-fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
+fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
+    let viewer_score = game
+        .view
+        .scores
+        .iter()
+        .find(|(player, _)| *player == game.viewer_player)
+        .map_or(0, |(_, score)| *score);
     let opponent_score = game
         .view
         .scores
@@ -2749,14 +2755,22 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
         .find(|(player, _)| *player != game.viewer_player)
         .map_or(0, |(_, score)| *score);
     let opponent_active = !game.completed && game.view.active_player != game.viewer_player;
+    let viewer_active = !game.completed && game.view.active_player == game.viewer_player;
     let turn = if game.completed {
         "Game complete"
-    } else if opponent_active {
-        "Their move"
+    } else if viewer_active {
+        "Your move"
     } else {
-        "Waiting"
+        "Their move"
     };
-    let initial = game
+    let viewer_initial = game
+        .viewer_username
+        .chars()
+        .next()
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    let opponent_initial = game
         .opponent_username
         .chars()
         .next()
@@ -2764,55 +2778,52 @@ fn opponent_bench_component(game: &AuthorizedGamePage) -> Container {
         .to_uppercase()
         .to_string();
     container! {
-        section id="game-awareness" class="player-hud opponent-hud" min-width=0 flex=1
-            overflow-x="hidden"
-            background=(if opponent_active { "#f4c95d" } else { "#214c38" })
-            color=(if opponent_active { "#2d2515" } else { "#f4f0df" })
-            border=((if opponent_active { "#ffe29a" } else { "#376d53" }, 2))
-            border-radius="999px" padding-y="8px" padding-x="13px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="6px" min-width=0 {
-                div direction="row" align-items="center" gap="6px" min-width=0 flex=1 overflow-x="hidden" {
-                    @if let Some(avatar_url) = game.opponent_avatar_url.as_deref() {
-                        image src=(avatar_url) alt="Opponent profile avatar" width="38" height="38" border-radius="999px";
+        section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
+            overflow-x="hidden" background=#f4c95d color=#2d2515
+            border=(("#ffe29a", 2)) border-radius="999px" padding-y="6px" padding-x="8px" {
+            div direction="row" justify-content="space-between" align-items="center" gap="5px" min-width=0 {
+                div id="viewer-scoreboard" direction="row" align-items="center" gap="5px" min-width=0 flex=1 overflow-x="hidden" {
+                    @if let Some(avatar_url) = game.viewer_avatar_url.as_deref() {
+                        image src=(avatar_url) alt="Your profile avatar" width="34" height="34" border-radius="999px";
                     } @else {
-                        span width="38px" height="38px" border-radius="999px"
-                            background=(if opponent_active { "#4d3821" } else { "#d6b361" })
-                            color=(if opponent_active { "#ffffff" } else { "#2d2515" })
-                            border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
-                            align-items="center" justify-content="center" font-size="18px" font-weight=bold { (initial) }
+                        span width="34px" height="34px" border-radius="999px"
+                            background=(if viewer_active { "#2e7049" } else { "#d6b361" }) color=#ffffff
+                            border=((if viewer_active { "#73ba8d" } else { "#f2d98d" }, 2))
+                            align-items="center" justify-content="center" font-size="16px" font-weight=bold { (viewer_initial) }
                     }
-                    div gap="1px" min-width=0 flex=1 overflow-x="hidden" {
-                        span font-size="17px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                            (game.opponent_display_name.as_str())
-                        }
-                        span id="named-turn-status" font-size="11px" font-weight=bold { (turn) }
+                    span min-width="34px" align-items="center" justify-content="center"
+                        background=(if viewer_active { "#fff1bd" } else { "#e1bd63" })
+                        border-radius="999px" padding-y="3px" padding-x="6px"
+                        font-size="19px" font-weight=bold { (viewer_score) }
+                }
+                div min-width=0 align-items="center" overflow-x="hidden" {
+                    span id="named-turn-status" font-size="11px" font-weight=bold white-space="preserve" { (turn) }
+                    div id="live-status" font-size="10px" overflow-x="hidden" {
+                        span id="live-status-connecting"
+                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) { "● Connecting" }
+                        span id="live-status-connected" hidden
+                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "● Live" }
+                        span hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                        span id="live-status-reconnecting" hidden color=#9a651f
+                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) { "● Reconnecting" }
+                        span id="live-status-disconnected" hidden color=#9b3f35
+                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
                     }
                 }
-                div direction="row" align-items="center" gap="5px" flex="0 0 auto" {
-                    div id="live-status" font-size="11px" overflow-x="hidden" {
-                        span id="live-status-connecting"
-                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) {
-                            "● Connecting"
-                        }
-                        span id="live-status-connected" hidden
-                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) {
-                            "● Live"
-                        }
-                        span hidden
-                            fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                        span id="live-status-reconnecting" hidden color=#9a651f
-                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) {
-                            "● Reconnecting"
-                        }
-                        span id="live-status-disconnected" hidden color=#9b3f35
-                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) {
-                            "● Offline"
-                        }
+                div id="opponent-scoreboard" direction="row" align-items="center" justify-content="end"
+                    gap="5px" min-width=0 flex=1 overflow-x="hidden" {
+                    span min-width="34px" align-items="center" justify-content="center"
+                        background=(if opponent_active { "#fff1bd" } else { "#e1bd63" })
+                        border-radius="999px" padding-y="3px" padding-x="6px"
+                        font-size="19px" font-weight=bold { (opponent_score) }
+                    @if let Some(avatar_url) = game.opponent_avatar_url.as_deref() {
+                        image src=(avatar_url) alt="Opponent profile avatar" width="34" height="34" border-radius="999px";
+                    } @else {
+                        span width="34px" height="34px" border-radius="999px"
+                            background=(if opponent_active { "#4d3821" } else { "#d6b361" }) color=#ffffff
+                            border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
+                            align-items="center" justify-content="center" font-size="16px" font-weight=bold { (opponent_initial) }
                     }
-                    span min-width="38px" align-items="center" justify-content="center"
-                        background=(if opponent_active { "#fff1bd" } else { "#163a2a" })
-                        border-radius="999px" padding-y="3px" padding-x="7px"
-                        font-size="20px" font-weight=bold { (opponent_score) }
                 }
             }
         }
@@ -2913,7 +2924,7 @@ fn visual_game_page(
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(&feedback, draft);
-    let opponent_hud = opponent_bench_component(game);
+    let scoreboard = player_scoreboard_component(game);
     let completed_summary = game.completed.then(|| completed_game_summary(game));
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
@@ -2939,7 +2950,7 @@ fn visual_game_page(
                     anchor href="/" flex="0 0 auto" background=#173326 color=#f4f0df border=(("#436854", 1))
                         border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
                 }
-                (opponent_hud)
+                (scoreboard)
                 div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" {
                     button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
                         background=#173326 color=#f4f0df border=(("#436854", 1))
@@ -3860,6 +3871,8 @@ mod tests {
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
+            assert!(page.contains("viewer-scoreboard"));
+            assert!(page.contains("opponent-scoreboard"));
             assert!(page.contains("game-scene"));
             assert!(page.contains("game-arena"));
             assert!(page.contains("player-hud"));
