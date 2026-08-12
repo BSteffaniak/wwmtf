@@ -888,6 +888,14 @@ fn draft_analysis_message(error: &GameError) -> String {
     }
 }
 
+fn invalid_words_message(words: &[String]) -> String {
+    if words.len() == 1 {
+        format!("{} is not a valid word", words[0])
+    } else {
+        format!("{} are not valid words", words.join(", "))
+    }
+}
+
 fn draft_feedback_component(feedback: &DraftFeedback, draft: &TurnDraft) -> Container {
     let candidate_valid = feedback
         .candidate
@@ -916,7 +924,7 @@ fn draft_feedback_component(feedback: &DraftFeedback, draft: &TurnDraft) -> Cont
                 if candidate_valid {
                     format!("{words} · {} points · ready to play", candidate.play.score)
                 } else {
-                    format!("{words} is not a valid word")
+                    invalid_words_message(&candidate.invalid_words)
                 }
             },
         ),
@@ -3459,6 +3467,18 @@ mod tests {
             assert!(rendered.contains(expected), "{rendered}");
             assert!(rendered.contains("game-error"));
         }
+    }
+
+    #[test]
+    fn invalid_word_status_only_names_rejected_words() {
+        assert_eq!(
+            invalid_words_message(&["BAR".to_string()]),
+            "BAR is not a valid word"
+        );
+        assert_eq!(
+            invalid_words_message(&["ABC".to_string(), "BAZ".to_string()]),
+            "ABC, BAZ are not valid words"
+        );
     }
 
     #[test]
