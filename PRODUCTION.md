@@ -54,7 +54,8 @@ If the fixed state-bucket name is already owned by another Cloudflare account, c
 
 ## Routine operation
 
-- Run `Deploy Application` for releases. It snapshots the volume by default, deploys exactly one Machine, and checks the Fly and canonical endpoints.
+- Every successful `Validate` run caused by a push to `master` queues `Deploy Application` for the exact validated commit. The `production` GitHub environment must require approval from a designated reviewer; after approval, the workflow snapshots the volume, deploys exactly one Machine, and checks the Fly and canonical endpoints.
+- Run `Deploy Application` manually for recovery or an explicit redeploy. It snapshots the volume by default and supports opting out of that snapshot for the manual run only.
 - Run `Deploy Infrastructure` for Cloudflare/OpenTofu changes. It discovers current Fly inputs, archives state, plans, and applies.
 - The three production workflows share one concurrency group so bootstrap, application deploys, and infrastructure applies cannot overlap.
 

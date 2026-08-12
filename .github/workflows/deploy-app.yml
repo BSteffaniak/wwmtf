@@ -1,6 +1,9 @@
 name: Deploy Application
 
 "on":
+  workflow_run:
+    workflows: [Validate]
+    types: [completed]
   workflow_dispatch:
     inputs:
       snapshot_before_deploy:
@@ -18,14 +21,23 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 45
+    env:
+      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
       - name: Snapshot production volume
-        if: inputs.snapshot_before_deploy
+        if: github.event_name == 'workflow_run' || inputs.snapshot_before_deploy
         run: ./scripts/deploy.sh snapshot
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -33,6 +45,7 @@ jobs:
         run: ./scripts/deploy.sh deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          GITHUB_SHA: ${{ env.DEPLOY_SHA }}
           WWMTF_GOOGLE_CLIENT_ID: ${{ secrets.WWMTF_GOOGLE_CLIENT_ID }}
           WWMTF_GOOGLE_CLIENT_SECRET: ${{ secrets.WWMTF_GOOGLE_CLIENT_SECRET }}
       - name: Verify canonical hostname
