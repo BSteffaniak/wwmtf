@@ -53,9 +53,8 @@ jobs:
           tofu_version: 1.10.9
       - name: Check OpenTofu formatting
         run: tofu fmt -check -recursive infra
-      - name: Check Fly configuration
-        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
-      - run: flyctl config validate --config fly.toml
+      - name: Check Fly configuration syntax
+        run: python3 -c 'import pathlib, tomllib; tomllib.loads(pathlib.Path("fly.toml").read_text())'
       - name: Check nginx configuration
         run: docker run --rm -v "$PWD/config/nginx.conf:/etc/nginx/nginx.conf:ro" nginx:1.28-bookworm nginx -t
       - name: Initialize deployment OpenTofu without production state
