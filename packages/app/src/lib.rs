@@ -14,6 +14,7 @@ mod google_accounts;
 mod invitations;
 mod journal;
 mod migrations;
+mod move_plans;
 #[cfg(feature = "metrics")]
 mod observability;
 mod oidc;
@@ -64,6 +65,7 @@ pub use journal::{
     persisted_payload_compatibility, recover_game, store_snapshot,
 };
 pub use migrations::{app_migrations, migrate_app};
+pub use move_plans::{MovePlanError, clear_move_plan, load_move_plan, save_move_plan};
 #[cfg(feature = "metrics")]
 pub use observability::{AppMetricsSnapshot, app_metrics_snapshot};
 pub use oidc::{GOOGLE_ISSUER, GoogleOidcClient, GoogleOidcError};

@@ -420,6 +420,26 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         ],
         "user_id",
     ));
+    source.add_migration(table_migration(
+        "042_move_plans",
+        "move_plans",
+        vec![
+            text("move_plan_id"),
+            text("game_id"),
+            text("user_id"),
+            text("payload"),
+            bigint("board_revision"),
+            bigint("updated_at_ms"),
+        ],
+        "move_plan_id",
+    ));
+    source.add_migration(index_migration(
+        "043_move_plans_game_user_unique",
+        "idx_move_plans_game_user",
+        "move_plans",
+        vec!["game_id", "user_id"],
+        true,
+    ));
     source
 }
 
@@ -513,9 +533,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 37);
+        assert_eq!(migrations.len(), 39);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[36].id(), "041_user_profile_images");
+        assert_eq!(migrations[38].id(), "043_move_plans_game_user_unique");
     }
 
     #[test]
@@ -564,6 +584,7 @@ mod tests {
                     "auth_login_attempts",
                     "user_profiles",
                     "user_profile_images",
+                    "move_plans",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -601,6 +622,7 @@ mod tests {
                 "auth_login_attempts",
                 "user_profiles",
                 "user_profile_images",
+                "move_plans",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }

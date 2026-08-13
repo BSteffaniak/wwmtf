@@ -42,14 +42,19 @@ pub fn decide_command(
 }
 
 fn ensure_actor(state: &GameState, actor: PlayerId) -> Result<(), GameError> {
+    ensure_planning_actor(state, actor)?;
+    if state.active_player != actor {
+        return Err(GameError::OutOfTurn);
+    }
+    Ok(())
+}
+
+fn ensure_planning_actor(state: &GameState, actor: PlayerId) -> Result<(), GameError> {
     if state.status == GameStatus::Completed {
         return Err(GameError::GameComplete);
     }
     if !state.players.contains(&actor) {
         return Err(GameError::NotAPlayer);
-    }
-    if state.active_player != actor {
-        return Err(GameError::OutOfTurn);
     }
     Ok(())
 }
@@ -104,7 +109,8 @@ struct PreparedPlay {
 ///
 /// # Errors
 ///
-/// * Returns [`GameError`] for membership, turn, rack, geometry, or lifecycle failures.
+/// * Returns [`GameError`] for membership, rack, geometry, or lifecycle failures. Preview analysis
+///   is available to either seated player regardless of whose turn it is.
 pub fn analyze_candidate_play(
     state: &GameState,
     actor: PlayerId,
@@ -112,7 +118,7 @@ pub fn analyze_candidate_play(
     profile: &RuleProfile,
     dictionary: &impl Dictionary,
 ) -> Result<CandidatePlayAnalysis, GameError> {
-    ensure_actor(state, actor)?;
+    ensure_planning_actor(state, actor)?;
     Ok(prepare_play(state, actor, placements, profile, dictionary)?.candidate)
 }
 
@@ -122,8 +128,8 @@ pub fn analyze_candidate_play(
 ///
 /// # Errors
 ///
-/// * Returns [`GameError`] for the same membership, turn, rack, geometry, dictionary, and lifecycle
-///   failures as a submitted play command.
+/// * Returns [`GameError`] for membership, rack, geometry, dictionary, or lifecycle failures. Turn
+///   authority is enforced only when a command is submitted.
 pub fn analyze_play(
     state: &GameState,
     actor: PlayerId,
@@ -400,15 +406,15 @@ fn candidate_tiles(
 ///
 /// # Errors
 ///
-/// * Returns [`GameError`] when the actor, rack operands, blank assignment, or coordinates are
-///   invalid for the current canonical state.
+/// * Returns [`GameError`] when the actor is not seated, or rack operands, blank assignments, or
+///   coordinates are invalid for the current canonical state.
 pub fn placement_guidance(
     state: &GameState,
     actor: PlayerId,
     placements: &[Placement],
     profile: &RuleProfile,
 ) -> Result<PlacementGuidance, GameError> {
-    ensure_actor(state, actor)?;
+    ensure_planning_actor(state, actor)?;
     if placements.is_empty() {
         return Ok(PlacementGuidance {
             required: BTreeSet::new(),
@@ -755,6 +761,41 @@ mod tests {
             coordinate: Coordinate::new(x, y),
             blank_letter: None,
         }
+    }
+
+    #[test]
+    fn analysis_is_available_out_of_turn_but_commands_remain_authoritative() {
+        let (mut state, profile, dictionary) = state();
+        let active = state.active_player;
+        let planner = state
+            .players
+            .into_iter()
+            .find(|player| *player != active)
+            .unwrap();
+        set_rack(
+            &mut state,
+            planner,
+            &[
+                (200, TileFace::Letter('A'), 1),
+                (201, TileFace::Letter('T'), 1),
+            ],
+        );
+        let placements = vec![play(200, 7, 7), play(201, 8, 7)];
+
+        let candidate = analyze_candidate_play(&state, planner, &placements, &profile, &dictionary)
+            .expect("seated inactive player can plan");
+        assert!(candidate.is_valid());
+        assert_eq!(candidate.play.words[0].text, "AT");
+        assert_eq!(
+            decide_command(
+                &state,
+                planner,
+                &GameCommand::Play { placements },
+                &profile,
+                &dictionary,
+            ),
+            Err(GameError::OutOfTurn)
+        );
     }
 
     #[test]

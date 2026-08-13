@@ -25,11 +25,11 @@ use crate::{
     AuthenticatedDashboard, AuthorizedGamePage, GoogleOidcClient, OidcAttemptPurpose,
     PresentationError, ProductWorkflowError, UserScoreTotals, accept_pending_challenge,
     cancel_pending_challenge, challenge_username, claim_oidc_attempt, cleanup_oidc_attempts,
-    complete_legacy_google_migration, consume_oidc_attempt, create_oidc_attempt,
+    clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt, create_oidc_attempt,
     create_shareable_invitation, decline_pending_challenge, error_component,
     google_login_and_create_session, load_authenticated_dashboard, load_authorized_game_page,
-    logout_session, move_history_component, redeem_shareable_invitation,
-    redeem_shareable_invitation_by_id, revoke_shareable_invitation,
+    load_move_plan, logout_session, move_history_component, redeem_shareable_invitation,
+    redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan,
 };
 
 #[derive(Debug, Deserialize)]
@@ -825,6 +825,68 @@ fn parse_draft(token: &str) -> Option<TurnDraft> {
     serde_json::from_slice(&bytes).ok()
 }
 
+fn reconcile_draft(game: &AuthorizedGamePage, draft: &mut TurnDraft) -> bool {
+    let rack = game
+        .view
+        .rack
+        .iter()
+        .map(|(tile_id, _, _)| *tile_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let occupied = game
+        .view
+        .board
+        .iter()
+        .map(|(coordinate, _, _)| *coordinate)
+        .collect::<std::collections::BTreeSet<_>>();
+    let previous = draft.placements.len();
+    draft.placements.retain(|placement| {
+        rack.contains(&placement.tile_id)
+            && !occupied.contains(&Coordinate::new(placement.x, placement.y))
+    });
+    if draft
+        .selected_tile
+        .is_some_and(|tile_id| !rack.contains(&tile_id))
+    {
+        draft.selected_tile = None;
+        draft.selected_blank_letter = None;
+    }
+    if draft
+        .rack_tile
+        .is_some_and(|tile_id| !rack.contains(&tile_id))
+    {
+        draft.rack_tile = None;
+    }
+    draft
+        .exchange_tiles
+        .retain(|tile_id| rack.contains(tile_id));
+    if game.view.active_player != game.viewer_player && draft.mode != TurnMode::Play {
+        draft.mode = TurnMode::Play;
+        draft.exchange_tiles.clear();
+    }
+    previous != draft.placements.len()
+}
+
+async fn persist_draft(
+    database: &dyn Database,
+    game: &AuthorizedGamePage,
+    draft: &TurnDraft,
+    now: OffsetDateTime,
+) -> Result<(), crate::MovePlanError> {
+    if draft.has_composed_turn_input() {
+        save_move_plan(
+            database,
+            game.game_id,
+            &game.user_id,
+            &draft_token(draft),
+            game.view.revision,
+            i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX),
+        )
+        .await
+    } else {
+        clear_move_plan(database, game.game_id, &game.user_id).await
+    }
+}
+
 fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback {
     let placements = draft.domain_placements();
     let guidance = game
@@ -848,7 +910,12 @@ fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback
     match game.analyze_candidate_play(&placements) {
         Ok(candidate) => {
             let message = if candidate.is_valid() {
-                "This draft is ready to play.".to_string()
+                if game.view.active_player == game.viewer_player {
+                    "This draft is ready to play.".to_string()
+                } else {
+                    "Plan ready. You can play it when your turn begins if the board still allows it."
+                        .to_string()
+                }
             } else {
                 format!(
                     "The dictionary does not accept: {}.",
@@ -896,7 +963,11 @@ fn invalid_words_message(words: &[String]) -> String {
     }
 }
 
-fn draft_feedback_component(feedback: &DraftFeedback, draft: &TurnDraft) -> Container {
+fn draft_feedback_component(
+    game: &AuthorizedGamePage,
+    feedback: &DraftFeedback,
+    draft: &TurnDraft,
+) -> Container {
     let candidate_valid = feedback
         .candidate
         .as_ref()
@@ -922,7 +993,12 @@ fn draft_feedback_component(feedback: &DraftFeedback, draft: &TurnDraft) -> Cont
                     .collect::<Vec<_>>()
                     .join(", ");
                 if candidate_valid {
-                    format!("{words} · {} points · ready to play", candidate.play.score)
+                    let status = if game.view.active_player == game.viewer_player {
+                        "ready to play"
+                    } else {
+                        "planned for your turn"
+                    };
+                    format!("{words} · {} points · {status}", candidate.play.score)
                 } else {
                     invalid_words_message(&candidate.invalid_words)
                 }
@@ -982,11 +1058,20 @@ async fn game_compose_route(
         }
     };
     if form.expected_revision != game.view.revision {
-        return draft_error_page(
-            &game,
-            &TurnDraft::default(),
-            "The board changed. Your unsubmitted tiles were cleared; compose the move again.",
-        );
+        let mut draft = load_move_plan(database, game.game_id, &game.user_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(payload, _)| parse_draft(&payload))
+            .unwrap_or_default();
+        let removed_conflicts = reconcile_draft(&game, &mut draft);
+        let _ = persist_draft(database, &game, &draft, now).await;
+        let message = if removed_conflicts {
+            "The board changed. Conflicting planned tiles returned to your rack; the rest of your plan was preserved and rescored."
+        } else {
+            "The board changed. Your plan was preserved and rescored against the latest board."
+        };
+        return draft_error_page(&game, &draft, message);
     }
     let mut draft = parse_draft(&form.draft).unwrap_or_default();
     draft.begin_action(&form.action);
@@ -995,16 +1080,19 @@ async fn game_compose_route(
     }
     let viewer_turn = game.view.active_player == game.viewer_player;
     if !viewer_turn
-        && !matches!(
+        && matches!(
             form.action.as_str(),
-            "PICK_RACK_TILE" | "SWAP_RACK_TILES" | "SHUFFLE_RACK" | "CANCEL_MODE"
+            "BEGIN_EXCHANGE"
+                | "TOGGLE_EXCHANGE"
+                | "REVIEW_EXCHANGE"
+                | "CONFIRM_PASS"
+                | "CONFIRM_RESIGN"
         )
-        && !is_zoom_action(&form.action)
     {
         return draft_error_page(
             &game,
             &draft,
-            "It is not your turn. You can still arrange your rack while you wait.",
+            "You can plan tile placements while you wait, but turn-ending actions remain unavailable.",
         );
     }
     match form.action.as_str() {
@@ -1198,6 +1286,7 @@ async fn game_compose_route(
                         return product_error_page("Unable to shuffle rack", &error.to_string());
                     }
                 };
+            let _ = persist_draft(database, &game, &draft, now).await;
             return visual_game_page(&game, &draft, None);
         }
         "ZOOM_OUT" => draft.board_zoom = draft.board_zoom.zoom_out(),
@@ -1211,6 +1300,9 @@ async fn game_compose_route(
             };
         }
         _ => return draft_error_page(&game, &draft, "That turn action is unavailable."),
+    }
+    if persist_draft(database, &game, &draft, now).await.is_err() {
+        return draft_error_page(&game, &draft, "Your move plan could not be saved.");
     }
     visual_game_page(&game, &draft, None)
 }
@@ -1270,6 +1362,7 @@ async fn game_turn_route(
                 [TransportInbound::CommandAccepted { .. }]
             ) =>
         {
+            let _ = clear_move_plan(database, game_id, &user_id).await;
             match load_authorized_game_page(database, &request.cookies, &game_id.to_string(), now)
                 .await
             {
@@ -1880,13 +1973,33 @@ pub async fn game_route(
     let game_id = request.path.strip_prefix("/games/").unwrap_or_default();
     match load_authorized_game_page(database, &request.cookies, game_id, now).await {
         Ok(game) => {
-            let stale_message = request
-                .query
-                .get("draft_revision")
-                .and_then(|revision| revision.parse::<u64>().ok())
-                .filter(|draft_revision| *draft_revision < game.view.revision)
-                .map(|_| "The board changed while you were composing. Your unsubmitted tiles were cleared; your rack order was preserved.");
-            visual_game_page(&game, &TurnDraft::default(), stale_message)
+            let stored = load_move_plan(database, game.game_id, &game.user_id)
+                .await
+                .ok()
+                .flatten();
+            let mut draft = stored
+                .as_ref()
+                .and_then(|(payload, _)| parse_draft(payload))
+                .unwrap_or_default();
+            let source_revision = stored.as_ref().map(|(_, revision)| *revision);
+            let removed_conflicts = reconcile_draft(&game, &mut draft);
+            let board_changed =
+                source_revision.is_some_and(|revision| revision < game.view.revision);
+            if board_changed {
+                let _ = persist_draft(database, &game, &draft, now).await;
+            }
+            let message = if removed_conflicts {
+                Some(
+                    "The board changed. Conflicting planned tiles returned to your rack; the rest of your plan was preserved and rescored.",
+                )
+            } else if board_changed {
+                Some(
+                    "The board changed. Your plan was preserved and rescored against the latest board.",
+                )
+            } else {
+                None
+            };
+            visual_game_page(&game, &draft, message)
         }
         Err(PresentationError::Unauthenticated) => signed_out_page(),
         Err(error @ (PresentationError::Forbidden | PresentationError::UnknownGame)) => {
@@ -2529,7 +2642,7 @@ fn visual_board(
 
 fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
-    let can_compose = !game.completed && game.view.active_player == game.viewer_player;
+    let can_compose = !game.completed;
     let rack = game
         .rack_order
         .iter()
@@ -2605,6 +2718,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
     let compose_action = format!("/games/{}/compose", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
+    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
     let play_score = draft_feedback(game, draft)
         .candidate
         .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
@@ -2669,7 +2783,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                                 border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall" }
                         }
                     }
-                    @if !draft.placements.is_empty() {
+                    @if !draft.placements.is_empty() && viewer_turn {
                         form hx-post=(turn_action.as_str()) hx-target="#app-page" {
                             input type=hidden name="command" value="PLAY";
                             input type=hidden name="command_id" value=(command_id.as_str());
@@ -2689,7 +2803,8 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                             }
                         }
                     }
-                    details id="more-turn-actions" position="relative" {
+                    @if !game.completed && viewer_turn {
+                        details id="more-turn-actions" position="relative" {
                         summary cursor=pointer color=#f4f0df font-weight=bold padding-y="7px" padding-x="6px" { "More ···" }
                         div position="absolute" bottom="100%" right=0 background=#ffffff color=#26382d
                             border=(("#d8d1c1", 1)) border-radius="12px" padding="12px" gap="8px" {
@@ -2711,6 +2826,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                                     border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -2931,7 +3047,7 @@ fn visual_game_page(
     let short_game_id = game_id.chars().take(8).collect::<String>();
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
-    let draft_preview = draft_feedback_component(&feedback, draft);
+    let draft_preview = draft_feedback_component(game, &feedback, draft);
     let scoreboard = player_scoreboard_component(game);
     let completed_summary = game.completed.then(|| completed_game_summary(game));
     let rack = visual_rack(game, draft);
@@ -3866,28 +3982,6 @@ mod tests {
             assert!(!page.contains("data-shared-state-refresh-"));
             assert!(!page.contains("id=\"turn-feedback\""));
             assert!(!page.contains("draft_revision="));
-            let mut current_draft_request = RouteRequest::from_path(
-                &format!("/games/{game_id}?draft_revision=1"),
-                RequestInfo::default(),
-            );
-            current_draft_request.cookies = game_request.cookies.clone();
-            let current_draft_page = game_route(&*database, &current_draft_request, now)
-                .await
-                .display_to_string(false, false)
-                .expect("current-revision draft game renders");
-            assert!(!current_draft_page.contains("The board changed while you were composing"));
-            let mut stale_request = RouteRequest::from_path(
-                &format!("/games/{game_id}?draft_revision=0"),
-                RequestInfo::default(),
-            );
-            stale_request.cookies = game_request.cookies.clone();
-            let stale_page = game_route(&*database, &stale_request, now)
-                .await
-                .display_to_string(false, false)
-                .expect("stale game renders");
-            assert!(stale_page.contains("The board changed while you were composing"));
-            assert!(stale_page.contains("id=\"turn-feedback\""));
-            assert!(stale_page.contains("your rack order was preserved"));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
@@ -3996,14 +4090,15 @@ mod tests {
             let alice_player = crate::player_for_user(&*database, game_id, &alice)
                 .await
                 .expect("Alice is seated");
-            let (active_player, session) = if state.active_player == alice_player {
-                (alice_player, alice_session)
-            } else {
-                let bob_player = crate::player_for_user(&*database, game_id, &bob)
-                    .await
-                    .expect("Bob is seated");
-                (bob_player, bob_session)
-            };
+            let bob_player = crate::player_for_user(&*database, game_id, &bob)
+                .await
+                .expect("Bob is seated");
+            let (active_player, session, inactive_player, inactive_session) =
+                if state.active_player == alice_player {
+                    (alice_player, alice_session, bob_player, bob_session)
+                } else {
+                    (bob_player, bob_session, alice_player, alice_session)
+                };
             let rack = &state.racks[&active_player];
             let (first, second, word) = rack
                 .iter()
@@ -4066,6 +4161,80 @@ mod tests {
             assert!(rendered.contains("board-tile-points"));
             assert!(rendered.contains("draft-score-bubble"));
             assert!(rendered.contains(&format!("draft_revision={}", game.view.revision)));
+
+            let inactive_rack = &state.racks[&inactive_player];
+            let (inactive_first, inactive_second) = inactive_rack
+                .iter()
+                .enumerate()
+                .find_map(|(first_index, first)| {
+                    inactive_rack
+                        .iter()
+                        .enumerate()
+                        .find_map(|(second_index, second)| {
+                            (first_index != second_index).then(|| {
+                                let first_letter = match first.face {
+                                    wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                                    wwmtf_game_domain::TileFace::Blank => return None,
+                                };
+                                let second_letter = match second.face {
+                                    wwmtf_game_domain::TileFace::Letter(letter) => letter,
+                                    wwmtf_game_domain::TileFace::Blank => return None,
+                                };
+                                wwmtf_game_domain::bundled_dictionary()
+                                    .contains(&format!("{first_letter}{second_letter}"))
+                                    .then_some((first, second))
+                            })?
+                        })
+                })
+                .expect("inactive seeded rack has a two-letter dictionary word");
+            let inactive_draft = TurnDraft {
+                placements: vec![
+                    DraftPlacement {
+                        tile_id: inactive_first.id.get(),
+                        x: 7,
+                        y: 7,
+                        blank_letter: None,
+                    },
+                    DraftPlacement {
+                        tile_id: inactive_second.id.get(),
+                        x: 8,
+                        y: 7,
+                        blank_letter: None,
+                    },
+                ],
+                ..TurnDraft::default()
+            };
+            let inactive_cookies = std::collections::BTreeMap::from([(
+                SESSION_COOKIE_NAME.to_string(),
+                inactive_session.expose().to_string(),
+            )]);
+            let inactive_game =
+                load_authorized_game_page(&*database, &inactive_cookies, &game_id.to_string(), now)
+                    .await
+                    .expect("inactive player's game loads");
+            assert_ne!(
+                inactive_game.view.active_player,
+                inactive_game.viewer_player
+            );
+            let inactive_candidate = inactive_game
+                .analyze_candidate_play(&inactive_draft.domain_placements())
+                .expect("inactive plan analyzes");
+            assert!(inactive_candidate.is_valid());
+            let inactive_feedback = draft_feedback(&inactive_game, &inactive_draft);
+            assert!(inactive_feedback.candidate.is_some());
+            let inactive_preview =
+                draft_feedback_component(&inactive_game, &inactive_feedback, &inactive_draft)
+                    .display_to_string(false, false)
+                    .expect("inactive preview renders");
+            assert!(inactive_preview.contains("planned for your turn"));
+            let inactive_rendered = visual_game_page(&inactive_game, &inactive_draft, None)
+                .display_to_string(false, false)
+                .expect("inactive plan renders");
+            assert!(inactive_rendered.contains("pending-square"));
+            assert!(inactive_rendered.contains("points"));
+            assert!(!inactive_rendered.contains("Play ·"));
+            assert!(!inactive_rendered.contains("value=\"CONFIRM_PASS\""));
+            assert_eq!(inactive_rendered.matches("primary-turn-action").count(), 0);
 
             let initial_order = game.rack_order.clone();
             let initial_revision = game.view.revision;
