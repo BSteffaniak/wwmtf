@@ -8,14 +8,18 @@ use hyperchad::app::AppBuilder;
 use hyperchad::renderer::assets::{AssetPathTarget, StaticAssetRoute};
 use wwmtf_app::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router};
 
+struct GoogleRuntimeConfig {
+    client_id: String,
+    client_secret: String,
+    callback_url: String,
+}
+
 struct RuntimeConfig {
     address: String,
     port: u16,
     database_path: String,
     public_base_url: String,
-    google_client_id: String,
-    google_client_secret: String,
-    google_callback_url: String,
+    google: Option<GoogleRuntimeConfig>,
     production_mode: bool,
     development_mode: bool,
 }
@@ -25,9 +29,22 @@ fn google_runtime_config(
     client_secret: Option<String>,
     public_base_url: &str,
     production_mode: bool,
-) -> Result<(String, String, String), Box<dyn std::error::Error>> {
-    let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
-        return Err("WWMTF_GOOGLE_CLIENT_ID and WWMTF_GOOGLE_CLIENT_SECRET are required".into());
+) -> Result<Option<GoogleRuntimeConfig>, Box<dyn std::error::Error>> {
+    let (client_id, client_secret) = match (client_id, client_secret) {
+        (Some(client_id), Some(client_secret)) => (client_id, client_secret),
+        (None, None) if !production_mode => return Ok(None),
+        (None, None) => {
+            return Err(
+                "WWMTF_GOOGLE_CLIENT_ID and WWMTF_GOOGLE_CLIENT_SECRET are required in production mode"
+                    .into(),
+            );
+        }
+        _ => {
+            return Err(
+                "WWMTF_GOOGLE_CLIENT_ID and WWMTF_GOOGLE_CLIENT_SECRET must be supplied together"
+                    .into(),
+            );
+        }
     };
     if client_id.trim().is_empty() || client_secret.trim().is_empty() {
         return Err(
@@ -52,7 +69,11 @@ fn google_runtime_config(
     let callback = base_url
         .join("auth/google/callback")
         .map_err(|_| "Google callback URL could not be constructed")?;
-    Ok((client_id, client_secret, callback.to_string()))
+    Ok(Some(GoogleRuntimeConfig {
+        client_id,
+        client_secret,
+        callback_url: callback.to_string(),
+    }))
 }
 
 fn definitions_enabled(value: Option<&str>) -> Result<bool, &'static str> {
@@ -113,7 +134,7 @@ impl RuntimeConfig {
                 return Err("WWMTF_DATABASE_PATH is required in production mode".into());
             }
         };
-        let (google_client_id, google_client_secret, google_callback_url) = google_runtime_config(
+        let google = google_runtime_config(
             std::env::var("WWMTF_GOOGLE_CLIENT_ID").ok(),
             std::env::var("WWMTF_GOOGLE_CLIENT_SECRET").ok(),
             &public_base_url,
@@ -124,9 +145,7 @@ impl RuntimeConfig {
             port,
             database_path,
             public_base_url,
-            google_client_id,
-            google_client_secret,
-            google_callback_url,
+            google,
             production_mode,
             development_mode,
         })
@@ -256,7 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
 
-        let google_oidc = {
+        let google_oidc = if let Some(google) = &config.google {
             let google_issuer = std::env::var("WWMTF_DEVELOPMENT_OIDC_ISSUER").ok();
             if google_issuer.is_some() && !config.development_mode {
                 return Err(
@@ -266,24 +285,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(Arc::new(oidc_runtime.block_on(async {
                 if let Some(issuer) = google_issuer {
                     wwmtf_app::GoogleOidcClient::discover_issuer_with_runtime(
-                        &config.google_client_id,
-                        &config.google_client_secret,
-                        &config.google_callback_url,
+                        &google.client_id,
+                        &google.client_secret,
+                        &google.callback_url,
                         &issuer,
                         Some(oidc_runtime.clone()),
                     )
                     .await
                 } else {
                     wwmtf_app::GoogleOidcClient::discover_issuer_with_runtime(
-                        &config.google_client_id,
-                        &config.google_client_secret,
-                        &config.google_callback_url,
+                        &google.client_id,
+                        &google.client_secret,
+                        &google.callback_url,
                         wwmtf_app::GOOGLE_ISSUER,
                         Some(oidc_runtime.clone()),
                     )
                     .await
                 }
             })?))
+        } else {
+            if std::env::var("WWMTF_DEVELOPMENT_OIDC_ISSUER").is_ok() {
+                return Err(
+                    "WWMTF_DEVELOPMENT_OIDC_ISSUER requires Google client credentials".into(),
+                );
+            }
+            log::info!("Google sign-in disabled because client credentials are not configured");
+            None
         };
 
         let mut app_builder = AppBuilder::new()
@@ -336,17 +363,26 @@ mod tests {
 
     #[test]
     fn google_configuration_is_complete_bounded_and_origin_based() {
-        let (client_id, client_secret, callback) = google_runtime_config(
+        let google = google_runtime_config(
             Some("client".to_string()),
             Some("secret".to_string()),
             "https://games.example.test",
             true,
         )
-        .expect("valid production Google configuration parses");
-        assert_eq!(client_id, "client");
-        assert_eq!(client_secret, "secret");
-        assert_eq!(callback, "https://games.example.test/auth/google/callback");
+        .expect("valid production Google configuration parses")
+        .expect("Google configuration is present");
+        assert_eq!(google.client_id, "client");
+        assert_eq!(google.client_secret, "secret");
+        assert_eq!(
+            google.callback_url,
+            "https://games.example.test/auth/google/callback"
+        );
 
+        assert!(
+            google_runtime_config(None, None, "http://127.0.0.1:8343", false)
+                .expect("local Google configuration is optional")
+                .is_none()
+        );
         for (client_id, client_secret) in [
             (None, None),
             (Some("client".to_string()), None),

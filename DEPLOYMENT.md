@@ -12,8 +12,8 @@ Words with More Than Friends is designed for an internet deployment behind a TLS
 | `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
 | `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
 | `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration, generated invitation links, and the Google callback URI (`/auth/google/callback`). Register that exact callback URI in Google Cloud. |
-| `WWMTF_GOOGLE_CLIENT_ID` | Yes | Google OpenID Connect web client ID. The application fails startup when it is absent. |
-| `WWMTF_GOOGLE_CLIENT_SECRET` | Yes | Google OpenID Connect web client secret. Supply through the deployment secret store; never log or commit it. The application fails startup when it is absent. |
+| `WWMTF_GOOGLE_CLIENT_ID` | Production: yes; local: no | Google OpenID Connect web client ID. When omitted locally together with the client secret, Google sign-in is disabled. |
+| `WWMTF_GOOGLE_CLIENT_SECRET` | Production: yes; local: no | Google OpenID Connect web client secret. Supply through the deployment secret store; never log or commit it. When omitted locally together with the client ID, Google sign-in is disabled. |
 | `WWMTF_DEFINITIONS_ENABLED` | No; defaults to enabled | Controls server-side played-word definition lookup. Set to `false`, `no`, or `0` to disable it; invalid values fail startup. |
 | `WWMTF_DEFINITION_PROVIDER_BASE_URL` | No; defaults to `https://api.dictionaryapi.dev` | HTTPS Free Dictionary API-compatible endpoint used only when definitions are enabled. |
 | `WWMTF_DEFINITION_TIMEOUT_MS` | No; defaults to `3000` | Connect and overall timeout for definition-provider requests. |
