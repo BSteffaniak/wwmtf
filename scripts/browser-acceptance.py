@@ -677,6 +677,10 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             const rackRect = rack?.getBoundingClientRect();
             const rackTiles = Array.from(rack?.querySelectorAll('.rack-tile') ?? []);
             const rackTileRects = rackTiles.map(tile => tile.getBoundingClientRect());
+            const rackFaces = rackTiles.map(tile => tile.querySelector('.rack-tile-face'));
+            const rackPoints = rackTiles.map(tile => tile.querySelector('.rack-tile-points'));
+            const rackFaceSizes = rackFaces.map(face => Number.parseFloat(getComputedStyle(face).fontSize));
+            const rackPointSizes = rackPoints.map(points => Number.parseFloat(getComputedStyle(points).fontSize));
             const dockRect = dock?.getBoundingClientRect();
             const ids = Array.from(document.querySelectorAll('[id]')).map(element => element.id);
             return {
@@ -691,6 +695,12 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 rackTilesContained: Boolean(rackRect && rackTileRects.every(rect => rect.left >= rackRect.left && rect.right <= rackRect.right)),
                 rackTilesSingleRow: rackTileRects.length > 0 && Math.max(...rackTileRects.map(rect => rect.top)) - Math.min(...rackTileRects.map(rect => rect.top)) < 1,
                 rackTilesSquare: rackTileRects.length > 0 && rackTileRects.every(rect => Math.abs(rect.width - rect.height) <= 1),
+                rackTypeScales: rackTileRects.length > 0 && rackTileRects.every((rect, index) =>
+                    rackFaces[index]
+                    && rackPoints[index]
+                    && rackFaceSizes[index] <= rect.width / 2 + 1
+                    && rackPointSizes[index] <= rect.width / 4 + 1
+                ),
                 rackOverflow: rack ? rack.scrollWidth - rack.clientWidth : null,
                 blankPickerContained: !blankPicker || (() => {
                     const rect = blankPicker.getBoundingClientRect();
@@ -726,6 +736,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         or not layout["rackTilesContained"]
         or not layout["rackTilesSingleRow"]
         or not layout["rackTilesSquare"]
+        or not layout["rackTypeScales"]
         or layout["rackOverflow"] != 0
         or not layout["blankPickerContained"]
     ):
