@@ -625,10 +625,32 @@ def assert_game_controls(browser: Browser, width: int) -> None:
         raise AcceptanceError("shuffle changed rack membership")
 
     menu = browser.evaluate(
-        "(() => { const details=document.querySelector('#game-menu'); const before=document.querySelector('#play-stage').getBoundingClientRect(); details.open=true; const after=document.querySelector('#play-stage').getBoundingClientRect(); const rail=details.querySelector('#activity-rail').getBoundingClientRect(); const samplePoint={x: Math.min(rail.right-8, rail.left+40), y: Math.min(rail.bottom-8, rail.top+80)}; const topElement=document.elementFromPoint(samplePoint.x, samplePoint.y); const dock=document.querySelector('#play-console').getBoundingClientRect(); return {shift: Math.abs(after.top-before.top)+Math.abs(after.height-before.height), railRight: rail.right, railBottom: rail.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, menuOnTop: Boolean(topElement && details.contains(topElement)), dockCenter: dock.left+dock.width/2, viewportCenter: innerWidth/2}; })()"
+        """(() => {
+            const board = document.querySelector('#game-board');
+            const rail = document.querySelector('#activity-rail');
+            const menuButton = Array.from(document.querySelectorAll('button')).find(button => button.textContent?.includes('Menu'));
+            const before = board?.getBoundingClientRect();
+            menuButton?.click();
+            const after = board?.getBoundingClientRect();
+            const railRect = rail?.getBoundingClientRect();
+            const samplePoint = railRect ? {x: Math.min(railRect.right - 8, railRect.left + 40), y: Math.min(railRect.bottom - 8, railRect.top + 80)} : null;
+            const topElement = samplePoint ? document.elementFromPoint(samplePoint.x, samplePoint.y) : null;
+            const dock = document.querySelector('#play-console')?.getBoundingClientRect();
+            return {
+                shift: before && after ? Math.abs(after.top - before.top) + Math.abs(after.height - before.height) : null,
+                railRight: railRect?.right ?? null,
+                railBottom: railRect?.bottom ?? null,
+                viewportWidth: innerWidth,
+                viewportHeight: innerHeight,
+                menuOnTop: Boolean(topElement && rail?.contains(topElement)),
+                dockCenter: dock ? dock.left + dock.width / 2 : null,
+                viewportCenter: innerWidth / 2,
+            };
+        })()"""
     )
     if (
         menu["shift"] != 0
+        or menu["railRight"] is None
         or menu["railRight"] > menu["viewportWidth"]
         or menu["railBottom"] > menu["viewportHeight"]
         or not menu["menuOnTop"]
@@ -636,7 +658,7 @@ def assert_game_controls(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game menu is not a contained top-layer overlay at {width}px: {menu!r}")
     if abs(menu["dockCenter"] - menu["viewportCenter"]) > 1:
         raise AcceptanceError(f"floating rack dock is not horizontally centered at {width}px: {menu!r}")
-    browser.evaluate("document.querySelector('#game-menu').open=false")
+    browser.evaluate("Array.from(document.querySelectorAll('#activity-rail button')).find(button => button.textContent?.includes('Close'))?.click()")
 
 
 def assert_responsive_game_layout(browser: Browser, width: int) -> None:
@@ -649,9 +671,12 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             const scroller = board?.querySelector('.board-viewport');
             const rack = document.querySelector('#player-rack');
             const dock = document.querySelector('#play-console');
+            const blankPicker = document.querySelector('.blank-letter-layer');
             const boardRect = board?.getBoundingClientRect();
             const scrollerRect = scroller?.getBoundingClientRect();
             const rackRect = rack?.getBoundingClientRect();
+            const rackTiles = Array.from(rack?.querySelectorAll('.rack-tile') ?? []);
+            const rackTileRects = rackTiles.map(tile => tile.getBoundingClientRect());
             const dockRect = dock?.getBoundingClientRect();
             const ids = Array.from(document.querySelectorAll('[id]')).map(element => element.id);
             return {
@@ -662,6 +687,14 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 boardBottom: boardRect?.bottom ?? null,
                 dockTop: dockRect?.top ?? null,
                 rackVisibleInViewport: Boolean(rackRect && rackRect.top >= 0 && rackRect.bottom <= innerHeight),
+                rackTileCount: rackTiles.length,
+                rackTilesContained: Boolean(rackRect && rackTileRects.every(rect => rect.left >= rackRect.left && rect.right <= rackRect.right)),
+                rackTilesSingleRow: rackTileRects.length > 0 && Math.max(...rackTileRects.map(rect => rect.top)) - Math.min(...rackTileRects.map(rect => rect.top)) < 1,
+                rackOverflow: rack ? rack.scrollWidth - rack.clientWidth : null,
+                blankPickerContained: !blankPicker || (() => {
+                    const rect = blankPicker.getBoundingClientRect();
+                    return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight;
+                })(),
                 dockVisibleInViewport: Boolean(dockRect && dockRect.top >= 0 && dockRect.bottom <= innerHeight),
                 boardClearOfDock: Boolean(boardRect && dockRect && boardRect.bottom <= dockRect.top),
                 hasRack: Boolean(rack),
@@ -687,11 +720,19 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game page overflows the viewport at {width}px: {layout!r}")
     if not layout["rackVisibleInViewport"] or not layout["dockVisibleInViewport"]:
         raise AcceptanceError(f"fixed rack dock is not fully visible at {width}px: {layout!r}")
+    if (
+        layout["rackTileCount"] != 7
+        or not layout["rackTilesContained"]
+        or not layout["rackTilesSingleRow"]
+        or layout["rackOverflow"] != 0
+        or not layout["blankPickerContained"]
+    ):
+        raise AcceptanceError(f"rack tiles do not fit on one contained row at {width}px: {layout!r}")
     if not layout["boardClearOfDock"]:
         raise AcceptanceError(f"fixed rack dock obscures the board at {width}px: {layout!r}")
     if not all(layout[key] for key in [
         "hasRack", "hasActions", "hasPreview", "hasAwareness",
-        "hasViewerBench", "hasTurnDock", "hasActivityRail", "hasScene", "hasPlatform",
+        "hasTurnDock", "hasActivityRail", "hasScene",
     ]):
         raise AcceptanceError(f"game interaction state is missing at {width}px: {layout!r}")
     if not layout["menuClosed"]:
@@ -835,7 +876,7 @@ def active_game_path(browser: Browser) -> str:
 
 
 def wait_for_turn(browser: Browser) -> None:
-    browser.wait("document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'")
+    browser.wait("document.querySelector('#named-turn-status')?.textContent === 'Your move'")
 
 
 def word_from_rack(
@@ -909,8 +950,26 @@ def play_valid_word(actor: Browser, observer: Browser) -> None:
     preview = actor.evaluate(
         "document.querySelector('#draft-preview')?.innerText ?? ''"
     )
-    if "points" not in preview or not any(tile["blank"] or tile["id"] for tile in selected):
-        raise AcceptanceError(f"server-derived play preview is missing: {preview!r}")
+    score_bubble = actor.evaluate(
+        """(() => {
+            const bubble = document.querySelector('.draft-score-bubble');
+            if (!bubble) return null;
+            const bubbleRect = bubble.getBoundingClientRect();
+            const centerX = bubbleRect.left + bubbleRect.width / 2;
+            const centerY = bubbleRect.top + bubbleRect.height / 2;
+            const topElement = document.elementFromPoint(centerX, centerY);
+            return {
+                text: bubble.textContent?.trim() ?? '',
+                topmost: bubbleRect.width > 0 && bubbleRect.height > 0 && topElement !== null && !topElement.closest('.board-square'),
+                topTag: topElement?.tagName ?? null,
+                topClass: topElement?.className ?? null,
+            };
+        })()"""
+    )
+    if "points" not in preview or not score_bubble or not score_bubble["text"] or not score_bubble["topmost"]:
+        raise AcceptanceError(
+            f"server-derived play preview or topmost score bubble is missing: preview={preview!r}; bubble={score_bubble!r}"
+        )
 
     observer_revision = observer.evaluate(
         "document.querySelector('#game-board')?.getAttribute('data-revision')"
@@ -987,7 +1046,9 @@ def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange:
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',')"
     )
     browser.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{first_tile}"])')
-    browser.wait("document.body.innerText.includes('Tile selected')")
+    browser.wait(
+        f'document.querySelector(\'[data-tile-id="{first_tile}"]\')?.classList.contains("rack-tile-selected")'
+    )
     browser.submit('#player-rack form:has(input[value="SWAP_RACK_TILES"]):not(:has(input[value="' + first_tile + '"]))')
     browser.wait(
         f"Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',') !== {json.dumps(original_order)}"
@@ -1237,6 +1298,7 @@ def run() -> None:
             bob.wait("!document.querySelector('#live-status-connected')?.hidden")
             assert_responsive_game_layout(alice, 1440)
             assert_responsive_game_layout(alice, 390)
+            assert_responsive_game_layout(alice, 360)
             assert_game_controls(alice, 1440)
             assert_game_controls(alice, 390)
             set_viewport(alice, 1440)
@@ -1244,7 +1306,7 @@ def run() -> None:
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             exercise_rack_and_exchange(alice, 1440, submit_exchange=False)
             exercise_rack_and_exchange(alice, 390, submit_exchange=True)
-            bob.wait("document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'")
+            bob.wait("document.querySelector('#named-turn-status')?.textContent === 'Your move'")
             set_viewport(alice, 1440)
             alice.navigate(game_path)
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
@@ -1295,7 +1357,7 @@ def run() -> None:
             invalid_actor = (
                 alice
                 if alice.evaluate(
-                    "document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'"
+                    "document.querySelector('#named-turn-status')?.textContent === 'Your move'"
                 )
                 else bob
             )
@@ -1304,7 +1366,7 @@ def run() -> None:
             valid_actor = (
                 alice
                 if alice.evaluate(
-                    "document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'"
+                    "document.querySelector('#named-turn-status')?.textContent === 'Your move'"
                 )
                 else bob
             )
@@ -1339,7 +1401,7 @@ def run() -> None:
             for _ in range(12):
                 if alice.evaluate("document.body.innerText.includes('Game complete')"):
                     break
-                actor = alice if alice.evaluate("document.querySelector('#viewer-turn-status')?.textContent === 'Your turn'") else bob
+                actor = alice if alice.evaluate("document.querySelector('#named-turn-status')?.textContent === 'Your move'") else bob
                 observer = bob if actor is alice else alice
                 wait_for_turn(actor)
                 old_revision = observer.evaluate(
@@ -1359,10 +1421,18 @@ def run() -> None:
             bob.navigate(game_path)
             bob.wait("document.body.innerText.includes('Game complete')")
             bob.wait("Boolean(document.querySelector('section[id=\"move-history\"]'))")
-            for width in [1440, 390]:
+            for width in [1440, 390, 360]:
                 assert_responsive_game_layout(bob, width)
                 if not bob.evaluate("Boolean(document.querySelector('#completed-game-summary'))"):
                     raise AcceptanceError(f"completed summary is missing at {width}px")
+            bob.evaluate(
+                "Array.from(document.querySelectorAll('#completed-game-summary button')).find(button => button.textContent?.includes('Close'))?.click()"
+            )
+            bob.wait(
+                "getComputedStyle(document.querySelector('#completed-game-summary')).display === 'none'"
+            )
+            if not bob.evaluate("Boolean(document.querySelector('#game-board'))"):
+                raise AcceptanceError("dismissing completed summary hid the board")
             print("two-browser acceptance passed")
         except Exception:
             if server.stdout:

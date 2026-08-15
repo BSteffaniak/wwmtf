@@ -209,6 +209,9 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
                 .display_to_string(false, false)
                 .expect("completed page renders");
             assert!(rendered.contains("completed-game-summary"));
+            assert!(!rendered.contains("game-overlay"));
+            assert!(rendered.contains("Game details"));
+            assert!(rendered.contains("Close"));
             assert!(rendered.contains("Scoreless-turn limit"));
             assert!(rendered.contains("Tie game"));
             assert!(rendered.contains("alice: 0"));

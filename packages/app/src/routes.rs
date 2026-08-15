@@ -1115,6 +1115,11 @@ async fn game_compose_route(
             }
             draft.selected_blank_letter = Some(letter);
         }
+        "CANCEL_TILE_PICK" => {
+            draft.selected_tile = None;
+            draft.selected_blank_letter = None;
+            draft.rack_tile = None;
+        }
         "PLACE_TILE" => {
             let Some(tile_id) = draft.selected_tile else {
                 return draft_error_page(
@@ -2491,12 +2496,15 @@ fn visual_board(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let score_anchor = feedback
-        .candidate
-        .as_ref()
-        .and_then(|candidate| candidate.play.words.first())
-        .and_then(|word| word.coordinates.last())
-        .copied();
+    let score_anchor = feedback.candidate.as_ref().and_then(|candidate| {
+        candidate
+            .play
+            .words
+            .iter()
+            .flat_map(|word| word.coordinates.iter().copied())
+            .filter(|coordinate| pending.contains_key(coordinate))
+            .max_by_key(|coordinate| (coordinate.y, coordinate.x))
+    });
     let score = feedback
         .candidate
         .as_ref()
@@ -2506,6 +2514,11 @@ fn visual_board(
         .as_ref()
         .is_some_and(|candidate| !candidate.is_valid());
     let square_size = draft.board_zoom.square_size();
+    let score_bubble_left = score_anchor.map(|coordinate| {
+        u32::from(coordinate.x) * (square_size + 2) + square_size.saturating_sub(12) + 6
+    });
+    let score_bubble_top = score_anchor
+        .map(|coordinate| (u32::from(coordinate.y) * (square_size + 2) + 6).saturating_sub(16));
     let tile_font_size = if square_size < 36 { 15 } else { 20 };
     let premium_font_size = if square_size < 36 { 10 } else { 16 };
     let board_grid_width = u32::from(game.rules.board_size) * square_size
@@ -2537,7 +2550,7 @@ fn visual_board(
                 div class="board-scroll-content" width="100%" height="100%" min-width=(board_frame_width)
                     min-height=(board_frame_width) align-items="center" justify-content="center" {
                     div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
-                        width=(board_frame_width) height=(board_frame_width)
+                        width=(board_frame_width) height=(board_frame_width) position="relative"
                         flex="0 0 auto" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
                     @for y in 0..game.rules.board_size {
                         div direction="row" gap="2px" {
@@ -2582,17 +2595,6 @@ fn visual_board(
                                             @if let Some(points) = draft_points {
                                                 span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
                                             }
-                                            @if score_anchor == Some(coordinate) {
-                                                @if let Some(score) = score {
-                                                    span class=(if invalid_score { "draft-score-bubble invalid-draft-score" } else { "draft-score-bubble" })
-                                                        position="absolute" right="-12px" top="-16px" min-width="31px" height="25px"
-                                                        background=(if invalid_score { "#b4452f" } else { "#2f8a57" }) color=#ffffff
-                                                        border=(if invalid_score { ("#7a2d20", 2) } else { ("#246d45", 2) }) border-radius="999px"
-                                                        align-items="center" justify-content="center" font-size="12px" font-weight=bold {
-                                                        (score)
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 } @else if committed.is_some() {
@@ -2632,6 +2634,15 @@ fn visual_board(
                             }
                         }
                     }
+                    @if let (Some(score), Some(left), Some(top)) = (score, score_bubble_left, score_bubble_top) {
+                        span class=(if invalid_score { "draft-score-bubble invalid-draft-score" } else { "draft-score-bubble" })
+                            position="absolute" left=(left) top=(top) min-width="31px" height="25px"
+                            background=(if invalid_score { "#b4452f" } else { "#2f8a57" }) color=#ffffff
+                            border=(if invalid_score { ("#7a2d20", 2) } else { ("#246d45", 2) }) border-radius="999px"
+                            align-items="center" justify-content="center" font-size="12px" font-weight=bold {
+                            (score)
+                        }
+                    }
                 }
             }
         }
@@ -2654,10 +2665,10 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
         })
         .collect::<Vec<_>>();
     container! {
-        section id="player-rack" max-width="100%" position="relative" {
-            div class="rack-tray" max-width="100%" direction="row" overflow-x="auto" overflow-y="hidden"
-                justify-content="center" gap="7px"
-                background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="11px" padding-x="14px" {
+        section id="player-rack" width="100%" max-width="100%" position="relative" {
+            div class="rack-tray" width="100%" max-width="100%" direction="row" overflow-x="hidden" overflow-y="hidden"
+                justify-content="center" gap="3px"
+                background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="8px" padding-x="6px" {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
@@ -2665,10 +2676,10 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
                     @if can_compose || draft.mode == TurnMode::Play {
                         @let rack_action = rack_action(draft);
-                        form hx-post=(action.as_str()) hx-target="#app-page" {
+                        form hx-post=(action.as_str()) hx-target="#app-page" min-width=0 flex="1 1 0" max-width="54px" {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="54px" height="60px"
+                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="100%" height="52px" min-width=0
                                 background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
                                 border=((if selected { "#ffffff" } else if exchange_selected { "#ff796b" } else { "#b88a31" }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
@@ -2677,7 +2688,7 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                             }
                         }
                     } @else {
-                        div class="rack-tile" data-tile-id=(tile_id) width="54px" height="60px"
+                        div class="rack-tile" data-tile-id=(tile_id) min-width=0 flex="1 1 0" max-width="54px" height="52px"
                             background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
                             span font-size="24px" { (face) }
@@ -2689,18 +2700,26 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
             @if let Some(tile_id) = draft.selected_tile {
                 @let selected_blank = game.view.rack.iter().any(|(id, letter, _)| *id == tile_id && *letter == ' ');
                 @if selected_blank {
-                    section class="blank-letter-layer" position="absolute" bottom="100%" left=0 width="100%"
+                    section class="blank-letter-layer" position="fixed" left="2vw" bottom="2dvh" width="96vw"
+                        max-height="72dvh" overflow-y="auto"
                         background=#f4f1e8 color=#26382d border=(("#8e7651", 2)) border-radius="12px"
-                        padding="8px" gap="5px" {
-                        span { "Choose the blank tile’s letter first:" }
-                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="4px" {
+                        padding="10px" gap="7px" {
+                        div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
+                            span font-weight=bold { "Choose the blank tile’s letter:" }
+                            form hx-post=(action.as_str()) hx-target="#app-page" {
+                                (compose_form_fields(game, draft, "CANCEL_TILE_PICK"))
+                                button type=submit background=#ffffff color=#526243 border=(("#839276", 1))
+                                    border-radius="999px" padding-y="5px" padding-x="9px" cursor=pointer { "Cancel" }
+                            }
+                        }
+                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap="5px" {
                             @for letter in 'A'..='Z' {
                                 form hx-post=(action.as_str()) hx-target="#app-page" {
                                     (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
                                     input type=hidden name="letter" value=(letter.to_string());
-                                    button type=submit data-blank-letter=(letter.to_string()) width="30px" height="30px" border=(("#aa9e85", 1))
+                                    button type=submit data-blank-letter=(letter.to_string()) width="38px" height="38px" border=(("#aa9e85", 1))
                                         background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
-                                        border-radius="5px" cursor=pointer { (letter) }
+                                        border-radius="7px" font-weight=bold cursor=pointer { (letter) }
                                 }
                             }
                         }
@@ -2985,20 +3004,32 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
         .and_then(|(player, _)| game.final_score_adjustments.get(&player).copied())
         .unwrap_or_default();
     container! {
-        section id="completed-game-summary" background=#ffffff border=(("#c8b88f", 2))
-            border-radius="16px" padding="20px" gap="9px" {
-            h2 { (outcome) }
-            @if let Some(reason) = &game.completion_reason {
-                span color=#5d6258 { "Completed by: " (reason.as_str()) }
+        section id="completed-game-summary" width="100%" background=#ffffff color=#26382d border=(("#c8b88f", 2))
+            border-radius="12px" padding-y="8px" padding-x="10px" gap="6px" {
+            div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
+                span font-size="18px" font-weight=bold { (outcome) }
+                button type=button fx-click=(ActionType::no_display_by_id("completed-game-summary"))
+                    background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
+                    padding-y="4px" padding-x="8px" cursor=pointer { "Close" }
             }
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="16px" {
+            div direction="row" justify-content="center" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
                 span font-weight=bold { (game.viewer_display_name.as_str()) ": " (viewer_score) }
                 span font-weight=bold { (game.opponent_display_name.as_str()) ": " (opponent_score) }
             }
-            @if viewer_adjustment != 0 || opponent_adjustment != 0 {
-                span color=#5d6258 {
-                    "Final adjustments — " (game.viewer_display_name.as_str()) ": " (format!("{viewer_adjustment:+}"))
-                    ", " (game.opponent_display_name.as_str()) ": " (format!("{opponent_adjustment:+}"))
+            @if game.completion_reason.is_some() || viewer_adjustment != 0 || opponent_adjustment != 0 {
+                details width="100%" {
+                    summary cursor=pointer color=#5d6258 { "Game details" }
+                    div padding-top="5px" gap="4px" {
+                        @if let Some(reason) = &game.completion_reason {
+                            span color=#5d6258 { "Completed by: " (reason.as_str()) }
+                        }
+                        @if viewer_adjustment != 0 || opponent_adjustment != 0 {
+                            span color=#5d6258 {
+                                "Final adjustments — " (game.viewer_display_name.as_str()) ": " (format!("{viewer_adjustment:+}"))
+                                ", " (game.opponent_display_name.as_str()) ": " (format!("{opponent_adjustment:+}"))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3086,23 +3117,19 @@ fn visual_game_page(
                 section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
                     overflow-x="hidden" overflow-y="hidden" {
                     (board)
-                    @if let Some(completed_summary) = completed_summary {
-                        section id="game-overlay" position="absolute" top=0 left=0 width="100%"
-                            background=#112b20 border=(("#f4c95d", 3)) border-radius="18px" padding="12px" {
-                            (completed_summary)
-                        }
-                    }
                 }
             }
             section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
                 section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
                     background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
                     padding-y="6px" padding-x="8px" gap="5px" {
-                    @if error.is_some() {
+                    @if let Some(completed_summary) = completed_summary {
+                        (completed_summary)
+                    } @else if error.is_some() {
                         (turn_feedback_view)
-                    } @else if !game.completed && game.view.active_player == game.viewer_player {
+                    } @else if game.view.active_player == game.viewer_player {
                         (draft_preview)
-                    } @else if !game.completed {
+                    } @else {
                         section class="dock-message" width="100%" direction="row" justify-content="center"
                             background=#214c38 border=(("#376d53", 1)) border-radius="10px" padding-y="4px" padding-x="8px" {
                             span font-size="13px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
@@ -3116,11 +3143,18 @@ fn visual_game_page(
                     } @else if !game.completed {
                         @let compose_action = format!("/games/{}/compose", game.game_id);
                         section id="turn-actions" class="primary-action-row" max-width="100%" direction="row"
-                            justify-content="center" overflow-x="auto" overflow-y="hidden" {
+                            justify-content="center" gap="6px" overflow-x="auto" overflow-y="hidden" {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "SHUFFLE_RACK"))
                                 button type=submit padding-y=7 padding-x=12 background=#ffffff color=#526243
                                     border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Shuffle" }
+                            }
+                            @if !draft.placements.is_empty() {
+                                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                                    (compose_form_fields(game, draft, "CLEAR"))
+                                    button type=submit padding-y=7 padding-x=12 background=#ffffff color=#526243
+                                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall" }
+                                }
                             }
                         }
                     }
@@ -4160,6 +4194,7 @@ mod tests {
             assert!(rendered.contains("Play ·"));
             assert!(rendered.contains("board-tile-points"));
             assert!(rendered.contains("draft-score-bubble"));
+            assert!(rendered.contains("sx-position=\"absolute\""));
             assert!(rendered.contains(&format!("draft_revision={}", game.view.revision)));
 
             let inactive_rack = &state.racks[&inactive_player];
@@ -4232,6 +4267,8 @@ mod tests {
                 .expect("inactive plan renders");
             assert!(inactive_rendered.contains("pending-square"));
             assert!(inactive_rendered.contains("points"));
+            assert!(inactive_rendered.contains("Recall"));
+            assert!(inactive_rendered.contains("value=\"CLEAR\""));
             assert!(!inactive_rendered.contains("Play ·"));
             assert!(!inactive_rendered.contains("value=\"CONFIRM_PASS\""));
             assert_eq!(inactive_rendered.matches("primary-turn-action").count(), 0);
