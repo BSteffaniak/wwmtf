@@ -2676,10 +2676,13 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
                     @if can_compose || draft.mode == TurnMode::Play {
                         @let rack_action = rack_action(draft);
-                        form hx-post=(action.as_str()) hx-target="#app-page" min-width=0 flex="1 1 0" max-width="54px" {
+                        form hx-post=(action.as_str()) hx-target="#app-page"
+                            width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7))
+                            flex="0 0 auto" {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id) width="100%" height="52px" min-width=0
+                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id)
+                                width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7)) min-width=0
                                 background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
                                 border=((if selected { "#ffffff" } else if exchange_selected { "#ff796b" } else { "#b88a31" }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
@@ -2688,7 +2691,9 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                             }
                         }
                     } @else {
-                        div class="rack-tile" data-tile-id=(tile_id) min-width=0 flex="1 1 0" max-width="54px" height="52px"
+                        div class="rack-tile" data-tile-id=(tile_id)
+                            width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7))
+                            flex="0 0 auto"
                             background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
                             span font-size="24px" { (face) }

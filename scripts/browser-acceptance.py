@@ -690,6 +690,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 rackTileCount: rackTiles.length,
                 rackTilesContained: Boolean(rackRect && rackTileRects.every(rect => rect.left >= rackRect.left && rect.right <= rackRect.right)),
                 rackTilesSingleRow: rackTileRects.length > 0 && Math.max(...rackTileRects.map(rect => rect.top)) - Math.min(...rackTileRects.map(rect => rect.top)) < 1,
+                rackTilesSquare: rackTileRects.length > 0 && rackTileRects.every(rect => Math.abs(rect.width - rect.height) <= 1),
                 rackOverflow: rack ? rack.scrollWidth - rack.clientWidth : null,
                 blankPickerContained: !blankPicker || (() => {
                     const rect = blankPicker.getBoundingClientRect();
@@ -724,6 +725,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         layout["rackTileCount"] != 7
         or not layout["rackTilesContained"]
         or not layout["rackTilesSingleRow"]
+        or not layout["rackTilesSquare"]
         or layout["rackOverflow"] != 0
         or not layout["blankPickerContained"]
     ):
