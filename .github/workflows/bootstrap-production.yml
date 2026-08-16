@@ -6,14 +6,21 @@ name: Bootstrap Production
 permissions:
   contents: read
 
-concurrency:
-  group: production
-  cancel-in-progress: false
-
 jobs:
+  approve:
+    runs-on: ubuntu-latest
+    environment: production-approval
+    timeout-minutes: 5
+    steps:
+      - run: echo "Approved production bootstrap"
+
   bootstrap:
+    needs: approve
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
     timeout-minutes: 60
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

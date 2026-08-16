@@ -24,9 +24,9 @@ Create these credentials without placing their values in source control:
 
 The Cloudflare management token, R2 S3 credentials, and Fly token are separate credentials.
 
-### 2. Add GitHub production secrets
+### 2. Configure GitHub production environments
 
-Create or open the protected GitHub environment named `production`, restrict it to the production branch, and add:
+Create or open the protected GitHub environment named `production`, restrict it to the production branch, leave it without a required-reviewer rule, and add:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
@@ -38,9 +38,11 @@ Create or open the protected GitHub environment named `production`, restrict it 
 - `FLY_API_TOKEN`
 - `FLY_ORG`
 
+Create or open a second environment named `production-approval`, restrict it to the production branch, add the designated required reviewer, and do not add secrets. Leave prevent-self-review disabled when the person who pushes must be able to approve that release.
+
 ### 3. Run Bootstrap Production
 
-Run the `Bootstrap Production` workflow and approve the `production` environment deployment. The workflow is idempotent and:
+Run the `Bootstrap Production` workflow and approve the `production-approval` environment deployment. The workflow is idempotent and:
 
 1. Creates or adopts the private `wwmtf-opentofu-state` R2 bucket.
 2. Initializes encrypted, lock-protected OpenTofu state and imports the bootstrap-created bucket.
@@ -54,10 +56,11 @@ If the fixed state-bucket name is already owned by another Cloudflare account, c
 
 ## Routine operation
 
-- Every successful `Validate` run caused by a push to `master` queues `Deploy Application` for the exact validated commit. The `production` GitHub environment must require approval from a designated reviewer; after approval, the workflow snapshots the volume, deploys exactly one Machine, and checks the Fly and canonical endpoints.
-- Run `Deploy Application` manually for recovery or an explicit redeploy. It snapshots the volume by default and supports opting out of that snapshot for the manual run only.
-- Run `Deploy Infrastructure` for Cloudflare/OpenTofu changes. It discovers current Fly inputs, archives state, plans, and applies.
-- The three production workflows share one concurrency group so bootstrap, application deploys, and infrastructure applies cannot overlap.
+- Every successful `Validate` run caused by a push to `master` queues an application candidate for approval at the exact validated commit. A newer candidate cancels and replaces an older candidate that is still waiting for approval, so only the latest validated release normally needs review.
+- The credential-free `production-approval` GitHub environment must require approval from a designated reviewer. The secret-bearing `production` environment must not require a second review. After approval, deployment execution is non-cancellable: it snapshots the volume, deploys exactly one Machine, and checks the Fly and canonical endpoints.
+- Run `Deploy Application` manually for recovery or an explicit redeploy. It uses the same approval gate, snapshots the volume by default, and supports opting out of that snapshot for the manual run only.
+- `Deploy Infrastructure` and `Bootstrap Production` use the same approval environment but are not displaced by automatic application candidates.
+- Application deploy, infrastructure apply, and bootstrap execution jobs share one `production` concurrency group, so production mutations cannot overlap. Waiting-for-approval jobs do not hold that execution lock.
 
 The state bucket has a 365-day immutable `history/` prefix and a matching expiration rule. Live state and `.tflock` objects remain writable. OpenTofu encrypts state and saved plans with AES-GCM before upload. R2 does not provide S3 object versioning, so each infrastructure apply makes a server-side encrypted-state archive first.
 

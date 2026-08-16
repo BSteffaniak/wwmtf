@@ -15,19 +15,32 @@ name: Deploy Application
 permissions:
   contents: read
 
-concurrency:
-  group: production
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+  approve:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
+    environment: production-approval
+    concurrency:
+      group: production-application-approval
+      cancel-in-progress: true
+    timeout-minutes: 5
+    env:
+      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Record approved application release
+        run: echo "Approved application release ${DEPLOY_SHA}"
+
+  deploy:
+    needs: approve
+    runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
     timeout-minutes: 45
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
