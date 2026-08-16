@@ -24,9 +24,6 @@ jobs:
       github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     environment: production-approval
-    concurrency:
-      group: production-application-approval
-      cancel-in-progress: true
     timeout-minutes: 5
     env:
       DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}

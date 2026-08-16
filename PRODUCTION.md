@@ -56,7 +56,7 @@ If the fixed state-bucket name is already owned by another Cloudflare account, c
 
 ## Routine operation
 
-- Every successful `Validate` run caused by a push to `master` queues an application candidate for approval at the exact validated commit. A newer candidate cancels and replaces an older candidate that is still waiting for approval, so only the latest validated release normally needs review.
+- Every successful `Validate` run caused by a push to `master` queues an independent application candidate for approval at the exact validated commit. Approval candidates do not block or cancel one another, so a reviewer can approve the latest candidate directly and reject or cancel older candidates without processing them in order.
 - The credential-free `production-approval` GitHub environment must require approval from a designated reviewer. The secret-bearing `production` environment must not require a second review. After approval, deployment execution is non-cancellable: it snapshots the volume, deploys exactly one Machine, and checks the Fly and canonical endpoints.
 - Run `Deploy Application` manually for recovery or an explicit redeploy. It uses the same approval gate, snapshots the volume by default, and supports opting out of that snapshot for the manual run only.
 - `Deploy Infrastructure` and `Bootstrap Production` use the same approval environment but are not displaced by automatic application candidates.
