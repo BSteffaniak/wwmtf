@@ -2816,31 +2816,30 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     @if can_compose || draft.mode == TurnMode::Play {
                         @let rack_action = rack_action(draft);
                         form hx-post=(action.as_str()) hx-target="#app-page"
-                            width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7))
-                            flex="0 0 auto" {
+                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
+                            min-width=0 flex-shrink=0 {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
                             button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id)
-                                width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7)) min-width=0
+                                width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
+                                min-width=0 overflow-x="hidden" overflow-y="hidden"
                                 background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
                                 border=((if selected { "#ffffff" } else if exchange_selected { "#ff796b" } else { "#b88a31" }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
                                 position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
-                                span class="rack-tile-face" font-size=calc(min(24, (dvw(100) - 80) / 14)) { (face) }
-                                span class="rack-tile-points" position="absolute"
-                                    right=calc(min(5, (dvw(100) - 80) / 70)) bottom=calc(min(3, (dvw(100) - 80) / 112))
-                                    font-size=calc(min(12, (dvw(100) - 80) / 28)) { (points) }
+                                span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
+                                span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
+                                    font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
                             }
                         }
                     } @else {
                         div class="rack-tile" data-tile-id=(tile_id)
-                            width=calc(min(54, (dvw(100) - 80) / 7)) height=calc(min(54, (dvw(100) - 80) / 7))
-                            flex="0 0 auto"
+                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
+                            min-width=0 flex-shrink=0 overflow-x="hidden" overflow-y="hidden"
                             background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
                             align-items="center" justify-content="center" position="relative" font-weight=bold {
-                            span class="rack-tile-face" font-size=calc(min(24, (dvw(100) - 80) / 14)) { (face) }
-                            span class="rack-tile-points" position="absolute"
-                                right=calc(min(5, (dvw(100) - 80) / 70)) bottom=calc(min(3, (dvw(100) - 80) / 112))
-                                font-size=calc(min(12, (dvw(100) - 80) / 28)) { (points) }
+                            span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
+                            span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
+                                font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
                         }
                     }
                 }

@@ -681,6 +681,8 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             const rackPoints = rackTiles.map(tile => tile.querySelector('.rack-tile-points'));
             const rackFaceSizes = rackFaces.map(face => Number.parseFloat(getComputedStyle(face).fontSize));
             const rackPointSizes = rackPoints.map(points => Number.parseFloat(getComputedStyle(points).fontSize));
+            const rackFaceRects = rackFaces.map(face => face?.getBoundingClientRect());
+            const rackPointRects = rackPoints.map(points => points?.getBoundingClientRect());
             const dockRect = dock?.getBoundingClientRect();
             const ids = Array.from(document.querySelectorAll('[id]')).map(element => element.id);
             return {
@@ -698,8 +700,16 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 rackTypeScales: rackTileRects.length > 0 && rackTileRects.every((rect, index) =>
                     rackFaces[index]
                     && rackPoints[index]
-                    && rackFaceSizes[index] <= rect.width / 2 + 1
-                    && rackPointSizes[index] <= rect.width / 4 + 1
+                    && rackFaceSizes[index] <= rect.width * 0.4 + 1
+                    && rackPointSizes[index] <= rect.width * 0.2 + 1
+                    && rackFaceRects[index].left >= rect.left
+                    && rackFaceRects[index].right <= rect.right
+                    && rackFaceRects[index].top >= rect.top
+                    && rackFaceRects[index].bottom <= rect.bottom
+                    && rackPointRects[index].left >= rect.left
+                    && rackPointRects[index].right <= rect.right
+                    && rackPointRects[index].top >= rect.top
+                    && rackPointRects[index].bottom <= rect.bottom
                 ),
                 rackOverflow: rack ? rack.scrollWidth - rack.clientWidth : null,
                 blankPickerContained: !blankPicker || (() => {
