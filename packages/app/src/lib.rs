@@ -29,7 +29,8 @@ mod shared_state_security;
 mod workflows;
 
 pub use accounts::{
-    AccountError, authenticate, hash_password, normalize_username, register, verify_password,
+    AccountError, authenticate, find_or_create_development_user, hash_password, normalize_username,
+    register, verify_password,
 };
 pub use challenges::{
     ChallengeError, ChallengeStatus, accept_challenge, cancel_challenge, create_challenge,

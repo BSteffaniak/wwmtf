@@ -319,6 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dispatcher.clone(),
                 definition_provider,
                 google_oidc,
+                config.development_mode,
                 csrf_token.clone(),
                 config.public_base_url,
                 secure_cookies,

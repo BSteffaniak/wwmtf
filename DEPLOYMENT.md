@@ -9,7 +9,7 @@ Words with More Than Friends is designed for an internet deployment behind a TLS
 | `WWMTF_PRODUCTION_MODE` | Production: yes (`true`) | Enables fail-closed production configuration checks. Mutually exclusive with development mode. |
 | `WWMTF_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
 | `WWMTF_PORT` | No; defaults to `8343` | Listener port. |
-| `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL and emits non-`Secure` session/CSRF cookies. Never enable it in production. |
+| `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL, emits non-`Secure` session/CSRF cookies, and enables credential-free username login for local testing. Never enable it in production. |
 | `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
 | `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration, generated invitation links, and the Google callback URI (`/auth/google/callback`). Register that exact callback URI in Google Cloud. |
 | `WWMTF_GOOGLE_CLIENT_ID` | Production: yes; local: no | Google OpenID Connect web client ID. When omitted locally together with the client secret, Google sign-in is disabled. |
@@ -84,6 +84,6 @@ WWMTF_DATABASE_PATH=/tmp/wwmtf-dev.db \
 cargo run -p wwmtf_app --bin wwmtf --features insecure -- serve
 ```
 
-The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. The `insecure` Cargo feature selects HyperChad's development UUID generator because browser Web Crypto UUID generation is unavailable on plain-HTTP LAN origins. Development mode and the insecure renderer feature intentionally weaken transport/runtime security and must never be enabled on an internet-facing or production deployment.
+The listener defaults to `0.0.0.0:8343`. Replace `192.168.1.20` with the host's actual LAN address and allow the port through the local firewall if necessary. In development mode, `/login` accepts any valid username without a password and creates that local account on first use; use separate browser profiles to test multiple players. This is intentionally not authentication and is unavailable outside development mode. The `insecure` Cargo feature selects HyperChad's development UUID generator because browser Web Crypto UUID generation is unavailable on plain-HTTP LAN origins. Development mode and the insecure renderer feature intentionally weaken transport/runtime security and must never be enabled on an internet-facing or production deployment.
 
 Delete disposable development databases only when no retained game data is needed. Never reuse production credentials or production database copies without an approved, sanitized workflow.

@@ -27,9 +27,10 @@ use crate::{
     cancel_pending_challenge, challenge_username, claim_oidc_attempt, cleanup_oidc_attempts,
     clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt, create_oidc_attempt,
     create_shareable_invitation, decline_pending_challenge, error_component,
-    google_login_and_create_session, load_authenticated_dashboard, load_authorized_game_page,
-    load_move_plan, logout_session, move_history_component, redeem_shareable_invitation,
-    redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan,
+    find_or_create_development_user, google_login_and_create_session, load_authenticated_dashboard,
+    load_authorized_game_page, load_move_plan, logout_session, move_history_component,
+    redeem_shareable_invitation, redeem_shareable_invitation_by_id, revoke_shareable_invitation,
+    save_move_plan,
 };
 
 #[derive(Debug, Deserialize)]
@@ -495,6 +496,13 @@ impl PendingMoveForm {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct DevelopmentLoginForm {
+    username: String,
+    #[serde(default)]
+    invitation_token: String,
+}
+
 /// Account credential form accepted by renderer-neutral routes.
 #[derive(Debug, Deserialize)]
 struct GoogleCallbackQuery {
@@ -665,7 +673,7 @@ async fn google_callback_route(
     );
     let primary = match joined_game {
         Some(game_id) => invitation_joined_page(game_id),
-        None => dashboard_after_authentication(database, session.expose(), now).await,
+        None => dashboard_after_authentication(database, session.expose(), "", now).await,
     };
     View::builder()
         .with_primary(primary)
@@ -729,23 +737,95 @@ async fn migration_start_route(
         .build()
 }
 
-fn login_route(request: &RouteRequest) -> View {
+async fn login_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+    csrf_token: &str,
+    secure_cookies: bool,
+    development_login: bool,
+    google_login: bool,
+) -> View {
     let invitation_token = request.query.get("invite").map_or("", String::as_str);
-    if request.method.as_ref() == "POST" {
+    if request.method.as_ref() != "POST" {
         return View::from(login_page_with_invitation(
-            Some(
-                "Password sign-in is no longer available. Continue with Google or migrate your existing account.",
-            ),
+            None,
             invitation_token,
+            development_login,
+            google_login,
         ));
     }
-    View::from(login_page_with_invitation(None, invitation_token))
+    if !development_login {
+        return View::from(login_page_with_invitation(
+            Some("Local username login is available only in development mode."),
+            invitation_token,
+            false,
+            google_login,
+        ));
+    }
+    let form: DevelopmentLoginForm = match request.parse_form() {
+        Ok(form) => form,
+        Err(_) => {
+            return View::from(login_page_with_invitation(
+                Some("Enter a username."),
+                invitation_token,
+                true,
+                google_login,
+            ));
+        }
+    };
+    let user_id = match find_or_create_development_user(database, &form.username, now).await {
+        Ok(user_id) => user_id,
+        Err(crate::AccountError::InvalidUsername) => {
+            return View::from(login_page_with_invitation(
+                Some("Username must be 3–32 letters, numbers, underscores, or hyphens."),
+                &form.invitation_token,
+                true,
+                google_login,
+            ));
+        }
+        Err(_) => {
+            return View::from(login_page_with_invitation(
+                Some("Local login could not be completed."),
+                &form.invitation_token,
+                true,
+                google_login,
+            ));
+        }
+    };
+    let Ok(session) = crate::create_session(database, &user_id, now, Duration::days(30)).await
+    else {
+        return View::from(login_page_with_invitation(
+            Some("Local login could not be completed."),
+            &form.invitation_token,
+            true,
+            google_login,
+        ));
+    };
+    let dashboard =
+        dashboard_after_authentication(database, session.expose(), &form.invitation_token, now)
+            .await;
+    View::builder()
+        .with_primary(dashboard)
+        .with_response(authenticated_session_response(
+            session.expose(),
+            csrf_token,
+            secure_cookies,
+        ))
+        .build()
 }
 
-fn register_route() -> View {
-    View::from(login_page(Some(
-        "New accounts are created automatically when you continue with Google.",
-    )))
+fn register_route(development_login: bool, google_login: bool) -> View {
+    View::from(login_page_with_invitation(
+        if development_login {
+            Some("Enter any username to create or resume a local development account.")
+        } else {
+            Some("New accounts are created automatically when you continue with Google.")
+        },
+        "",
+        development_login,
+        google_login,
+    ))
 }
 
 async fn logout_route(
@@ -776,9 +856,26 @@ async fn logout_route(
 async fn dashboard_after_authentication(
     database: &dyn Database,
     session: &str,
+    invitation_token: &str,
     now: OffsetDateTime,
 ) -> Container {
-    dashboard_refresh_page(database, session, now).await
+    if invitation_token.is_empty() {
+        return dashboard_refresh_page(database, session, now).await;
+    }
+    let cookies = std::collections::BTreeMap::from([(
+        crate::SESSION_COOKIE_NAME.to_string(),
+        session.to_string(),
+    )]);
+    let Ok(user_id) = crate::authenticated_user(database, &cookies, now).await else {
+        return product_error_page(
+            "Unable to join game",
+            "Your new session could not be verified. Sign in and open the invitation again.",
+        );
+    };
+    match redeem_shareable_invitation(database, invitation_token, &user_id, now).await {
+        Ok(game_id) => invitation_joined_page(game_id),
+        Err(error) => product_error_page("Invitation unavailable", product_error_message(&error)),
+    }
 }
 
 async fn dashboard_refresh_page(
@@ -1519,11 +1616,13 @@ async fn invitation_route(
 /// Builds the database-backed renderer-neutral application router.
 #[must_use]
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub fn create_product_router(
     database: Arc<dyn Database>,
     dispatcher: Arc<crate::GameSharedStateDispatcher>,
     definition_provider: Option<Arc<dyn crate::DefinitionProvider>>,
     google_oidc: Option<Arc<GoogleOidcClient>>,
+    development_login: bool,
     csrf_token: String,
     public_base_url: String,
     secure_cookies: bool,
@@ -1612,6 +1711,7 @@ pub fn create_product_router(
         }
     });
     let csrf_token = Arc::new(csrf_token);
+    let google_login = google_oidc.is_some();
     if let Some(oidc) = google_oidc {
         let google_start_database = database.clone();
         let google_start_oidc = oidc.clone();
@@ -1631,7 +1731,7 @@ pub fn create_product_router(
         });
         let google_callback_database = database.clone();
         let google_callback_oidc = oidc.clone();
-        let google_callback_csrf = csrf_token;
+        let google_callback_csrf = csrf_token.clone();
         router.add_route_result("/auth/google/callback", move |request: RouteRequest| {
             let database = google_callback_database.clone();
             let oidc = google_callback_oidc.clone();
@@ -1665,11 +1765,27 @@ pub fn create_product_router(
             }
         });
     }
-    router.add_route_result("/login", move |request: RouteRequest| async move {
-        Ok(login_route(&request)) as Result<View, Box<dyn std::error::Error>>
+    let login_database = database.clone();
+    let login_csrf = csrf_token;
+    router.add_route_result("/login", move |request: RouteRequest| {
+        let database = login_database.clone();
+        let csrf = login_csrf.clone();
+        async move {
+            Ok(login_route(
+                &*database,
+                &request,
+                OffsetDateTime::now_utc(),
+                &csrf,
+                secure_cookies,
+                development_login,
+                google_login,
+            )
+            .await) as Result<View, Box<dyn std::error::Error>>
+        }
     });
     router.add_route_result("/register", move |_request: RouteRequest| async move {
-        Ok(register_route()) as Result<View, Box<dyn std::error::Error>>
+        Ok(register_route(development_login, google_login))
+            as Result<View, Box<dyn std::error::Error>>
     });
     let logout_database = database.clone();
     router.add_route_result("/logout", move |request: RouteRequest| {
@@ -2017,10 +2133,15 @@ pub async fn game_route(
 /// Renders the renderer-neutral login form.
 #[must_use]
 pub fn login_page(error: Option<&str>) -> Container {
-    login_page_with_invitation(error, "")
+    login_page_with_invitation(error, "", false, true)
 }
 
-fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Container {
+fn login_page_with_invitation(
+    error: Option<&str>,
+    invitation_token: &str,
+    development_login: bool,
+    google_login: bool,
+) -> Container {
     let message = error.unwrap_or_default();
     let google_href = if invitation_token.is_empty() {
         "/auth/google/start".to_string()
@@ -2037,10 +2158,28 @@ fn login_page_with_invitation(error: Option<&str>, invitation_token: &str) -> Co
                     h1 { "Welcome back" }
                     span color=#5d6258 { "Sign in to continue your private games." }
                 }
-                anchor href=(google_href) target="_top" color=#ffffff background=#526243 border=(("#526243", 1))
-                    border-radius="10px" padding-y=13 padding-x=18 text-align="center" { "Continue with Google" }
-                span color=#5d6258 { "Already have a username/password account? "
-                    anchor href="/account/migrate" color=#526243 { "Migrate it to Google" }
+                @if development_login {
+                    section background=#eef5e9 border=(("#b7c8ad", 1)) border-radius="10px" padding="14px" gap="12px" {
+                        span color=#3f5735 font-weight=bold { "Local development login" }
+                        span color=#5d6258 { "Enter any username. It will be created automatically if needed." }
+                        form method="post" gap="12px" {
+                            input type=hidden name="invitation_token" value=(invitation_token);
+                            input type=text name="username" placeholder="Username" autofocus=true padding-y=13 padding-x=14
+                                border=(("#cfc8b8", 1)) border-radius="10px";
+                            button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
+                                border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Continue" }
+                        }
+                    }
+                }
+                @if google_login {
+                    anchor href=(google_href) target="_top" color=#ffffff background=#526243 border=(("#526243", 1))
+                        border-radius="10px" padding-y=13 padding-x=18 text-align="center" { "Continue with Google" }
+                    span color=#5d6258 { "Already have a username/password account? "
+                        anchor href="/account/migrate" color=#526243 { "Migrate it to Google" }
+                    }
+                }
+                @if !development_login && !google_login {
+                    span color=#5d6258 { "No login method is configured for this server." }
                 }
                 @if !message.is_empty() {
                     section id="account-result" background=#fff3e8 border=(("#e2b98f", 1))
@@ -3557,7 +3696,7 @@ mod tests {
         assert!(page.contains(&format!("/login?invite={token}")));
         assert!(!page.contains("/register"));
 
-        let login = login_page_with_invitation(None, token)
+        let login = login_page_with_invitation(None, token, false, true)
             .display_to_string(false, false)
             .expect("login renders");
         assert!(login.contains(&format!("/auth/google/start?invite={token}")));
@@ -4886,6 +5025,7 @@ mod tests {
                 dispatcher,
                 None,
                 None,
+                false,
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,
@@ -4926,6 +5066,7 @@ mod tests {
                 dispatcher,
                 None,
                 None,
+                false,
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,
@@ -4946,68 +5087,79 @@ mod tests {
     }
 
     #[test]
-    fn password_entry_routes_do_not_issue_sessions() {
+    fn username_only_login_is_development_only() {
         block_on(async {
-            let database = switchy_database_connection::builder()
-                .turso()
-                .with_in_memory()
-                .build()
-                .await
-                .expect("Turso opens");
-            migrate_app(&*database).await.expect("migrations run");
-            let user = crate::register(
-                &*database,
-                "legacy-user",
-                "correct horse battery staple",
-                OffsetDateTime::UNIX_EPOCH,
-            )
-            .await
-            .expect("legacy user exists");
-
+            let database = test_database().await;
             let mut login = RouteRequest::from_path("/login", RequestInfo::default());
             login.method = "POST".parse().expect("POST parses");
-            login.body = Some(std::sync::Arc::new(
-                "username=legacy-user&password=correct+horse+battery+staple".into(),
-            ));
-            let response = login_route(&login);
-            assert!(response.response.cookies.is_empty());
-            assert!(response.response.navigation.is_none());
-            let rendered = response
+            login.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            login.body = Some(std::sync::Arc::new("username=local-player".into()));
+
+            let production = login_route(
+                &*database,
+                &login,
+                OffsetDateTime::UNIX_EPOCH,
+                "csrf-test",
+                true,
+                false,
+                true,
+            )
+            .await;
+            assert!(production.response.cookies.is_empty());
+            let rendered = production
                 .primary
                 .expect("response has primary content")
                 .display_to_string(false, false)
                 .expect("login response renders");
-            assert!(rendered.contains("Password sign-in is no longer available"));
+            assert!(rendered.contains("only in development mode"));
 
-            let response = register_route();
-            assert!(response.response.cookies.is_empty());
-            assert!(response.response.navigation.is_none());
-            let rendered = response
-                .primary
-                .expect("response has primary content")
-                .display_to_string(false, false)
-                .expect("registration response renders");
-            assert!(rendered.contains("created automatically when you continue with Google"));
-            assert!(
-                crate::authenticate(&*database, "legacy-user", "correct horse battery staple")
-                    .await
-                    .is_ok(),
-                "migration proof remains available without creating a normal session"
-            );
+            let development = login_route(
+                &*database,
+                &login,
+                OffsetDateTime::UNIX_EPOCH,
+                "csrf-test",
+                false,
+                true,
+                false,
+            )
+            .await;
             assert_eq!(
-                database
-                    .select("auth_sessions")
-                    .execute(&*database)
-                    .await
-                    .expect("sessions load")
-                    .into_iter()
-                    .filter(|row| {
-                        row.get("user_id").and_then(|value| {
-                            value.as_str().map(|persisted| persisted == user.as_str())
-                        }) == Some(true)
-                    })
-                    .count(),
-                0
+                development.response.cookies.len(),
+                2,
+                "{}",
+                development
+                    .primary
+                    .as_ref()
+                    .expect("response has primary content")
+                    .display_to_string(false, false)
+                    .expect("development login renders")
+            );
+            assert!(
+                development
+                    .response
+                    .cookies
+                    .iter()
+                    .all(|cookie| !cookie.secure)
+            );
+            let user = crate::find_or_create_development_user(
+                &*database,
+                "local-player",
+                OffsetDateTime::UNIX_EPOCH,
+            )
+            .await
+            .expect("development user resolves");
+            assert_eq!(
+                crate::resolve_session(
+                    &*database,
+                    &development.response.cookies[0].value,
+                    OffsetDateTime::UNIX_EPOCH,
+                )
+                .await
+                .expect("development session resolves"),
+                user
             );
         });
     }

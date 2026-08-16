@@ -102,6 +102,39 @@ pub async fn create_user_record(
     Ok(())
 }
 
+/// Finds or creates a credential-free user for an explicitly enabled local development runtime.
+///
+/// This does not authenticate identity and must never be exposed by production routing.
+///
+/// # Errors
+///
+/// * Returns username validation or database failures.
+pub async fn find_or_create_development_user(
+    db: &dyn Database,
+    username: &str,
+    now: OffsetDateTime,
+) -> Result<String, AccountError> {
+    let normalized = normalize_username(username)?;
+    let users = db
+        .select("users")
+        .where_eq("username_normalized", normalized.clone())
+        .execute(db)
+        .await?;
+    if let Some(user_id) = users
+        .first()
+        .and_then(|row| row.get("user_id"))
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    {
+        return Ok(user_id);
+    }
+
+    let user_id = Uuid::new_v4().to_string();
+    let now = i64::try_from(now.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| AccountError::InvalidTimestamp)?;
+    create_user_record(db, &user_id, &normalized, username.trim(), now).await?;
+    Ok(user_id)
+}
+
 /// Registers a unique account through portable `switchy` builders.
 ///
 /// # Errors
