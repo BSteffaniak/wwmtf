@@ -58,12 +58,16 @@ jobs:
             echo "Release $release_sha is not in master history" >&2
             exit 1
           }
-          echo "sha=$release_sha" >>"$GITHUB_OUTPUT"
-          echo "operation=$OPERATION" >>"$GITHUB_OUTPUT"
-          echo "### Release candidate" >>"$GITHUB_STEP_SUMMARY"
-          echo "- Requested ref: \`$REQUESTED_REF\`" >>"$GITHUB_STEP_SUMMARY"
-          echo "- Commit: \`$release_sha\`" >>"$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`registry.fly.io/wwmtf:release-$release_sha\`" >>"$GITHUB_STEP_SUMMARY"
+          {
+            echo "sha=$release_sha"
+            echo "operation=$OPERATION"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "### Release candidate"
+            echo "- Requested ref: \`$REQUESTED_REF\`"
+            echo "- Commit: \`$release_sha\`"
+            echo "- Image: \`registry.fly.io/wwmtf:release-$release_sha\`"
+          } >>"$GITHUB_STEP_SUMMARY"
 
   prepare:
     needs: resolve
