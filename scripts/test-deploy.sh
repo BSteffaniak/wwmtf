@@ -47,8 +47,8 @@ case "$*" in
         cat >"${MOCK_FLY_SECRET_FILE:?MOCK_FLY_SECRET_FILE is required}"
         printf 'secrets-imported\n' >>"$LOG_FILE"
         ;;
-    "deploy --app wwmtf --ha=false --strategy immediate --wait-timeout 10m --build-arg WWMTF_RELEASE=test-release")
-        printf 'deploy\n' >>"$LOG_FILE"
+    "deploy --app wwmtf --ha=false --strategy immediate --wait-timeout 10m --image registry.fly.io/wwmtf:release-0123456789abcdef0123456789abcdef01234567")
+        printf 'deploy-image\n' >>"$LOG_FILE"
         ;;
     *)
         echo "unexpected flyctl arguments: $*" >&2
@@ -151,13 +151,13 @@ PATH="$TEST_DIR/bin:$PATH" \
     MOCK_FLY_STATE_FILE="$TEST_DIR/state" \
     MOCK_FLY_LOG_FILE="$TEST_DIR/log" \
     MOCK_FLY_SECRET_FILE="$TEST_DIR/secrets" \
-    GITHUB_SHA=test-release \
+    RELEASE_SHA=0123456789abcdef0123456789abcdef01234567 \
     WWMTF_GOOGLE_CLIENT_ID=google-client-id \
     WWMTF_GOOGLE_CLIENT_SECRET=google-client-secret \
-    "$ROOT_DIR/scripts/deploy.sh" deploy
+    "$ROOT_DIR/scripts/deploy.sh" deploy-image
 
 [[ "$(grep -c '^secrets-imported$' "$TEST_DIR/log")" -eq 1 ]]
-[[ "$(grep -c '^deploy$' "$TEST_DIR/log")" -eq 1 ]]
+[[ "$(grep -c '^deploy-image$' "$TEST_DIR/log")" -eq 1 ]]
 grep -Fx 'WWMTF_GOOGLE_CLIENT_ID=google-client-id' "$TEST_DIR/secrets" >/dev/null
 grep -Fx 'WWMTF_GOOGLE_CLIENT_SECRET=google-client-secret' "$TEST_DIR/secrets" >/dev/null
 
@@ -165,10 +165,10 @@ if PATH="$TEST_DIR/bin:$PATH" \
     MOCK_FLY_STATE_FILE="$TEST_DIR/state" \
     MOCK_FLY_LOG_FILE="$TEST_DIR/log" \
     MOCK_FLY_SECRET_FILE="$TEST_DIR/secrets" \
-    GITHUB_SHA=test-release \
+    RELEASE_SHA=0123456789abcdef0123456789abcdef01234567 \
     WWMTF_GOOGLE_CLIENT_ID=google-client-id \
-    "$ROOT_DIR/scripts/deploy.sh" deploy 2>/dev/null; then
-    echo "deploy unexpectedly accepted partial Google credentials" >&2
+    "$ROOT_DIR/scripts/deploy.sh" deploy-image 2>/dev/null; then
+    echo "deploy-image unexpectedly accepted partial Google credentials" >&2
     exit 1
 fi
 

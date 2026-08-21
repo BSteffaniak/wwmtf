@@ -6,6 +6,20 @@ name: Deploy Application
     types: [completed]
   workflow_dispatch:
     inputs:
+      operation:
+        description: Prepare an image, deploy a prepared image, or do both
+        required: true
+        default: prepare-and-deploy
+        type: choice
+        options:
+          - prepare-and-deploy
+          - prepare-only
+          - deploy-prepared
+      release_ref:
+        description: Git commit SHA, branch, or tag (for example, v1.2.3)
+        required: true
+        default: master
+        type: string
       snapshot_before_deploy:
         description: Stop the Machine and snapshot the volume before deploying
         required: true
@@ -16,23 +30,100 @@ permissions:
   contents: read
 
 jobs:
-  approve:
+  resolve:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release.outputs.sha }}
+      operation: ${{ steps.release.outputs.operation }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.release_ref }}
+      - id: release
+        name: Resolve immutable release
+        env:
+          OPERATION: ${{ github.event_name == 'workflow_run' && 'prepare-and-deploy' || inputs.operation }}
+          REQUESTED_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.release_ref }}
+        run: |
+          release_sha="$(git rev-parse HEAD)"
+          test "$(git cat-file -t "$release_sha")" = commit
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "$release_sha" origin/master || {
+            echo "Release $release_sha is not in master history" >&2
+            exit 1
+          }
+          echo "sha=$release_sha" >>"$GITHUB_OUTPUT"
+          echo "operation=$OPERATION" >>"$GITHUB_OUTPUT"
+          echo "### Release candidate" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Requested ref: \`$REQUESTED_REF\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`$release_sha\`" >>"$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`registry.fly.io/wwmtf:release-$release_sha\`" >>"$GITHUB_STEP_SUMMARY"
+
+  prepare:
+    needs: resolve
+    if: needs.resolve.outputs.operation != 'deploy-prepared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Build and push immutable release image
+        run: >-
+          flyctl deploy --app wwmtf --build-only --push
+          --image-label "release-$RELEASE_SHA"
+          --build-arg "WWMTF_RELEASE=$RELEASE_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_BUILD_TOKEN }}
+      - name: Record prepared release
+        run: |
+          echo "### Prepared release" >>"$GITHUB_STEP_SUMMARY"
+          echo "\`registry.fly.io/wwmtf:release-$RELEASE_SHA\`" >>"$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'deploy-prepared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Authenticate to the Fly registry
+        run: flyctl auth docker
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_BUILD_TOKEN }}
+      - name: Verify prepared image exists
+        run: docker manifest inspect "registry.fly.io/wwmtf:release-$RELEASE_SHA"
+
+  approve:
+    needs: [resolve, prepare, verify]
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      (needs.prepare.result == 'success' || needs.prepare.result == 'skipped') &&
+      (needs.verify.result == 'success' || needs.verify.result == 'skipped') &&
+      needs.resolve.outputs.operation != 'prepare-only'
+    runs-on: ubuntu-latest
     environment: production-approval
     timeout-minutes: 5
     env:
-      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
     steps:
       - name: Record approved application release
-        run: echo "Approved application release ${DEPLOY_SHA}"
+        run: echo "Approved application release $RELEASE_SHA"
 
   deploy:
-    needs: approve
+    needs: [resolve, approve]
     runs-on: ubuntu-latest
     environment: production
     concurrency:
@@ -40,22 +131,21 @@ jobs:
       cancel-in-progress: false
     timeout-minutes: 45
     env:
-      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ env.DEPLOY_SHA }}
+          ref: master
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
       - name: Snapshot production volume
         if: github.event_name == 'workflow_run' || inputs.snapshot_before_deploy
         run: ./scripts/deploy.sh snapshot
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Deploy one Machine
-        run: ./scripts/deploy.sh deploy
+      - name: Deploy prepared image
+        run: ./scripts/deploy.sh deploy-image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          GITHUB_SHA: ${{ env.DEPLOY_SHA }}
           WWMTF_GOOGLE_CLIENT_ID: ${{ secrets.WWMTF_GOOGLE_CLIENT_ID }}
           WWMTF_GOOGLE_CLIENT_SECRET: ${{ secrets.WWMTF_GOOGLE_CLIENT_SECRET }}
       - name: Verify canonical hostname

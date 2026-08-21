@@ -53,6 +53,28 @@ Before deploying a release with migrations:
 
 Persisted gameplay payload changes additionally follow `PERSISTENCE.md`.
 
+## Application releases
+
+The `Deploy Application` GitHub Actions workflow prepares and deploys immutable images named
+`registry.fly.io/wwmtf:release-<full-commit-sha>`. Automatic runs prepare the exact commit that
+passed the `Validate` workflow, then request production approval. Building and pushing the image
+happens before approval; snapshotting the volume, staging production secrets, and changing the Fly
+Machine happen only after approval.
+
+Manual runs accept a commit SHA, branch, or Git tag that resolves to a commit in `master` history
+and offer three operations:
+
+- `prepare-and-deploy` builds the selected ref and then requests approval to deploy it.
+- `prepare-only` builds the selected ref without requesting approval or changing production.
+- `deploy-prepared` requests approval and deploys an existing image without rebuilding it.
+
+The workflow resolves the selected ref to a full commit SHA before either operation, so moving
+branches and tags cannot change which image an in-progress run deploys. Prefer immutable Git tags
+for human-readable releases, but treat the full commit SHA and corresponding image tag as the
+canonical release identity. Configure `FLY_BUILD_TOKEN` as the least-privileged repository secret
+that can push images for the `wwmtf` app. Keep `FLY_API_TOKEN` and the Google credentials scoped to
+the protected `production` environment.
+
 ## Backup and restore
 
 Back up the database while the application is stopped, or use a storage-level snapshot that atomically includes the database and its `-wal`/`-shm` sidecars. Copying only the main file while writes are active is not a valid backup.

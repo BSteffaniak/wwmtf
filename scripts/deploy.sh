@@ -291,24 +291,37 @@ bootstrap() {
     ensure_certificate
 }
 
-deploy() {
-    local release
-    release="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+release_sha() {
+    local release="${RELEASE_SHA:-${GITHUB_SHA:-}}"
+    [[ "$release" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "RELEASE_SHA must be a full 40-character lowercase Git commit SHA" >&2
+        exit 1
+    }
+    printf '%s' "$release"
+}
+
+release_image() {
+    printf 'registry.fly.io/%s:release-%s' "$APP_NAME" "$(release_sha)"
+}
+
+deploy_image() {
+    local image
+    image="$(release_image)"
     sync_google_secrets
     fly deploy --app "$APP_NAME" --ha=false --strategy immediate --wait-timeout 10m \
-        --build-arg "WWMTF_RELEASE=${release}"
+        --image "$image"
     smoke_test "https://${APP_NAME}.fly.dev"
 }
 
 case "${1:-help}" in
     bootstrap) bootstrap ;;
     certificate-dns) output_certificate_dns ;;
-    deploy) deploy ;;
+    deploy-image) deploy_image ;;
     ensure-started) ensure_machine_started "${2:?Machine ID is required}" ;;
     snapshot) snapshot_volume ;;
     smoke) smoke_test "${2:-$PUBLIC_URL}" ;;
     *)
-        echo "Usage: $0 {bootstrap|certificate-dns|deploy|ensure-started machine-id|snapshot|smoke [url]}" >&2
+        echo "Usage: $0 {bootstrap|certificate-dns|deploy-image|ensure-started machine-id|snapshot|smoke [url]}" >&2
         exit 2
         ;;
 esac
