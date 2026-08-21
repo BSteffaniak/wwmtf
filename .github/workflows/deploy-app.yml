@@ -128,6 +128,10 @@ jobs:
 
   deploy:
     needs: [resolve, approve]
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.approve.result == 'success'
     runs-on: ubuntu-latest
     environment: production
     concurrency:
