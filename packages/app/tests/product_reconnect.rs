@@ -212,7 +212,7 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
             assert!(!rendered.contains("game-overlay"));
             assert!(rendered.contains("Game details"));
             assert!(rendered.contains("Close"));
-            assert!(rendered.contains("Scoreless-turn limit"));
+            assert!(rendered.contains("Consecutive-pass limit"));
             assert!(rendered.contains("Tie game"));
             assert!(rendered.contains("alice: 0"));
             assert!(rendered.contains("bob: 0"));

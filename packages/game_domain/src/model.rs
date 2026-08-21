@@ -194,7 +194,7 @@ pub struct GameState {
     pub bag: Vec<Tile>,
     /// Accumulated scores.
     pub scores: BTreeMap<PlayerId, u32>,
-    /// Number of consecutive scoreless turns.
+    /// Number of consecutive passes.
     pub scoreless_turns: u8,
     /// Winner after completion, or `None` for an active game or completed tie.
     pub winner: Option<PlayerId>,

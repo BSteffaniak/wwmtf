@@ -387,10 +387,7 @@ fn latest_public_action(
     (None, std::collections::BTreeSet::new())
 }
 
-fn completion_reason(
-    events: &[wwmtf_game_domain::GameEvent],
-    scoreless_turn_limit: u8,
-) -> Option<String> {
+fn completion_reason(events: &[wwmtf_game_domain::GameEvent], pass_limit: u8) -> Option<String> {
     use wwmtf_game_domain::GameEvent;
 
     if events
@@ -402,18 +399,13 @@ fn completion_reason(
     let completion_index = events
         .iter()
         .rposition(|event| matches!(event, GameEvent::GameCompleted { .. }))?;
-    let scoreless_turns = events[..completion_index]
+    let consecutive_passes = events[..completion_index]
         .iter()
         .rev()
-        .take_while(|event| {
-            matches!(
-                event,
-                GameEvent::TurnPassed { .. } | GameEvent::TilesExchanged { .. }
-            ) || matches!(event, GameEvent::TilesPlayed { score: 0, .. })
-        })
+        .take_while(|event| matches!(event, GameEvent::TurnPassed { .. }))
         .count();
-    if scoreless_turns >= usize::from(scoreless_turn_limit) {
-        Some("Scoreless-turn limit".to_string())
+    if consecutive_passes >= usize::from(pass_limit) {
+        Some("Consecutive-pass limit".to_string())
     } else {
         Some("A player emptied their rack".to_string())
     }

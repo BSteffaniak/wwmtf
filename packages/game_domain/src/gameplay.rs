@@ -261,7 +261,7 @@ fn prepare_play(
 fn decide_pass(state: &GameState, actor: PlayerId, profile: &RuleProfile) -> Vec<GameEvent> {
     let mut events = vec![GameEvent::TurnPassed { player_id: actor }];
     if state.scoreless_turns.saturating_add(1) >= profile.scoreless_turn_limit {
-        events.push(completion_event_after_scoreless_end(state));
+        events.push(completion_event_after_pass_limit(state));
     }
     events
 }
@@ -282,18 +282,8 @@ fn completion_event_after_rack_out(
     GameEvent::GameCompleted { scores, winner }
 }
 
-fn completion_event_after_scoreless_end(state: &GameState) -> GameEvent {
-    let scores = state
-        .players
-        .into_iter()
-        .map(|player| {
-            let score = state.scores[&player];
-            (
-                player,
-                score.saturating_sub(rack_points(&state.racks[&player])),
-            )
-        })
-        .collect();
+fn completion_event_after_pass_limit(state: &GameState) -> GameEvent {
+    let scores = state.scores.clone();
     let winner = winner(&scores);
     GameEvent::GameCompleted { scores, winner }
 }
@@ -988,18 +978,22 @@ mod tests {
     }
 
     #[test]
-    fn pass_limit_and_resignation_complete_the_game() {
+    fn pass_limit_keeps_current_scores_and_declares_the_leader() {
         let (mut state, profile, dictionary) = state();
         let actor = state.active_player;
+        let other = opponent(&state, actor);
         state.scoreless_turns = profile.scoreless_turn_limit - 1;
+        state.scores.insert(actor, 40);
+        state.scores.insert(other, 30);
+        state.racks.get_mut(&actor).expect("rack")[0].points = 10;
         let passed = decide_command(&state, actor, &GameCommand::Pass, &profile, &dictionary)
             .expect("pass is valid");
         assert!(matches!(
             passed.events.as_slice(),
             [
                 GameEvent::TurnPassed { .. },
-                GameEvent::GameCompleted { .. }
-            ]
+                GameEvent::GameCompleted { scores, winner }
+            ] if scores[&actor] == 40 && scores[&other] == 30 && *winner == Some(actor)
         ));
 
         let resigned = decide_command(&state, actor, &GameCommand::Resign, &profile, &dictionary)

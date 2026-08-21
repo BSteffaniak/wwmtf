@@ -151,11 +151,7 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
                 .scores
                 .get_mut(player_id)
                 .ok_or(ReplayError::UnknownPlayer)? += score;
-            state.scoreless_turns = if *score == 0 {
-                state.scoreless_turns.saturating_add(1)
-            } else {
-                0
-            };
+            state.scoreless_turns = 0;
             advance_turn(&mut state);
         }
         GameEvent::TilesExchanged {
@@ -177,7 +173,7 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
             take_drawn_tiles(&mut state.bag, drawn)?;
             rack.extend_from_slice(drawn);
             state.bag.extend_from_slice(returned);
-            state.scoreless_turns = state.scoreless_turns.saturating_add(1);
+            state.scoreless_turns = 0;
             advance_turn(&mut state);
         }
         GameEvent::TurnPassed { player_id } => {

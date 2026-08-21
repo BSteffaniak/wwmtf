@@ -2890,7 +2890,7 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
         .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
         .map(|candidate| candidate.play.score);
     container! {
-        section id="turn-actions" class="turn-composer action-hud" max-width="100%" padding-y="4px" padding-x="6px"
+        section id="turn-actions" class="turn-composer action-hud" max-width="100%" position="relative" padding-y="4px" padding-x="6px"
             background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { "#173d2c" })
             color=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#402c1e" } else { "#f4f0df" })
             border=((if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f3b66e" } else { "#35674e" }, 1))
@@ -2970,29 +2970,32 @@ fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Containe
                         }
                     }
                     @if !game.completed && viewer_turn {
-                        details id="more-turn-actions" position="relative" {
-                        summary cursor=pointer color=#f4f0df font-weight=bold padding-y="7px" padding-x="6px" { "More ···" }
-                        div position="absolute" bottom="100%" right=0 background=#ffffff color=#26382d
-                            border=(("#d8d1c1", 1)) border-radius="12px" padding="12px" gap="8px" {
-                            @if game.exchange_available {
-                                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                    (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
-                                    button type=submit padding-y=8 padding-x=12 background=#ffffff color=#526243
-                                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange" }
-                                }
-                            }
+                        button type=button fx-click=(ActionType::toggle_display_by_id("more-turn-actions-menu"))
+                            color=#f4f0df font-weight=bold padding-y="7px" padding-x="6px"
+                            cursor=pointer { "More ···" }
+                    }
+                }
+                @if !game.completed && viewer_turn {
+                    div id="more-turn-actions-menu" hidden position="absolute" bottom="100%" right=0
+                        background=#ffffff color=#26382d border=(("#d8d1c1", 1)) border-radius="12px"
+                        padding="12px" gap="8px" {
+                        @if game.exchange_available {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "CONFIRM_PASS"))
+                                (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
                                 button type=submit padding-y=8 padding-x=12 background=#ffffff color=#526243
-                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
-                            }
-                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
-                                button type=submit padding-y=8 padding-x=12 background=#ffffff color=#814434
-                                    border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
+                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange" }
                             }
                         }
-                    }
+                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                            (compose_form_fields(game, draft, "CONFIRM_PASS"))
+                            button type=submit padding-y=8 padding-x=12 background=#ffffff color=#526243
+                                border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
+                        }
+                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                            (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
+                            button type=submit padding-y=8 padding-x=12 background=#ffffff color=#814434
+                                border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
+                        }
                     }
                 }
             }
@@ -3197,7 +3200,7 @@ fn rules_component(game: &AuthorizedGamePage) -> Container {
                 span { "A tile scores its printed value. DL and TL multiply a newly placed tile; DW and TW multiply the whole word. Premium squares apply only when first covered." }
                 span { "Playing all " (rack_size) " rack tiles adds a " (full_rack_bonus) "-point full-rack bonus." }
                 span { "Exchange replaces selected tiles and ends your turn. It is available only while at least " (exchange_requirement) " tiles remain in the reserve; exchanged tile identities stay private." }
-                span { "Passing ends your turn without playing. " (scoreless_turn_limit) " consecutive scoreless turns complete the game." }
+                span { "Passing ends your turn without playing. After each player passes three times consecutively (" (scoreless_turn_limit) " total consecutive passes), the game ends and the player with the higher current score wins." }
                 span { "Resigning immediately completes the game for your opponent. Otherwise, emptying a rack after the reserve is exhausted completes the game and applies the remaining-tile score adjustments." }
             }
         }
@@ -4225,7 +4228,7 @@ mod tests {
             assert!(page.contains("eligible-square-highlight"));
             assert!(page.contains("game-rules"));
             assert!(page.contains("50-point full-rack bonus"));
-            assert!(page.contains("6 consecutive scoreless turns"));
+            assert!(page.contains("6 total consecutive passes"));
             assert!(page.contains("dock-message"));
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));
@@ -4524,6 +4527,10 @@ mod tests {
                 .expect("actions render");
             assert!(initial.contains("value=\"CONFIRM_PASS\""));
             assert!(initial.contains("value=\"CONFIRM_RESIGN\""));
+            assert!(initial.contains("more-turn-actions-menu"));
+            assert!(initial.contains("fx-click"));
+            assert!(!initial.contains("<details"));
+            assert!(!initial.contains("<summary"));
             assert!(!initial.contains("name=\"command\" value=\"PASS\""));
             assert!(!initial.contains("name=\"command\" value=\"RESIGN\""));
 

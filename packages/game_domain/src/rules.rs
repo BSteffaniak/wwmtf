@@ -46,7 +46,7 @@ pub struct RuleProfile {
     pub full_rack_bonus: u16,
     /// Minimum bag size required before an exchange.
     pub minimum_tiles_for_exchange: u8,
-    /// Consecutive scoreless turns that end the game.
+    /// Consecutive passes that end the game.
     pub scoreless_turn_limit: u8,
     /// Dictionary identity expected by this rules profile.
     pub dictionary_id: String,
@@ -164,7 +164,7 @@ pub enum RuleProfileError {
     /// Exchanges cannot be permitted with fewer tiles than a full rack.
     #[error("minimum exchange bag size cannot be smaller than rack size")]
     ExchangeBelowRackSize,
-    /// A positive scoreless-turn threshold is required.
+    /// A positive consecutive-pass threshold is required.
     #[error("scoreless turn limit must be greater than zero")]
     ZeroScorelessTurnLimit,
     /// Profiles must identify their dictionary.
