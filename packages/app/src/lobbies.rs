@@ -10,7 +10,7 @@ use switchy_database::{
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
-use wwmtf_game_domain::GameId;
+use wwmtf_game_domain::{GameId, generated_rule_profile};
 
 /// Deployment-owned limits for accepting new game configurations.
 ///
@@ -19,8 +19,8 @@ use wwmtf_game_domain::GameId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameCreationPolicy {
     pub max_players: usize,
-    pub max_board_size: u16,
-    pub max_tile_sets: u16,
+    pub max_board_size: u8,
+    pub max_tile_sets: u8,
 }
 
 impl GameCreationPolicy {
@@ -31,8 +31,8 @@ impl GameCreationPolicy {
     /// Returns [`LobbyError::InvalidPolicy`] when any limit cannot admit a valid game.
     pub const fn new(
         max_players: usize,
-        max_board_size: u16,
-        max_tile_sets: u16,
+        max_board_size: u8,
+        max_tile_sets: u8,
     ) -> Result<Self, LobbyError> {
         if max_players < 2 || max_board_size == 0 || max_tile_sets == 0 {
             return Err(LobbyError::InvalidPolicy);
@@ -81,8 +81,8 @@ impl FirstPlayerPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LobbySettings {
     pub max_players: usize,
-    pub board_size: u16,
-    pub tile_set_count: u16,
+    pub board_size: u8,
+    pub tile_set_count: u8,
     pub first_player: FirstPlayerPolicy,
 }
 
@@ -485,10 +485,12 @@ pub async fn start_lobby(
         FirstPlayerPolicy::Random => Some(scale_seed(shuffle_seed, members.len())),
     }
     .ok_or(LobbyError::NotReady)?;
-    let game_id = crate::create_game_for_users_in_transaction(
+    let rules = generated_rule_profile(settings.board_size, settings.tile_set_count)?;
+    let game_id = crate::create_game_for_users_with_rules_in_transaction(
         &*tx,
         &user_ids,
         first_index,
+        &rules,
         now,
         shuffle_seed,
         &format!("start-lobby:{lobby_id}"),
@@ -561,8 +563,8 @@ fn settings(row: &switchy_database::Row) -> Result<LobbySettings, LobbyError> {
     Ok(LobbySettings {
         max_players: usize::try_from(unsigned(row, "max_players")?)
             .map_err(|_| LobbyError::Invalid)?,
-        board_size: u16::try_from(unsigned(row, "board_size")?).map_err(|_| LobbyError::Invalid)?,
-        tile_set_count: u16::try_from(unsigned(row, "tile_set_count")?)
+        board_size: u8::try_from(unsigned(row, "board_size")?).map_err(|_| LobbyError::Invalid)?,
+        tile_set_count: u8::try_from(unsigned(row, "tile_set_count")?)
             .map_err(|_| LobbyError::Invalid)?,
         first_player,
     })
@@ -626,6 +628,8 @@ pub enum LobbyError {
     #[error("timestamp is outside the supported range")]
     Timestamp,
     #[error(transparent)]
+    Rules(#[from] wwmtf_game_domain::RuleProfileError),
+    #[error(transparent)]
     GameCreation(#[from] crate::ChallengeError),
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
@@ -660,8 +664,8 @@ mod tests {
             let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
             let settings = LobbySettings {
                 max_players: 8,
-                board_size: 15,
-                tile_set_count: 1,
+                board_size: 21,
+                tile_set_count: 2,
                 first_player: FirstPlayerPolicy::Creator,
             };
             let (lobby_id, token) =
@@ -683,6 +687,8 @@ mod tests {
             let state = recover_game(&*db, game_id).await.expect("recovers");
             assert_eq!(state.players.len(), 3);
             assert_eq!(state.active_player, state.players[0]);
+            assert_eq!(state.rules.board_size, 21);
+            assert_eq!(state.rules.tile_count(), 200);
             assert_eq!(
                 start_lobby(&*db, &lobby_id, &alice, policy, now, 9)
                     .await

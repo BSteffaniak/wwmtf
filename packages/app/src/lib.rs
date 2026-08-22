@@ -35,8 +35,8 @@ pub use accounts::{
 };
 pub use challenges::{
     ChallengeError, ChallengeStatus, accept_challenge, cancel_challenge, create_challenge,
-    create_game_for_users_in_transaction, create_game_in_transaction, decline_challenge,
-    find_user_by_username,
+    create_game_for_users_in_transaction, create_game_for_users_with_rules_in_transaction,
+    create_game_in_transaction, decline_challenge, find_user_by_username,
 };
 pub use components::{
     GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,

@@ -215,8 +215,7 @@ pub async fn load_authorized_game_page(
             _ => PresentationError::Game(error),
         })?;
     let state = recover_game(db, game_id).await?;
-    let rules = wwmtf_game_domain::rule_profile(state.metadata.rules())
-        .ok_or(PresentationError::UnsupportedRules)?;
+    let rules = state.rules.clone();
     let dictionary =
         dictionary(state.metadata.dictionary()).ok_or(PresentationError::UnsupportedDictionary)?;
     let view = game_view(&state, player).ok_or(PresentationError::Forbidden)?;

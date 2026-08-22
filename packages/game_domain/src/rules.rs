@@ -7,6 +7,37 @@ use thiserror::Error;
 
 use crate::{Coordinate, RuleProfileRef, TileFace};
 
+mod premium_map_serde {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    use super::{Coordinate, PremiumSquare};
+
+    pub fn serialize<S>(
+        map: &BTreeMap<Coordinate, PremiumSquare>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        map.iter()
+            .map(|(&coordinate, &premium)| (coordinate, premium))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<Coordinate, PremiumSquare>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(Coordinate, PremiumSquare)>::deserialize(deserializer)
+            .map(|entries| entries.into_iter().collect())
+    }
+}
+
 /// Board premium applied only when a tile is newly placed on the square.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PremiumSquare {
@@ -37,6 +68,7 @@ pub struct RuleProfile {
     /// Square the first move must cover.
     pub start: Coordinate,
     /// Premium squares; absent coordinates have no premium.
+    #[serde(with = "premium_map_serde")]
     pub premiums: BTreeMap<Coordinate, PremiumSquare>,
     /// Physical tile distribution in deterministic fixture order.
     pub tiles: Vec<TileDefinition>,
@@ -167,6 +199,15 @@ pub enum RuleProfileError {
     /// A positive legacy consecutive-pass threshold is required.
     #[error("scoreless turn limit must be greater than zero")]
     ZeroScorelessTurnLimit,
+    /// At least one complete tile set is required.
+    #[error("tile set count must be greater than zero")]
+    EmptyTileSets,
+    /// Multiplied tile quantities must remain representable.
+    #[error("configured tile set count overflows tile quantities")]
+    TileQuantityOverflow,
+    /// Generated profile references must remain valid.
+    #[error("generated profile reference is invalid")]
+    GeneratedReference,
     /// Profiles must identify their dictionary.
     #[error("dictionary identifier cannot be empty")]
     EmptyDictionaryId,
@@ -210,6 +251,88 @@ pub fn initial_rule_profile() -> RuleProfile {
     };
     profile.validate().expect("reviewed rules fixture is valid");
     profile
+}
+
+/// Builds a deterministic generated profile from the reviewed classic distribution.
+///
+/// Premium coordinates are scaled from the immutable 15×15 layout with integer nearest-neighbor
+/// mapping. Collisions have stable precedence: triple-word, double-word, triple-letter, then
+/// double-letter. The start square is always a double-word square.
+///
+/// # Errors
+///
+/// Returns [`RuleProfileError`] when dimensions or tile-set multiplication are unsupported.
+pub fn generated_rule_profile(
+    board_size: u8,
+    tile_set_count: u8,
+) -> Result<RuleProfile, RuleProfileError> {
+    if board_size == 0 {
+        return Err(RuleProfileError::EmptyBoard);
+    }
+    if tile_set_count == 0 {
+        return Err(RuleProfileError::EmptyTileSets);
+    }
+    let mut profile = initial_rule_profile();
+    profile.reference = RuleProfileRef::new(
+        format!("generated-classic-en-{board_size}-{tile_set_count}"),
+        1,
+    )
+    .map_err(|_| RuleProfileError::GeneratedReference)?;
+    profile.board_size = board_size;
+    profile.start = Coordinate::new(board_size / 2, board_size / 2);
+    profile.premiums = generated_premiums(board_size);
+    for tile in &mut profile.tiles {
+        tile.quantity = tile
+            .quantity
+            .checked_mul(tile_set_count)
+            .ok_or(RuleProfileError::TileQuantityOverflow)?;
+    }
+    profile.validate()?;
+    Ok(profile)
+}
+
+fn generated_premiums(board_size: u8) -> BTreeMap<Coordinate, PremiumSquare> {
+    if board_size == 15 {
+        return initial_premiums();
+    }
+    let mut premiums = BTreeMap::new();
+    let source = initial_premiums();
+    for (coordinate, premium) in source {
+        let scaled = Coordinate::new(
+            scale_coordinate(coordinate.x, board_size),
+            scale_coordinate(coordinate.y, board_size),
+        );
+        premiums
+            .entry(scaled)
+            .and_modify(|existing| {
+                if premium_rank(premium) > premium_rank(*existing) {
+                    *existing = premium;
+                }
+            })
+            .or_insert(premium);
+    }
+    premiums.insert(
+        Coordinate::new(board_size / 2, board_size / 2),
+        PremiumSquare::Word(2),
+    );
+    premiums
+}
+
+fn scale_coordinate(coordinate: u8, board_size: u8) -> u8 {
+    if board_size == 1 {
+        return 0;
+    }
+    let numerator = u16::from(coordinate) * u16::from(board_size - 1) + 7;
+    u8::try_from(numerator / 14).expect("scaled coordinate is on a u8 board")
+}
+
+const fn premium_rank(premium: PremiumSquare) -> u8 {
+    match premium {
+        PremiumSquare::Word(3) => 4,
+        PremiumSquare::Word(_) => 3,
+        PremiumSquare::Letter(3) => 2,
+        PremiumSquare::Letter(_) => 1,
+    }
 }
 
 fn initial_tiles() -> Vec<TileDefinition> {
@@ -341,6 +464,23 @@ fn initial_premiums() -> BTreeMap<Coordinate, PremiumSquare> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_profiles_are_deterministic_and_scale_tile_supply() {
+        let first = generated_rule_profile(21, 2).expect("generated profile validates");
+        let second = generated_rule_profile(21, 2).expect("same profile validates");
+        assert_eq!(first, second);
+        assert_eq!(first.board_size, 21);
+        assert_eq!(first.start, Coordinate::new(10, 10));
+        assert_eq!(first.premiums[&first.start], PremiumSquare::Word(2));
+        assert_eq!(first.tile_count(), 200);
+        assert_eq!(
+            generated_rule_profile(15, 1)
+                .expect("classic generation")
+                .premiums,
+            initial_premiums()
+        );
+    }
 
     #[test]
     fn initial_profile_fixture_is_stable_and_valid() {

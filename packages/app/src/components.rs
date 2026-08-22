@@ -143,7 +143,7 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
     if !state.players.contains(&viewer) {
         return None;
     }
-    let profile = wwmtf_game_domain::rule_profile(state.metadata.rules())?;
+    let profile = &state.rules;
     Some(GameView {
         board: state
             .board

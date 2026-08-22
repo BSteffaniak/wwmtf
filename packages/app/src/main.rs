@@ -157,8 +157,8 @@ impl RuntimeConfig {
         let max_tile_sets = configured_limit("WWMTF_MAX_TILE_SETS", production_mode, 16)?;
         let game_creation_policy = wwmtf_app::GameCreationPolicy::new(
             max_players,
-            u16::try_from(max_board_size)?,
-            u16::try_from(max_tile_sets)?,
+            u8::try_from(max_board_size)?,
+            u8::try_from(max_tile_sets)?,
         )?;
         let google = google_runtime_config(
             std::env::var("WWMTF_GOOGLE_CLIENT_ID").ok(),

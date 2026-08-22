@@ -8,8 +8,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 use wwmtf_game_domain::{
-    DictionaryRef, GameId, GameMetadata, PlayerId, RuleProfileRef, initial_rule_profile,
-    initialize_game,
+    DictionaryRef, GameId, GameMetadata, PlayerId, initial_rule_profile, initialize_game,
 };
 
 /// Durable direct challenge status.
@@ -234,6 +233,33 @@ pub async fn create_game_for_users_in_transaction(
     shuffle_seed: u64,
     idempotency_key: &str,
 ) -> Result<GameId, ChallengeError> {
+    create_game_for_users_with_rules_in_transaction(
+        tx,
+        user_ids,
+        first_player_index,
+        &initial_rule_profile(),
+        now,
+        shuffle_seed,
+        idempotency_key,
+    )
+    .await
+}
+
+/// Creates one game using complete resolved immutable rules.
+///
+/// # Errors
+///
+/// Returns invalid membership, rules, initialization, persistence, or projection errors.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn create_game_for_users_with_rules_in_transaction(
+    tx: &dyn Database,
+    user_ids: &[String],
+    first_player_index: usize,
+    rules: &wwmtf_game_domain::RuleProfile,
+    now: OffsetDateTime,
+    shuffle_seed: u64,
+    idempotency_key: &str,
+) -> Result<GameId, ChallengeError> {
     if user_ids.len() < 2
         || user_ids
             .iter()
@@ -250,7 +276,7 @@ pub async fn create_game_for_users_in_transaction(
         .collect::<Vec<_>>();
     let metadata = GameMetadata::new(
         game_id,
-        RuleProfileRef::new("classic-en", 1).map_err(|_| ChallengeError::Compatibility)?,
+        rules.reference.clone(),
         DictionaryRef::new(
             "enable1-en",
             1,
@@ -263,14 +289,14 @@ pub async fn create_game_for_users_in_transaction(
         metadata,
         players.clone(),
         players[first_player_index],
-        &initial_rule_profile(),
+        rules,
         shuffle_seed,
     )?;
     let now_ms = timestamp_ms(now)?;
     tx.insert("games")
         .value("game_id", game_id.to_string())
-        .value("rules_id", "classic-en")
-        .value("rules_version", 1_i64)
+        .value("rules_id", rules.reference.id())
+        .value("rules_version", i64::from(rules.reference.version()))
         .value("dictionary_id", "enable1-en")
         .value("dictionary_version", 1_i64)
         .value(
@@ -386,6 +412,8 @@ pub enum ChallengeError {
     Unauthorized,
     #[error("pinned compatibility data is invalid")]
     Compatibility,
+    #[error(transparent)]
+    Rules(#[from] wwmtf_game_domain::RuleProfileError),
     #[error(transparent)]
     Initialization(#[from] wwmtf_game_domain::InitializationError),
     #[error(transparent)]

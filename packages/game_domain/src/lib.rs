@@ -28,7 +28,7 @@ pub use model::{
 };
 pub use rules::{
     INITIAL_RULE_PROFILE_ID, INITIAL_RULE_PROFILE_VERSION, PremiumSquare, RuleProfile,
-    RuleProfileError, TileDefinition, initial_rule_profile, rule_profile,
+    RuleProfileError, TileDefinition, generated_rule_profile, initial_rule_profile, rule_profile,
 };
 
 use serde::{Deserialize, Serialize};

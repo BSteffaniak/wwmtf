@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::GameMetadata;
+use crate::{GameMetadata, RuleProfile, initial_rule_profile};
 
 /// Stable identity of one player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -132,12 +132,15 @@ pub enum GameCommand {
 
 /// Canonical event from which aggregate state is rebuilt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum GameEvent {
     /// Initial deterministic state, including server-only bag and racks.
     GameStarted {
         metadata: GameMetadata,
         players: Vec<PlayerId>,
         first_player: PlayerId,
+        /// Complete immutable gameplay rules resolved when this game starts.
+        rules: RuleProfile,
         racks: BTreeMap<PlayerId, Vec<Tile>>,
         bag: Vec<Tile>,
     },
@@ -198,6 +201,9 @@ pub enum GameStatus {
 pub struct GameState {
     /// Compatibility-critical game metadata.
     pub metadata: GameMetadata,
+    /// Complete immutable gameplay rules pinned by the start event.
+    #[serde(default = "initial_rule_profile")]
+    pub rules: RuleProfile,
     /// Players in deterministic turn order.
     pub players: Vec<PlayerId>,
     /// Players who remain eligible to take turns.

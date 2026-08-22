@@ -5,7 +5,7 @@ use std::str::FromStr as _;
 use switchy_database::{Database, query::FilterableQuery as _};
 use thiserror::Error;
 use wwmtf_game_domain::{
-    GameCommand, GameId, GameState, PlayerId, apply_event, decide_command, dictionary, rule_profile,
+    GameCommand, GameId, GameState, PlayerId, apply_event, decide_command, dictionary,
 };
 
 /// Resolves one authenticated user to their stable player identity in a game.
@@ -98,15 +98,14 @@ async fn submit_in_transaction(
             actual: current.revision,
         });
     }
-    let profile =
-        rule_profile(current.metadata.rules()).ok_or(GameServiceError::UnsupportedCompatibility)?;
+    let profile = &current.rules;
     let dictionary = dictionary(current.metadata.dictionary())
         .ok_or(GameServiceError::UnsupportedCompatibility)?;
     if profile.dictionary_id != current.metadata.dictionary().id() {
         return Err(GameServiceError::UnsupportedCompatibility);
     }
 
-    let result = decide_command(&current, actor, command, &profile, &dictionary)?;
+    let result = decide_command(&current, actor, command, profile, &dictionary)?;
     crate::append_events(
         tx,
         game_id,

@@ -82,6 +82,7 @@ pub fn initialize_game(
         metadata,
         players,
         first_player,
+        rules: profile.clone(),
         racks,
         bag,
     })
@@ -100,6 +101,7 @@ pub fn apply_event(state: Option<GameState>, event: &GameEvent) -> Result<GameSt
                 metadata,
                 players,
                 first_player,
+                rules,
                 racks,
                 bag,
             },
@@ -107,6 +109,7 @@ pub fn apply_event(state: Option<GameState>, event: &GameEvent) -> Result<GameSt
             validate_start(players, *first_player, racks, bag)?;
             Ok(GameState {
                 metadata: metadata.clone(),
+                rules: rules.clone(),
                 players: players.clone(),
                 active_players: players.iter().copied().collect(),
                 active_player: *first_player,

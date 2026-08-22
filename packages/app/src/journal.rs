@@ -10,7 +10,8 @@ use switchy_database::{
 use thiserror::Error;
 use wwmtf_game_domain::{
     BoardTile, CompletionReason, Coordinate, GameEvent, GameId, GameMetadata, GameState,
-    GameStatus, PlayerId, Tile, apply_event, replay,
+    GameStatus, PlayerId, PremiumSquare, RuleProfile, RuleProfileRef, Tile, TileDefinition,
+    apply_event, initial_rule_profile, replay,
 };
 
 const GAME_EVENT_PAYLOAD_VERSION: u32 = 3;
@@ -103,6 +104,7 @@ impl TryFrom<&GameEvent> for GameEventV2 {
                 first_player,
                 racks,
                 bag,
+                ..
             } => Self::GameStarted {
                 metadata: metadata.clone(),
                 players: players.clone().try_into().map_err(|_| ())?,
@@ -164,6 +166,7 @@ impl From<GameEventV2> for GameEvent {
                 metadata,
                 players: players.to_vec(),
                 first_player,
+                rules: initial_rule_profile(),
                 racks,
                 bag,
             },
@@ -241,6 +244,7 @@ impl From<GameStateV2> for GameState {
             .map_or_else(BTreeSet::new, |winner| BTreeSet::from([winner]));
         Self {
             metadata: state.metadata,
+            rules: initial_rule_profile(),
             active_players: players.iter().copied().collect(),
             players,
             active_player: state.active_player,
@@ -261,11 +265,65 @@ impl From<GameStateV2> for GameState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RuleProfileV3 {
+    reference: RuleProfileRef,
+    board_size: u8,
+    start: Coordinate,
+    premiums: Vec<CoordinateEntry<PremiumSquare>>,
+    tiles: Vec<TileDefinition>,
+    rack_size: u8,
+    full_rack_bonus: u16,
+    minimum_tiles_for_exchange: u8,
+    scoreless_turn_limit: u8,
+    dictionary_id: String,
+}
+
+impl From<&RuleProfile> for RuleProfileV3 {
+    fn from(profile: &RuleProfile) -> Self {
+        Self {
+            reference: profile.reference.clone(),
+            board_size: profile.board_size,
+            start: profile.start,
+            premiums: coordinate_entries(&profile.premiums),
+            tiles: profile.tiles.clone(),
+            rack_size: profile.rack_size,
+            full_rack_bonus: profile.full_rack_bonus,
+            minimum_tiles_for_exchange: profile.minimum_tiles_for_exchange,
+            scoreless_turn_limit: profile.scoreless_turn_limit,
+            dictionary_id: profile.dictionary_id.clone(),
+        }
+    }
+}
+
+impl From<RuleProfileV3> for RuleProfile {
+    fn from(profile: RuleProfileV3) -> Self {
+        Self {
+            reference: profile.reference,
+            board_size: profile.board_size,
+            start: profile.start,
+            premiums: coordinate_map(profile.premiums),
+            tiles: profile.tiles,
+            rack_size: profile.rack_size,
+            full_rack_bonus: profile.full_rack_bonus,
+            minimum_tiles_for_exchange: profile.minimum_tiles_for_exchange,
+            scoreless_turn_limit: profile.scoreless_turn_limit,
+            dictionary_id: profile.dictionary_id,
+        }
+    }
+}
+
+fn initial_rule_profile_v3() -> RuleProfileV3 {
+    RuleProfileV3::from(&initial_rule_profile())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 enum GameEventV3 {
     GameStarted {
         metadata: GameMetadata,
         players: Vec<PlayerId>,
         first_player: PlayerId,
+        rules: RuleProfileV3,
         racks: BTreeMap<PlayerId, Vec<Tile>>,
         bag: Vec<Tile>,
     },
@@ -302,12 +360,14 @@ impl From<&GameEvent> for GameEventV3 {
                 metadata,
                 players,
                 first_player,
+                rules,
                 racks,
                 bag,
             } => Self::GameStarted {
                 metadata: metadata.clone(),
                 players: players.clone(),
                 first_player: *first_player,
+                rules: RuleProfileV3::from(rules),
                 racks: racks.clone(),
                 bag: bag.clone(),
             },
@@ -360,12 +420,14 @@ impl From<GameEventV3> for GameEvent {
                 metadata,
                 players,
                 first_player,
+                rules,
                 racks,
                 bag,
             } => Self::GameStarted {
                 metadata,
                 players,
                 first_player,
+                rules: rules.into(),
                 racks,
                 bag,
             },
@@ -411,6 +473,8 @@ impl From<GameEventV3> for GameEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GameStateV3 {
     metadata: GameMetadata,
+    #[serde(default = "initial_rule_profile_v3")]
+    rules: RuleProfileV3,
     players: Vec<PlayerId>,
     active_players: BTreeSet<PlayerId>,
     active_player: PlayerId,
@@ -430,6 +494,7 @@ impl From<&GameState> for GameStateV3 {
     fn from(state: &GameState) -> Self {
         Self {
             metadata: state.metadata.clone(),
+            rules: RuleProfileV3::from(&state.rules),
             players: state.players.clone(),
             active_players: state.active_players.clone(),
             active_player: state.active_player,
@@ -451,6 +516,7 @@ impl From<GameStateV3> for GameState {
     fn from(state: GameStateV3) -> Self {
         Self {
             metadata: state.metadata,
+            rules: state.rules.into(),
             players: state.players,
             active_players: state.active_players,
             active_player: state.active_player,
@@ -898,6 +964,7 @@ mod tests {
             metadata: state.metadata.clone(),
             players: state.players.clone(),
             first_player: state.players[0],
+            rules: state.rules.clone(),
             racks: state.racks.clone(),
             bag: state.bag.clone(),
         }
