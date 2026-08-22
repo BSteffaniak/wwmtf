@@ -2844,30 +2844,43 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                     }
                 }
             }
-            @if let Some(tile_id) = draft.selected_tile {
-                @let selected_blank = game.view.rack.iter().any(|(id, letter, _)| *id == tile_id && *letter == ' ');
-                @if selected_blank {
-                    section class="blank-letter-layer" position="fixed" left="2vw" bottom="2dvh" width="96vw"
-                        max-height="72dvh" overflow-y="auto"
-                        background=#f4f1e8 color=#26382d border=(("#8e7651", 2)) border-radius="12px"
-                        padding="10px" gap="7px" {
-                        div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
-                            span font-weight=bold { "Choose the blank tile’s letter:" }
-                            form hx-post=(action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "CANCEL_TILE_PICK"))
-                                button type=submit background=#ffffff color=#526243 border=(("#839276", 1))
-                                    border-radius="999px" padding-y="5px" padding-x="9px" cursor=pointer { "Cancel" }
-                            }
+        }
+    }
+    .into()
+}
+
+fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
+    let action = format!("/games/{}/compose", game.game_id);
+    let selected_blank = draft.selected_tile.is_some_and(|tile_id| {
+        game.view
+            .rack
+            .iter()
+            .any(|(id, letter, _)| *id == tile_id && *letter == ' ')
+    });
+    container! {
+        @if selected_blank {
+            section class="blank-letter-layer" position="fixed" top=0 right=0 bottom=0 left=0
+                width="100vw" height="100dvh" align-items="center" justify-content="end"
+                background=#00000066 padding="2vw" {
+                section width="100%" max-height="72dvh" overflow-y="auto"
+                    background=#f4f1e8 color=#26382d border=(("#8e7651", 2)) border-radius="12px"
+                    padding="10px" gap="7px" {
+                    div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
+                        span font-weight=bold { "Choose the blank tile’s letter:" }
+                        form hx-post=(action.as_str()) hx-target="#app-page" {
+                            (compose_form_fields(game, draft, "CANCEL_TILE_PICK"))
+                            button type=submit background=#ffffff color=#526243 border=(("#839276", 1))
+                                border-radius="999px" padding-y="5px" padding-x="9px" cursor=pointer { "Cancel" }
                         }
-                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap="5px" {
-                            @for letter in 'A'..='Z' {
-                                form hx-post=(action.as_str()) hx-target="#app-page" {
-                                    (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
-                                    input type=hidden name="letter" value=(letter.to_string());
-                                    button type=submit data-blank-letter=(letter.to_string()) width="38px" height="38px" border=(("#aa9e85", 1))
-                                        background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
-                                        border-radius="7px" font-weight=bold cursor=pointer { (letter) }
-                                }
+                    }
+                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap="5px" {
+                        @for letter in 'A'..='Z' {
+                            form hx-post=(action.as_str()) hx-target="#app-page" {
+                                (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
+                                input type=hidden name="letter" value=(letter.to_string());
+                                button type=submit data-blank-letter=(letter.to_string()) width="38px" height="38px" border=(("#aa9e85", 1))
+                                    background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
+                                    border-radius="7px" font-weight=bold cursor=pointer { (letter) }
                             }
                         }
                     }
@@ -3233,6 +3246,7 @@ fn visual_game_page(
     let completed_summary = game.completed.then(|| completed_game_summary(game));
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
+    let blank_letter_layer = visual_blank_letter_layer(game, draft);
     let history = move_history_component(game.game_id, &game.history);
     let game_channel = format!("game:{}", game.game_id);
     let game_path = if draft.has_composed_turn_input() {
@@ -3345,6 +3359,7 @@ fn visual_game_page(
                 span color=#5d6e62 font-size="11px" font-weight=bold { "WORD DEFINITION" }
                 span { "Loading definition…" }
             }
+            (blank_letter_layer)
         }
     }
     .into()
