@@ -22,6 +22,7 @@ struct RuntimeConfig {
     google: Option<GoogleRuntimeConfig>,
     production_mode: bool,
     development_mode: bool,
+    game_creation_policy: wwmtf_app::GameCreationPolicy,
 }
 
 fn google_runtime_config(
@@ -92,6 +93,23 @@ fn definitions_enabled(value: Option<&str>) -> Result<bool, &'static str> {
     }
 }
 
+fn configured_limit(
+    name: &str,
+    required: bool,
+    default: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|_| format!("{name} must be a positive integer").into()),
+        Err(std::env::VarError::NotPresent) if !required => Ok(default),
+        Err(std::env::VarError::NotPresent) => {
+            Err(format!("{name} is required in production mode").into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 impl RuntimeConfig {
     fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
         let production_mode = std::env::var("WWMTF_PRODUCTION_MODE")
@@ -134,6 +152,14 @@ impl RuntimeConfig {
                 return Err("WWMTF_DATABASE_PATH is required in production mode".into());
             }
         };
+        let max_players = configured_limit("WWMTF_MAX_GAME_PLAYERS", production_mode, 16)?;
+        let max_board_size = configured_limit("WWMTF_MAX_BOARD_SIZE", production_mode, 64)?;
+        let max_tile_sets = configured_limit("WWMTF_MAX_TILE_SETS", production_mode, 16)?;
+        let game_creation_policy = wwmtf_app::GameCreationPolicy::new(
+            max_players,
+            u16::try_from(max_board_size)?,
+            u16::try_from(max_tile_sets)?,
+        )?;
         let google = google_runtime_config(
             std::env::var("WWMTF_GOOGLE_CLIENT_ID").ok(),
             std::env::var("WWMTF_GOOGLE_CLIENT_SECRET").ok(),
@@ -148,6 +174,7 @@ impl RuntimeConfig {
             google,
             production_mode,
             development_mode,
+            game_creation_policy,
         })
     }
 }
@@ -320,6 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 definition_provider,
                 google_oidc,
                 config.development_mode,
+                config.game_creation_policy,
                 csrf_token.clone(),
                 config.public_base_url,
                 secure_cookies,

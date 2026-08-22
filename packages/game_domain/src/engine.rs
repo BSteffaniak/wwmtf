@@ -45,17 +45,21 @@ pub fn shuffle_bag(tiles: &mut [Tile], seed: u64) {
 ///
 /// # Errors
 ///
-/// * Returns [`InitializationError::DuplicatePlayer`] when both seats identify one player.
+/// * Returns [`InitializationError::TooFewPlayers`] when fewer than two players are supplied.
+/// * Returns [`InitializationError::DuplicatePlayer`] when a player occupies multiple seats.
 /// * Returns [`InitializationError::UnknownFirstPlayer`] when `first_player` is not seated.
-/// * Returns [`InitializationError::InsufficientTiles`] when the profile cannot fill two racks.
+/// * Returns [`InitializationError::InsufficientTiles`] when the profile cannot fill every rack.
 pub fn initialize_game(
     metadata: GameMetadata,
-    players: [PlayerId; 2],
+    players: Vec<PlayerId>,
     first_player: PlayerId,
     profile: &RuleProfile,
     shuffle_seed: u64,
 ) -> Result<GameEvent, InitializationError> {
-    if players[0] == players[1] {
+    if players.len() < 2 {
+        return Err(InitializationError::TooFewPlayers);
+    }
+    if players.iter().copied().collect::<BTreeSet<_>>().len() != players.len() {
         return Err(InitializationError::DuplicatePlayer);
     }
     if !players.contains(&first_player) {
@@ -70,7 +74,7 @@ pub fn initialize_game(
     shuffle_bag(&mut bag, shuffle_seed);
 
     let mut racks = BTreeMap::new();
-    for player in players {
+    for &player in &players {
         racks.insert(player, draw_tiles(&mut bag, usize::from(profile.rack_size)));
     }
 
@@ -100,17 +104,21 @@ pub fn apply_event(state: Option<GameState>, event: &GameEvent) -> Result<GameSt
                 bag,
             },
         ) => {
-            validate_start(*players, *first_player, racks, bag)?;
+            validate_start(players, *first_player, racks, bag)?;
             Ok(GameState {
                 metadata: metadata.clone(),
-                players: *players,
+                players: players.clone(),
+                active_players: players.iter().copied().collect(),
                 active_player: *first_player,
                 board: BTreeMap::new(),
                 racks: racks.clone(),
                 bag: bag.clone(),
                 scores: players.iter().copied().map(|player| (player, 0)).collect(),
                 scoreless_turns: 0,
+                consecutive_passes: 0,
                 winner: None,
+                leaders: BTreeSet::new(),
+                completion_reason: None,
                 status: GameStatus::Active,
                 revision: 1,
             })
@@ -152,6 +160,7 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
                 .get_mut(player_id)
                 .ok_or(ReplayError::UnknownPlayer)? += score;
             state.scoreless_turns = 0;
+            state.consecutive_passes = 0;
             advance_turn(&mut state);
         }
         GameEvent::TilesExchanged {
@@ -174,32 +183,45 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
             rack.extend_from_slice(drawn);
             state.bag.extend_from_slice(returned);
             state.scoreless_turns = 0;
+            state.consecutive_passes = 0;
             advance_turn(&mut state);
         }
         GameEvent::TurnPassed { player_id } => {
             ensure_turn(&state, *player_id)?;
             state.scoreless_turns = state.scoreless_turns.saturating_add(1);
+            state.consecutive_passes = state.consecutive_passes.saturating_add(1);
             advance_turn(&mut state);
         }
-        GameEvent::GameResigned { player_id, winner } => {
-            ensure_player(&state, *player_id)?;
-            ensure_player(&state, *winner)?;
-            if player_id == winner {
-                return Err(ReplayError::InvalidResignation);
+        GameEvent::GameResigned { player_id, .. } => {
+            ensure_turn(&state, *player_id)?;
+            if !state.active_players.remove(player_id) {
+                return Err(ReplayError::InactivePlayer);
             }
-            state.winner = Some(*winner);
-            state.status = GameStatus::Completed;
+            state.consecutive_passes = 0;
+            if state.active_players.len() >= 2 {
+                advance_turn(&mut state);
+            }
         }
-        GameEvent::GameCompleted { scores, winner } => {
+        GameEvent::GameCompleted {
+            scores,
+            winner,
+            leaders,
+            reason,
+        } => {
+            let calculated = calculated_leaders(scores);
+            let outright =
+                (calculated.len() == 1).then(|| *calculated.first().expect("one leader"));
             if scores.keys().copied().collect::<BTreeSet<_>>()
-                != state.players.into_iter().collect()
-                || winner.is_some_and(|player| !state.players.contains(&player))
-                || calculated_winner(scores) != *winner
+                != state.players.iter().copied().collect()
+                || calculated != *leaders
+                || outright != *winner
             {
                 return Err(ReplayError::InvalidFinalScores);
             }
             state.scores.clone_from(scores);
             state.winner = *winner;
+            state.leaders.clone_from(leaders);
+            state.completion_reason = Some(*reason);
             state.status = GameStatus::Completed;
         }
         GameEvent::GameStarted { .. } => unreachable!("handled before active events"),
@@ -224,15 +246,14 @@ pub fn replay<'a>(
     state.ok_or(ReplayError::EmptyJournal)
 }
 
-fn calculated_winner(scores: &BTreeMap<PlayerId, u32>) -> Option<PlayerId> {
-    let mut entries = scores.iter();
-    let (&first_player, &first_score) = entries.next()?;
-    let (&second_player, &second_score) = entries.next()?;
-    match first_score.cmp(&second_score) {
-        std::cmp::Ordering::Greater => Some(first_player),
-        std::cmp::Ordering::Less => Some(second_player),
-        std::cmp::Ordering::Equal => None,
-    }
+fn calculated_leaders(scores: &BTreeMap<PlayerId, u32>) -> BTreeSet<PlayerId> {
+    let Some(highest) = scores.values().copied().max() else {
+        return BTreeSet::new();
+    };
+    scores
+        .iter()
+        .filter_map(|(&player, &score)| (score == highest).then_some(player))
+        .collect()
 }
 
 fn draw_tiles(bag: &mut Vec<Tile>, count: usize) -> Vec<Tile> {
@@ -271,6 +292,9 @@ fn ensure_player(state: &GameState, player: PlayerId) -> Result<(), ReplayError>
 
 fn ensure_turn(state: &GameState, player: PlayerId) -> Result<(), ReplayError> {
     ensure_player(state, player)?;
+    if !state.active_players.contains(&player) {
+        return Err(ReplayError::InactivePlayer);
+    }
     if state.active_player == player {
         Ok(())
     } else {
@@ -279,23 +303,28 @@ fn ensure_turn(state: &GameState, player: PlayerId) -> Result<(), ReplayError> {
 }
 
 fn advance_turn(state: &mut GameState) {
-    state.active_player = if state.active_player == state.players[0] {
-        state.players[1]
-    } else {
-        state.players[0]
-    };
+    let current = state
+        .players
+        .iter()
+        .position(|player| *player == state.active_player)
+        .expect("active player is seated");
+    state.active_player = (1..=state.players.len())
+        .map(|offset| state.players[(current + offset) % state.players.len()])
+        .find(|player| state.active_players.contains(player))
+        .expect("an active game has an active player");
 }
 
 fn validate_start(
-    players: [PlayerId; 2],
+    players: &[PlayerId],
     first_player: PlayerId,
     racks: &BTreeMap<PlayerId, Vec<Tile>>,
     bag: &[Tile],
 ) -> Result<(), ReplayError> {
-    if players[0] == players[1] || !players.contains(&first_player) {
+    let unique = players.iter().copied().collect::<BTreeSet<_>>();
+    if players.len() < 2 || unique.len() != players.len() || !players.contains(&first_player) {
         return Err(ReplayError::InvalidStart);
     }
-    if racks.keys().copied().collect::<BTreeSet<_>>() != players.into_iter().collect() {
+    if racks.keys().copied().collect::<BTreeSet<_>>() != unique {
         return Err(ReplayError::InvalidStart);
     }
     let state_tiles = bag
@@ -347,7 +376,9 @@ impl SplitMix64 {
 /// Invalid deterministic game initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum InitializationError {
-    #[error("both seats cannot contain the same player")]
+    #[error("at least two players are required")]
+    TooFewPlayers,
+    #[error("a player cannot occupy multiple seats")]
     DuplicatePlayer,
     #[error("first player must occupy a seat")]
     UnknownFirstPlayer,
@@ -372,6 +403,8 @@ pub enum ReplayError {
     UnknownPlayer,
     #[error("event actor is out of turn")]
     OutOfTurn,
+    #[error("event actor is no longer active")]
+    InactivePlayer,
     #[error("tile {0:?} is not in the player's rack")]
     TileNotInRack(TileId),
     #[error("tile {0:?} does not match canonical rack data")]
@@ -386,8 +419,6 @@ pub enum ReplayError {
     DuplicateTile,
     #[error("final scores do not contain exactly the seated players")]
     InvalidFinalScores,
-    #[error("resigning player and winner must be different seated players")]
-    InvalidResignation,
 }
 
 #[cfg(test)]
@@ -398,8 +429,8 @@ mod tests {
     use super::*;
     use crate::{DictionaryRef, GameId, RuleProfileRef, initial_rule_profile};
 
-    fn fixture() -> (GameMetadata, [PlayerId; 2], RuleProfile) {
-        let players = [PlayerId::new(), PlayerId::new()];
+    fn fixture() -> (GameMetadata, Vec<PlayerId>, RuleProfile) {
+        let players = vec![PlayerId::new(), PlayerId::new()];
         let metadata = GameMetadata::new(
             GameId::new(),
             RuleProfileRef::new("classic-en", 1).expect("valid profile reference"),
@@ -433,8 +464,8 @@ mod tests {
     #[test]
     fn initialization_fills_racks_and_replay_round_trips() {
         let (metadata, players, profile) = fixture();
-        let started =
-            initialize_game(metadata, players, players[0], &profile, 7).expect("game initializes");
+        let started = initialize_game(metadata, players.clone(), players[0], &profile, 7)
+            .expect("game initializes");
         let state = replay([&started]).expect("start event replays");
         let encoded = serde_json::to_string(&state).expect("state serializes");
         let decoded: GameState = serde_json::from_str(&encoded).expect("state deserializes");
@@ -449,8 +480,8 @@ mod tests {
     #[test]
     fn replay_advances_turns_and_rejects_out_of_turn_events() {
         let (metadata, players, profile) = fixture();
-        let started =
-            initialize_game(metadata, players, players[0], &profile, 9).expect("game initializes");
+        let started = initialize_game(metadata, players.clone(), players[0], &profile, 9)
+            .expect("game initializes");
         let passed = GameEvent::TurnPassed {
             player_id: players[0],
         };
@@ -467,8 +498,8 @@ mod tests {
     #[test]
     fn golden_move_sequence_replays_to_expected_state() {
         let (metadata, players, profile) = fixture();
-        let started =
-            initialize_game(metadata, players, players[0], &profile, 11).expect("game initializes");
+        let started = initialize_game(metadata, players.clone(), players[0], &profile, 11)
+            .expect("game initializes");
         let events = vec![
             started,
             GameEvent::TurnPassed {
@@ -479,16 +510,22 @@ mod tests {
             },
             GameEvent::GameResigned {
                 player_id: players[0],
-                winner: players[1],
+                winner: None,
+            },
+            GameEvent::GameCompleted {
+                scores: BTreeMap::from([(players[0], 0), (players[1], 0)]),
+                winner: None,
+                leaders: BTreeSet::from([players[0], players[1]]),
+                reason: crate::CompletionReason::InsufficientActivePlayers,
             },
         ];
         let state = replay(&events).expect("golden journal replays");
 
-        assert_eq!(state.revision, 4);
+        assert_eq!(state.revision, 5);
         assert_eq!(state.active_player, players[0]);
-        assert_eq!(state.scoreless_turns, 2);
+        assert_eq!(state.consecutive_passes, 0);
         assert_eq!(state.status, GameStatus::Completed);
-        assert_eq!(state.winner, Some(players[1]));
+        assert_eq!(state.leaders, BTreeSet::from([players[0], players[1]]));
         assert!(state.board.is_empty());
         assert_eq!(state.racks[&players[0]].len(), 7);
         assert_eq!(state.racks[&players[1]].len(), 7);
@@ -499,7 +536,7 @@ mod tests {
         #[test]
         fn seeded_initialization_conserves_unique_tiles(seed in any::<u64>()) {
             let (metadata, players, profile) = fixture();
-            let started = initialize_game(metadata, players, players[0], &profile, seed)
+            let started = initialize_game(metadata, players.clone(), players[0], &profile, seed)
                 .expect("valid fixture initializes");
             let state = replay([&started]).expect("start replays");
             let ids = state
@@ -519,7 +556,7 @@ mod tests {
             pass_count in 0_usize..32,
         ) {
             let (metadata, players, profile) = fixture();
-            let started = initialize_game(metadata, players, players[0], &profile, seed)
+            let started = initialize_game(metadata, players.clone(), players[0], &profile, seed)
                 .expect("valid fixture initializes");
             let mut events = vec![started];
             for index in 0..pass_count {

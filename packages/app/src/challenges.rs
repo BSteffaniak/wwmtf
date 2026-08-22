@@ -206,11 +206,48 @@ pub async fn create_game_in_transaction(
     shuffle_seed: u64,
     idempotency_key: &str,
 ) -> Result<GameId, ChallengeError> {
-    if first_user_id == second_user_id {
+    create_game_for_users_in_transaction(
+        tx,
+        &[first_user_id.to_string(), second_user_id.to_string()],
+        0,
+        now,
+        shuffle_seed,
+        idempotency_key,
+    )
+    .await
+}
+
+/// Creates one initialized classic game for an ordered variable-size user list.
+///
+/// The selected first player is an index into `user_ids`; this application orchestration keeps
+/// account identities out of the deterministic game domain.
+///
+/// # Errors
+///
+/// Returns invalid membership, compatibility, initialization, persistence, or projection errors.
+#[allow(clippy::too_many_lines)]
+pub async fn create_game_for_users_in_transaction(
+    tx: &dyn Database,
+    user_ids: &[String],
+    first_player_index: usize,
+    now: OffsetDateTime,
+    shuffle_seed: u64,
+    idempotency_key: &str,
+) -> Result<GameId, ChallengeError> {
+    if user_ids.len() < 2
+        || user_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != user_ids.len()
+        || first_player_index >= user_ids.len()
+    {
         return Err(ChallengeError::Invalid);
     }
     let game_id = GameId::new();
-    let players = [PlayerId::new(), PlayerId::new()];
+    let players = (0..user_ids.len())
+        .map(|_| PlayerId::new())
+        .collect::<Vec<_>>();
     let metadata = GameMetadata::new(
         game_id,
         RuleProfileRef::new("classic-en", 1).map_err(|_| ChallengeError::Compatibility)?,
@@ -224,8 +261,8 @@ pub async fn create_game_in_transaction(
     );
     let started = initialize_game(
         metadata,
-        players,
-        players[0],
+        players.clone(),
+        players[first_player_index],
         &initial_rule_profile(),
         shuffle_seed,
     )?;
@@ -246,10 +283,7 @@ pub async fn create_game_in_transaction(
         .value("updated_at_ms", now_ms)
         .execute(tx)
         .await?;
-    for (seat, (user_id, player_id)) in [(first_user_id, players[0]), (second_user_id, players[1])]
-        .into_iter()
-        .enumerate()
-    {
+    for (seat, (user_id, player_id)) in user_ids.iter().zip(players.iter().copied()).enumerate() {
         tx.insert("game_players")
             .value("game_player_id", player_id.as_uuid().to_string())
             .value("game_id", game_id.to_string())
@@ -267,7 +301,10 @@ pub async fn create_game_in_transaction(
         .value("revision", 1_i64)
         .value("command_id", idempotency_key)
         .value("idempotency_key", idempotency_key)
-        .value("payload_version", 2_i64)
+        .value(
+            "payload_version",
+            i64::from(crate::persisted_payload_compatibility().event_version),
+        )
         .value("payload", crate::journal::encode_game_event(&started)?)
         .execute(tx)
         .await?;
@@ -287,7 +324,7 @@ pub async fn create_game_in_transaction(
         .execute(tx)
         .await?
         .len();
-    if player_count != 2 {
+    if player_count != user_ids.len() {
         return Err(ChallengeError::Invalid);
     }
     let canonical_events = crate::load_events(tx, game_id, 0)

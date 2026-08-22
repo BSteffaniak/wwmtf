@@ -1,6 +1,6 @@
 //! Durable, idempotent game-journal persistence using `switchy` query builders.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use switchy_database::{
@@ -9,12 +9,12 @@ use switchy_database::{
 };
 use thiserror::Error;
 use wwmtf_game_domain::{
-    BoardTile, Coordinate, GameEvent, GameId, GameMetadata, GameState, GameStatus, PlayerId, Tile,
-    apply_event, replay,
+    BoardTile, CompletionReason, Coordinate, GameEvent, GameId, GameMetadata, GameState,
+    GameStatus, PlayerId, Tile, apply_event, replay,
 };
 
-const GAME_EVENT_PAYLOAD_VERSION: u32 = 2;
-const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 2;
+const GAME_EVENT_PAYLOAD_VERSION: u32 = 3;
+const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 3;
 
 /// Compatibility policy for canonical persisted payloads.
 ///
@@ -92,7 +92,210 @@ enum GameEventV2 {
     },
 }
 
-impl From<&GameEvent> for GameEventV2 {
+impl TryFrom<&GameEvent> for GameEventV2 {
+    type Error = ();
+
+    fn try_from(event: &GameEvent) -> Result<Self, Self::Error> {
+        Ok(match event {
+            GameEvent::GameStarted {
+                metadata,
+                players,
+                first_player,
+                racks,
+                bag,
+            } => Self::GameStarted {
+                metadata: metadata.clone(),
+                players: players.clone().try_into().map_err(|_| ())?,
+                first_player: *first_player,
+                racks: racks.clone(),
+                bag: bag.clone(),
+            },
+            GameEvent::TilesPlayed {
+                player_id,
+                placements,
+                score,
+                drawn,
+            } => Self::TilesPlayed {
+                player_id: *player_id,
+                placements: coordinate_entries(placements),
+                score: *score,
+                drawn: drawn.clone(),
+            },
+            GameEvent::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            } => Self::TilesExchanged {
+                player_id: *player_id,
+                returned: returned.clone(),
+                drawn: drawn.clone(),
+            },
+            GameEvent::TurnPassed { player_id } => Self::TurnPassed {
+                player_id: *player_id,
+            },
+            GameEvent::GameResigned { player_id, winner } => Self::GameResigned {
+                player_id: *player_id,
+                winner: winner.ok_or(())?,
+            },
+            GameEvent::GameCompleted {
+                scores,
+                winner,
+                reason: CompletionReason::Legacy,
+                ..
+            } => Self::GameCompleted {
+                scores: scores.clone(),
+                winner: *winner,
+            },
+            GameEvent::GameCompleted { .. } => return Err(()),
+        })
+    }
+}
+
+impl From<GameEventV2> for GameEvent {
+    fn from(event: GameEventV2) -> Self {
+        match event {
+            GameEventV2::GameStarted {
+                metadata,
+                players,
+                first_player,
+                racks,
+                bag,
+            } => Self::GameStarted {
+                metadata,
+                players: players.to_vec(),
+                first_player,
+                racks,
+                bag,
+            },
+            GameEventV2::TilesPlayed {
+                player_id,
+                placements,
+                score,
+                drawn,
+            } => Self::TilesPlayed {
+                player_id,
+                placements: coordinate_map(placements),
+                score,
+                drawn,
+            },
+            GameEventV2::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            } => Self::TilesExchanged {
+                player_id,
+                returned,
+                drawn,
+            },
+            GameEventV2::TurnPassed { player_id } => Self::TurnPassed { player_id },
+            GameEventV2::GameResigned { player_id, winner } => Self::GameResigned {
+                player_id,
+                winner: Some(winner),
+            },
+            GameEventV2::GameCompleted { scores, winner } => {
+                let leaders = winner.map_or_else(
+                    || legacy_leaders(&scores),
+                    |player| BTreeSet::from([player]),
+                );
+                Self::GameCompleted {
+                    scores,
+                    winner,
+                    leaders,
+                    reason: CompletionReason::Legacy,
+                }
+            }
+        }
+    }
+}
+
+fn legacy_leaders(scores: &BTreeMap<PlayerId, u32>) -> BTreeSet<PlayerId> {
+    let Some(highest) = scores.values().copied().max() else {
+        return BTreeSet::new();
+    };
+    scores
+        .iter()
+        .filter_map(|(&player, &score)| (score == highest).then_some(player))
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct GameStateV2 {
+    metadata: GameMetadata,
+    players: [PlayerId; 2],
+    active_player: PlayerId,
+    board: Vec<CoordinateEntry<BoardTile>>,
+    racks: BTreeMap<PlayerId, Vec<Tile>>,
+    bag: Vec<Tile>,
+    scores: BTreeMap<PlayerId, u32>,
+    scoreless_turns: u8,
+    winner: Option<PlayerId>,
+    status: GameStatus,
+    revision: u64,
+}
+
+impl From<GameStateV2> for GameState {
+    fn from(state: GameStateV2) -> Self {
+        let players = state.players.to_vec();
+        let leaders = state
+            .winner
+            .map_or_else(BTreeSet::new, |winner| BTreeSet::from([winner]));
+        Self {
+            metadata: state.metadata,
+            active_players: players.iter().copied().collect(),
+            players,
+            active_player: state.active_player,
+            board: coordinate_map(state.board),
+            racks: state.racks,
+            bag: state.bag,
+            scores: state.scores,
+            scoreless_turns: state.scoreless_turns,
+            consecutive_passes: usize::from(state.scoreless_turns),
+            winner: state.winner,
+            leaders,
+            completion_reason: (state.status == GameStatus::Completed)
+                .then_some(CompletionReason::Legacy),
+            status: state.status,
+            revision: state.revision,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum GameEventV3 {
+    GameStarted {
+        metadata: GameMetadata,
+        players: Vec<PlayerId>,
+        first_player: PlayerId,
+        racks: BTreeMap<PlayerId, Vec<Tile>>,
+        bag: Vec<Tile>,
+    },
+    TilesPlayed {
+        player_id: PlayerId,
+        placements: Vec<CoordinateEntry<BoardTile>>,
+        score: u32,
+        drawn: Vec<Tile>,
+    },
+    TilesExchanged {
+        player_id: PlayerId,
+        returned: Vec<Tile>,
+        drawn: Vec<Tile>,
+    },
+    TurnPassed {
+        player_id: PlayerId,
+    },
+    GameResigned {
+        player_id: PlayerId,
+        winner: Option<PlayerId>,
+    },
+    GameCompleted {
+        scores: BTreeMap<PlayerId, u32>,
+        winner: Option<PlayerId>,
+        leaders: BTreeSet<PlayerId>,
+        reason: CompletionReason,
+    },
+}
+
+impl From<&GameEvent> for GameEventV3 {
     fn from(event: &GameEvent) -> Self {
         match event {
             GameEvent::GameStarted {
@@ -103,7 +306,7 @@ impl From<&GameEvent> for GameEventV2 {
                 bag,
             } => Self::GameStarted {
                 metadata: metadata.clone(),
-                players: *players,
+                players: players.clone(),
                 first_player: *first_player,
                 racks: racks.clone(),
                 bag: bag.clone(),
@@ -135,18 +338,25 @@ impl From<&GameEvent> for GameEventV2 {
                 player_id: *player_id,
                 winner: *winner,
             },
-            GameEvent::GameCompleted { scores, winner } => Self::GameCompleted {
+            GameEvent::GameCompleted {
+                scores,
+                winner,
+                leaders,
+                reason,
+            } => Self::GameCompleted {
                 scores: scores.clone(),
                 winner: *winner,
+                leaders: leaders.clone(),
+                reason: *reason,
             },
         }
     }
 }
 
-impl From<GameEventV2> for GameEvent {
-    fn from(event: GameEventV2) -> Self {
+impl From<GameEventV3> for GameEvent {
+    fn from(event: GameEventV3) -> Self {
         match event {
-            GameEventV2::GameStarted {
+            GameEventV3::GameStarted {
                 metadata,
                 players,
                 first_player,
@@ -159,7 +369,7 @@ impl From<GameEventV2> for GameEvent {
                 racks,
                 bag,
             },
-            GameEventV2::TilesPlayed {
+            GameEventV3::TilesPlayed {
                 player_id,
                 placements,
                 score,
@@ -170,7 +380,7 @@ impl From<GameEventV2> for GameEvent {
                 score,
                 drawn,
             },
-            GameEventV2::TilesExchanged {
+            GameEventV3::TilesExchanged {
                 player_id,
                 returned,
                 drawn,
@@ -179,60 +389,80 @@ impl From<GameEventV2> for GameEvent {
                 returned,
                 drawn,
             },
-            GameEventV2::TurnPassed { player_id } => Self::TurnPassed { player_id },
-            GameEventV2::GameResigned { player_id, winner } => {
+            GameEventV3::TurnPassed { player_id } => Self::TurnPassed { player_id },
+            GameEventV3::GameResigned { player_id, winner } => {
                 Self::GameResigned { player_id, winner }
             }
-            GameEventV2::GameCompleted { scores, winner } => Self::GameCompleted { scores, winner },
+            GameEventV3::GameCompleted {
+                scores,
+                winner,
+                leaders,
+                reason,
+            } => Self::GameCompleted {
+                scores,
+                winner,
+                leaders,
+                reason,
+            },
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct GameStateV2 {
+struct GameStateV3 {
     metadata: GameMetadata,
-    players: [PlayerId; 2],
+    players: Vec<PlayerId>,
+    active_players: BTreeSet<PlayerId>,
     active_player: PlayerId,
     board: Vec<CoordinateEntry<BoardTile>>,
     racks: BTreeMap<PlayerId, Vec<Tile>>,
     bag: Vec<Tile>,
     scores: BTreeMap<PlayerId, u32>,
-    scoreless_turns: u8,
+    consecutive_passes: usize,
     winner: Option<PlayerId>,
+    leaders: BTreeSet<PlayerId>,
+    completion_reason: Option<CompletionReason>,
     status: GameStatus,
     revision: u64,
 }
 
-impl From<&GameState> for GameStateV2 {
+impl From<&GameState> for GameStateV3 {
     fn from(state: &GameState) -> Self {
         Self {
             metadata: state.metadata.clone(),
-            players: state.players,
+            players: state.players.clone(),
+            active_players: state.active_players.clone(),
             active_player: state.active_player,
             board: coordinate_entries(&state.board),
             racks: state.racks.clone(),
             bag: state.bag.clone(),
             scores: state.scores.clone(),
-            scoreless_turns: state.scoreless_turns,
+            consecutive_passes: state.consecutive_passes,
             winner: state.winner,
+            leaders: state.leaders.clone(),
+            completion_reason: state.completion_reason,
             status: state.status,
             revision: state.revision,
         }
     }
 }
 
-impl From<GameStateV2> for GameState {
-    fn from(state: GameStateV2) -> Self {
+impl From<GameStateV3> for GameState {
+    fn from(state: GameStateV3) -> Self {
         Self {
             metadata: state.metadata,
             players: state.players,
+            active_players: state.active_players,
             active_player: state.active_player,
             board: coordinate_map(state.board),
             racks: state.racks,
             bag: state.bag,
             scores: state.scores,
-            scoreless_turns: state.scoreless_turns,
+            scoreless_turns: u8::try_from(state.consecutive_passes).unwrap_or(u8::MAX),
+            consecutive_passes: state.consecutive_passes,
             winner: state.winner,
+            leaders: state.leaders,
+            completion_reason: state.completion_reason,
             status: state.status,
             revision: state.revision,
         }
@@ -261,25 +491,27 @@ fn coordinate_map<T>(entries: Vec<CoordinateEntry<T>>) -> BTreeMap<Coordinate, T
 ///
 /// Returns a serialization error if the versioned payload cannot be encoded.
 pub fn encode_game_event(event: &GameEvent) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&GameEventV2::from(event))
+    serde_json::to_string(&GameEventV3::from(event))
 }
 
 fn decode_game_event(version: u64, payload: &str) -> Result<GameEvent, JournalError> {
     match version {
         1 => Ok(serde_json::from_str(payload)?),
         2 => Ok(serde_json::from_str::<GameEventV2>(payload)?.into()),
+        3 => Ok(serde_json::from_str::<GameEventV3>(payload)?.into()),
         _ => Err(JournalError::UnsupportedPayloadVersion(version)),
     }
 }
 
 fn encode_game_state(state: &GameState) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&GameStateV2::from(state))
+    serde_json::to_string(&GameStateV3::from(state))
 }
 
 fn decode_game_state(version: u64, payload: &str) -> Result<GameState, JournalError> {
     match version {
         1 => Ok(serde_json::from_str(payload)?),
         2 => Ok(serde_json::from_str::<GameStateV2>(payload)?.into()),
+        3 => Ok(serde_json::from_str::<GameStateV3>(payload)?.into()),
         _ => Err(JournalError::UnsupportedPayloadVersion(version)),
     }
 }
@@ -635,8 +867,14 @@ mod tests {
             bundled_dictionary_ref().expect("dictionary reference"),
             OffsetDateTime::UNIX_EPOCH,
         );
-        let started = initialize_game(metadata, players, players[0], &initial_rule_profile(), 1)
-            .expect("game starts");
+        let started = initialize_game(
+            metadata,
+            players.to_vec(),
+            players[0],
+            &initial_rule_profile(),
+            1,
+        )
+        .expect("game starts");
         let state = replay([&started]).expect("start replays");
         db.insert("games")
             .value("game_id", game_id.to_string())
@@ -658,7 +896,7 @@ mod tests {
     fn started_event(state: &GameState) -> GameEvent {
         GameEvent::GameStarted {
             metadata: state.metadata.clone(),
-            players: state.players,
+            players: state.players.clone(),
             first_player: state.players[0],
             racks: state.racks.clone(),
             bag: state.bag.clone(),
@@ -853,29 +1091,29 @@ mod tests {
                 .expect("snapshot stores");
 
             let compatibility = persisted_payload_compatibility();
-            assert_eq!(compatibility.event_version, 2);
-            assert_eq!(compatibility.snapshot_version, 2);
+            assert_eq!(compatibility.event_version, 3);
+            assert_eq!(compatibility.snapshot_version, 3);
 
             db.update("game_journal")
-                .value("payload_version", 3_i64)
+                .value("payload_version", 4_i64)
                 .where_eq("game_id", game_id.to_string())
                 .execute(&*db)
                 .await
                 .expect("event version changes");
             assert!(matches!(
                 load_events(&*db, game_id, 0).await,
-                Err(JournalError::UnsupportedPayloadVersion(3))
+                Err(JournalError::UnsupportedPayloadVersion(4))
             ));
 
             db.update("game_snapshots")
-                .value("payload_version", 3_i64)
+                .value("payload_version", 4_i64)
                 .where_eq("game_id", game_id.to_string())
                 .execute(&*db)
                 .await
                 .expect("snapshot version changes");
             assert!(matches!(
                 load_latest_snapshot(&*db, game_id).await,
-                Err(JournalError::UnsupportedPayloadVersion(3))
+                Err(JournalError::UnsupportedPayloadVersion(4))
             ));
         });
     }
@@ -907,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn tile_play_event_and_non_empty_snapshot_persist_as_version_two() {
+    fn tile_play_event_and_non_empty_snapshot_persist_as_version_three() {
         block_on(async {
             let (db, game_id, state) = initialized_database().await;
             let started = started_event(&state);
@@ -955,7 +1193,7 @@ mod tests {
             let loaded = load_events(&*db, game_id, 1)
                 .await
                 .expect("tile play reloads");
-            assert_eq!(loaded[0].payload_version, 2);
+            assert_eq!(loaded[0].payload_version, 3);
             assert_eq!(loaded[0].event, played);
             assert_eq!(
                 load_latest_snapshot(&*db, game_id)

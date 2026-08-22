@@ -9,6 +9,9 @@ Words with More Than Friends is designed for an internet deployment behind a TLS
 | `WWMTF_PRODUCTION_MODE` | Production: yes (`true`) | Enables fail-closed production configuration checks. Mutually exclusive with development mode. |
 | `WWMTF_BIND_ADDRESS` | No; defaults to `0.0.0.0` | Listener address. Override with `127.0.0.1` when only a local reverse proxy should connect. |
 | `WWMTF_PORT` | No; defaults to `8343` | Listener port. |
+| `WWMTF_MAX_GAME_PLAYERS` | Production: yes; local default `16` | Maximum members accepted into a newly created lobby. This is runtime creation policy, not a gameplay/replay limit. |
+| `WWMTF_MAX_BOARD_SIZE` | Production: yes; local default `64` | Maximum square board dimension accepted for new lobby settings. |
+| `WWMTF_MAX_TILE_SETS` | Production: yes; local default `16` | Maximum complete tile-distribution sets accepted for a new lobby. |
 | `WWMTF_DEV_MODE` | No; defaults to disabled | Set to `true` only for local/LAN development over HTTP. This permits an HTTP public URL, emits non-`Secure` session/CSRF cookies, and enables credential-free username login for local testing. Never enable it in production. |
 | `WWMTF_DATABASE_PATH` | Production: yes | Durable local Turso database path. Do not place it on ephemeral storage. |
 | `WWMTF_PUBLIC_BASE_URL` | Production: yes | Canonical HTTPS origin used by deployment/proxy configuration, generated invitation links, and the Google callback URI (`/auth/google/callback`). Register that exact callback URI in Google Cloud. |

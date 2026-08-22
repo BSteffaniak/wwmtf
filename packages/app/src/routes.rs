@@ -1623,11 +1623,13 @@ pub fn create_product_router(
     definition_provider: Option<Arc<dyn crate::DefinitionProvider>>,
     google_oidc: Option<Arc<GoogleOidcClient>>,
     development_login: bool,
+    game_creation_policy: crate::GameCreationPolicy,
     csrf_token: String,
     public_base_url: String,
     secure_cookies: bool,
 ) -> Router {
     let router = Router::new();
+    let _ = game_creation_policy;
     router.add_route_result("/health/live", |_request: RouteRequest| async move {
         Ok(Content::Raw {
             data: b"ok\n".to_vec().into(),
@@ -5047,6 +5049,7 @@ mod tests {
                 None,
                 None,
                 false,
+                crate::GameCreationPolicy::new(16, 64, 16).expect("policy"),
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,
@@ -5088,6 +5091,7 @@ mod tests {
                 None,
                 None,
                 false,
+                crate::GameCreationPolicy::new(16, 64, 16).expect("policy"),
                 "csrf-test".to_string(),
                 "https://games.example.test".to_string(),
                 true,

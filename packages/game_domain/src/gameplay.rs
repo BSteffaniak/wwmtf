@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AnalyzedWord, BoardTile, CandidatePlayAnalysis, Coordinate, Dictionary, GameCommand, GameError,
-    GameEvent, GameState, GameStatus, MoveResult, Placement, PlacementGuidance, PlayAnalysis,
-    PlayerId, PremiumSquare, RuleProfile, Tile, TileFace, TileId,
+    AnalyzedWord, BoardTile, CandidatePlayAnalysis, CompletionReason, Coordinate, Dictionary,
+    GameCommand, GameError, GameEvent, GameState, GameStatus, MoveResult, Placement,
+    PlacementGuidance, PlayAnalysis, PlayerId, PremiumSquare, RuleProfile, Tile, TileFace, TileId,
 };
 
 /// Validates a gameplay command and produces canonical events without mutating state.
@@ -30,10 +30,7 @@ pub fn decide_command(
             vec![decide_exchange(state, actor, tile_ids, profile)?]
         }
         GameCommand::Pass => decide_pass(state, actor, profile),
-        GameCommand::Resign => vec![GameEvent::GameResigned {
-            player_id: actor,
-            winner: opponent(state, actor),
-        }],
+        GameCommand::Resign => decide_resignation(state, actor),
     };
     Ok(MoveResult {
         resulting_revision: state.revision + u64::try_from(events.len()).unwrap_or(u64::MAX),
@@ -55,6 +52,9 @@ fn ensure_planning_actor(state: &GameState, actor: PlayerId) -> Result<(), GameE
     }
     if !state.players.contains(&actor) {
         return Err(GameError::NotAPlayer);
+    }
+    if !state.active_players.contains(&actor) {
+        return Err(GameError::InactivePlayer);
     }
     Ok(())
 }
@@ -260,8 +260,29 @@ fn prepare_play(
 
 fn decide_pass(state: &GameState, actor: PlayerId, profile: &RuleProfile) -> Vec<GameEvent> {
     let mut events = vec![GameEvent::TurnPassed { player_id: actor }];
-    if state.scoreless_turns.saturating_add(1) >= profile.scoreless_turn_limit {
-        events.push(completion_event_after_pass_limit(state));
+    let required = state
+        .active_players
+        .len()
+        .saturating_mul(usize::from(profile.scoreless_turn_limit) / 2);
+    if state.consecutive_passes.saturating_add(1) >= required {
+        events.push(completion_event_with_rack_penalties(
+            state,
+            CompletionReason::ConsecutivePassRounds,
+        ));
+    }
+    events
+}
+
+fn decide_resignation(state: &GameState, actor: PlayerId) -> Vec<GameEvent> {
+    let mut events = vec![GameEvent::GameResigned {
+        player_id: actor,
+        winner: None,
+    }];
+    if state.active_players.len() == 2 {
+        events.push(completion_event_with_rack_penalties(
+            state,
+            CompletionReason::InsufficientActivePlayers,
+        ));
     }
     events
 }
@@ -272,43 +293,58 @@ fn completion_event_after_rack_out(
     move_score: u32,
 ) -> GameEvent {
     let mut scores = state.scores.clone();
-    let opponent = opponent(state, finisher);
-    let remaining = rack_points(&state.racks[&opponent]);
-    *scores.get_mut(&finisher).expect("finisher is seated") += move_score + remaining;
-    let opponent_score = scores[&opponent];
-    *scores.get_mut(&opponent).expect("opponent is seated") =
-        opponent_score.saturating_sub(remaining);
-    let winner = winner(&scores);
-    GameEvent::GameCompleted { scores, winner }
-}
-
-fn completion_event_after_pass_limit(state: &GameState) -> GameEvent {
-    let scores = state.scores.clone();
-    let winner = winner(&scores);
-    GameEvent::GameCompleted { scores, winner }
-}
-
-fn winner(scores: &BTreeMap<PlayerId, u32>) -> Option<PlayerId> {
-    let mut entries = scores.iter();
-    let (&first_player, &first_score) = entries.next()?;
-    let (&second_player, &second_score) = entries.next()?;
-    match first_score.cmp(&second_score) {
-        std::cmp::Ordering::Greater => Some(first_player),
-        std::cmp::Ordering::Less => Some(second_player),
-        std::cmp::Ordering::Equal => None,
+    let mut award = 0_u32;
+    for &player in &state.players {
+        if player == finisher {
+            continue;
+        }
+        let remaining = rack_points(&state.racks[&player]);
+        award = award.saturating_add(remaining);
+        scores
+            .entry(player)
+            .and_modify(|score| *score = score.saturating_sub(remaining));
     }
+    scores.entry(finisher).and_modify(|score| {
+        *score = score.saturating_add(move_score).saturating_add(award);
+    });
+    let leaders = leaders(&scores);
+    GameEvent::GameCompleted {
+        scores,
+        winner: (leaders.len() == 1).then(|| *leaders.first().expect("one leader")),
+        leaders,
+        reason: CompletionReason::RackOut,
+    }
+}
+
+fn completion_event_with_rack_penalties(state: &GameState, reason: CompletionReason) -> GameEvent {
+    let mut scores = state.scores.clone();
+    for &player in &state.players {
+        let remaining = rack_points(&state.racks[&player]);
+        scores
+            .entry(player)
+            .and_modify(|score| *score = score.saturating_sub(remaining));
+    }
+    let leaders = leaders(&scores);
+    GameEvent::GameCompleted {
+        scores,
+        winner: (leaders.len() == 1).then(|| *leaders.first().expect("one leader")),
+        leaders,
+        reason,
+    }
+}
+
+fn leaders(scores: &BTreeMap<PlayerId, u32>) -> BTreeSet<PlayerId> {
+    let Some(highest) = scores.values().copied().max() else {
+        return BTreeSet::new();
+    };
+    scores
+        .iter()
+        .filter_map(|(&player, &score)| (score == highest).then_some(player))
+        .collect()
 }
 
 fn rack_points(rack: &[Tile]) -> u32 {
     rack.iter().map(|tile| u32::from(tile.points)).sum()
-}
-
-fn opponent(state: &GameState, actor: PlayerId) -> PlayerId {
-    if state.players[0] == actor {
-        state.players[1]
-    } else {
-        state.players[0]
-    }
 }
 
 fn decide_exchange(
@@ -722,8 +758,8 @@ mod tests {
             DictionaryRef::new("curated-en", 1, "sha256:test").expect("valid dictionary"),
             OffsetDateTime::UNIX_EPOCH,
         );
-        let started =
-            initialize_game(metadata, players, players[0], &profile, 3).expect("game initializes");
+        let started = initialize_game(metadata, players.to_vec(), players[0], &profile, 3)
+            .expect("game initializes");
         (
             replay([&started]).expect("start replays"),
             profile,
@@ -759,7 +795,8 @@ mod tests {
         let active = state.active_player;
         let planner = state
             .players
-            .into_iter()
+            .iter()
+            .copied()
             .find(|player| *player != active)
             .unwrap();
         set_rack(
@@ -978,47 +1015,71 @@ mod tests {
     }
 
     #[test]
-    fn pass_limit_keeps_current_scores_and_declares_the_leader() {
+    fn pass_rounds_apply_rack_penalties_and_declare_leaders() {
         let (mut state, profile, dictionary) = state();
         let actor = state.active_player;
-        let other = opponent(&state, actor);
-        state.scoreless_turns = profile.scoreless_turn_limit - 1;
+        let other = state
+            .players
+            .iter()
+            .copied()
+            .find(|player| *player != actor)
+            .unwrap();
+        state.consecutive_passes =
+            state.active_players.len() * usize::from(profile.scoreless_turn_limit) / 2 - 1;
         state.scores.insert(actor, 40);
         state.scores.insert(other, 30);
-        state.racks.get_mut(&actor).expect("rack")[0].points = 10;
+        state.racks.values_mut().for_each(Vec::clear);
+        state.racks.insert(
+            actor,
+            vec![Tile {
+                id: TileId::new(250),
+                face: TileFace::Letter('Q'),
+                points: 10,
+            }],
+        );
+        state.racks.insert(
+            other,
+            vec![Tile {
+                id: TileId::new(251),
+                face: TileFace::Letter('E'),
+                points: 5,
+            }],
+        );
         let passed = decide_command(&state, actor, &GameCommand::Pass, &profile, &dictionary)
             .expect("pass is valid");
         assert!(matches!(
             passed.events.as_slice(),
             [
                 GameEvent::TurnPassed { .. },
-                GameEvent::GameCompleted { scores, winner }
-            ] if scores[&actor] == 40 && scores[&other] == 30 && *winner == Some(actor)
+                GameEvent::GameCompleted { scores, leaders, reason: CompletionReason::ConsecutivePassRounds, .. }
+            ] if scores[&actor] == 30 && scores[&other] == 25 && leaders == &BTreeSet::from([actor])
         ));
 
         let resigned = decide_command(&state, actor, &GameCommand::Resign, &profile, &dictionary)
             .expect("resignation is valid");
         assert!(matches!(
             resigned.events.as_slice(),
-            [GameEvent::GameResigned { player_id, winner }]
-                if *player_id == actor && *winner != actor
+            [GameEvent::GameResigned { player_id, .. }, GameEvent::GameCompleted { reason: CompletionReason::InsufficientActivePlayers, .. }]
+                if *player_id == actor
         ));
     }
 
     #[test]
-    fn tied_final_scores_have_no_winner() {
+    fn tied_final_scores_have_all_leaders() {
         let (mut state, profile, dictionary) = state();
         let actor = state.active_player;
-        state.scoreless_turns = profile.scoreless_turn_limit - 1;
+        state.consecutive_passes =
+            state.active_players.len() * usize::from(profile.scoreless_turn_limit) / 2 - 1;
         state.racks.values_mut().for_each(Vec::clear);
         state.scores.values_mut().for_each(|score| *score = 25);
+        let expected = state.active_players.clone();
         let result = decide_command(&state, actor, &GameCommand::Pass, &profile, &dictionary)
             .expect("final pass is valid");
 
         assert!(matches!(
             result.events.as_slice(),
-            [GameEvent::TurnPassed { .. }, GameEvent::GameCompleted { scores, winner }]
-                if scores.values().all(|score| *score == 25) && winner.is_none()
+            [GameEvent::TurnPassed { .. }, GameEvent::GameCompleted { scores, leaders, .. }]
+                if scores.values().all(|score| *score == 25) && leaders == &expected
         ));
     }
 
@@ -1026,7 +1087,12 @@ mod tests {
     fn rack_out_applies_final_adjustments() {
         let (mut state, mut profile, dictionary) = state();
         let actor = state.active_player;
-        let other = opponent(&state, actor);
+        let other = state
+            .players
+            .iter()
+            .copied()
+            .find(|player| *player != actor)
+            .unwrap();
         profile.rack_size = 1;
         state.bag.clear();
         state.racks.insert(
@@ -1057,8 +1123,8 @@ mod tests {
 
         assert!(matches!(
             result.events.as_slice(),
-            [GameEvent::TilesPlayed { score: 52, .. }, GameEvent::GameCompleted { scores, winner }]
-                if scores[&actor] == 62 && scores[&other] == 0 && *winner == Some(actor)
+            [GameEvent::TilesPlayed { score: 52, .. }, GameEvent::GameCompleted { scores, leaders, reason: CompletionReason::RackOut, .. }]
+                if scores[&actor] == 62 && scores[&other] == 0 && leaders == &BTreeSet::from([actor])
         ));
     }
 

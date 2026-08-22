@@ -284,13 +284,9 @@ pub fn move_history_view(
                 "TURN_PASSED",
                 format!("{} passed.", player_name(*player_id)),
             ),
-            (Some(_), GameEvent::GameResigned { player_id, winner }) => (
+            (Some(_), GameEvent::GameResigned { player_id, .. }) => (
                 "GAME_RESIGNED",
-                format!(
-                    "{} resigned; {} won.",
-                    player_name(*player_id),
-                    player_name(*winner)
-                ),
+                format!("{} resigned.", player_name(*player_id)),
             ),
             (Some(_), GameEvent::GameCompleted { winner, .. }) => (
                 "GAME_COMPLETED",
@@ -650,14 +646,14 @@ mod tests {
             OffsetDateTime::UNIX_EPOCH,
         );
         let profile = initial_rule_profile();
-        let started =
-            initialize_game(metadata, players, players[0], &profile, 4).expect("game starts");
+        let started = initialize_game(metadata, players.to_vec(), players[0], &profile, 4)
+            .expect("game starts");
         let passed = GameEvent::TurnPassed {
             player_id: players[0],
         };
         let resigned = GameEvent::GameResigned {
             player_id: players[1],
-            winner: players[0],
+            winner: Some(players[0]),
         };
         let names = |player| {
             if player == players[0] {
@@ -671,7 +667,7 @@ mod tests {
 
         assert_eq!(history[1].description, "Alice passed.");
         assert_eq!(history[1].score_summary, "Alice 0 – Bob 0");
-        assert_eq!(history[2].description, "Bob resigned; Alice won.");
+        assert_eq!(history[2].description, "Bob resigned.");
     }
 
     #[test]
@@ -683,8 +679,14 @@ mod tests {
             DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
             OffsetDateTime::UNIX_EPOCH,
         );
-        let started = initialize_game(metadata, players, players[0], &initial_rule_profile(), 4)
-            .expect("game starts");
+        let started = initialize_game(
+            metadata,
+            players.to_vec(),
+            players[0],
+            &initial_rule_profile(),
+            4,
+        )
+        .expect("game starts");
         let state = replay([&started]).expect("game replays");
         let first = game_view(&state, players[0]).expect("member projects");
         let second = game_view(&state, players[1]).expect("member projects");

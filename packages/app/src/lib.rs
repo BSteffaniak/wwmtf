@@ -13,6 +13,7 @@ mod game_service;
 mod google_accounts;
 mod invitations;
 mod journal;
+mod lobbies;
 mod migrations;
 mod move_plans;
 #[cfg(feature = "metrics")]
@@ -34,7 +35,8 @@ pub use accounts::{
 };
 pub use challenges::{
     ChallengeError, ChallengeStatus, accept_challenge, cancel_challenge, create_challenge,
-    create_game_in_transaction, decline_challenge, find_user_by_username,
+    create_game_for_users_in_transaction, create_game_in_transaction, decline_challenge,
+    find_user_by_username,
 };
 pub use components::{
     GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,
@@ -64,6 +66,11 @@ pub use journal::{
     JournalError, PersistedGameEvent, PersistedPayloadCompatibility, append_events,
     append_events_transactionally, load_events, load_latest_snapshot,
     persisted_payload_compatibility, recover_game, store_snapshot,
+};
+pub use lobbies::{
+    FirstPlayerPolicy, GameCreationPolicy, GameLobby, LobbyError, LobbyInvitationToken,
+    LobbyMember, LobbySettings, cancel_lobby, create_lobby, join_lobby, leave_lobby, load_lobby,
+    start_lobby, update_lobby_settings,
 };
 pub use migrations::{app_migrations, migrate_app};
 pub use move_plans::{MovePlanError, clear_move_plan, load_move_plan, save_move_plan};

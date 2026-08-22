@@ -22,9 +22,9 @@ pub use gameplay::{
     placement_guidance,
 };
 pub use model::{
-    AnalyzedWord, BoardTile, CandidatePlayAnalysis, Coordinate, GameCommand, GameError, GameEvent,
-    GameState, GameStatus, MoveResult, Placement, PlacementGuidance, PlayAnalysis, PlayerId, Tile,
-    TileFace, TileId,
+    AnalyzedWord, BoardTile, CandidatePlayAnalysis, CompletionReason, Coordinate, GameCommand,
+    GameError, GameEvent, GameState, GameStatus, MoveResult, Placement, PlacementGuidance,
+    PlayAnalysis, PlayerId, Tile, TileFace, TileId,
 };
 pub use rules::{
     INITIAL_RULE_PROFILE_ID, INITIAL_RULE_PROFILE_VERSION, PremiumSquare, RuleProfile,

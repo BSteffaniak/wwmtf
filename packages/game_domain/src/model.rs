@@ -136,7 +136,7 @@ pub enum GameEvent {
     /// Initial deterministic state, including server-only bag and racks.
     GameStarted {
         metadata: GameMetadata,
-        players: [PlayerId; 2],
+        players: Vec<PlayerId>,
         first_player: PlayerId,
         racks: BTreeMap<PlayerId, Vec<Tile>>,
         bag: Vec<Tile>,
@@ -156,16 +156,32 @@ pub enum GameEvent {
     },
     /// A player passed.
     TurnPassed { player_id: PlayerId },
-    /// A player resigned and the opponent won.
+    /// One player left the active turn rotation. Legacy two-player payloads carry their winner.
     GameResigned {
         player_id: PlayerId,
-        winner: PlayerId,
+        winner: Option<PlayerId>,
     },
     /// The game ended and final scores were established.
     GameCompleted {
         scores: BTreeMap<PlayerId, u32>,
+        /// Single outright winner retained for two-player and presentation compatibility.
         winner: Option<PlayerId>,
+        leaders: BTreeSet<PlayerId>,
+        reason: CompletionReason,
     },
+}
+
+/// Canonical reason gameplay became complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompletionReason {
+    /// A retained pre-multiplayer payload completed under its original rules.
+    Legacy,
+    /// One player emptied their rack after exhausting the bag.
+    RackOut,
+    /// Every active player passed for the configured number of complete rounds.
+    ConsecutivePassRounds,
+    /// Fewer than two active players remained after a resignation.
+    InsufficientActivePlayers,
 }
 
 /// Current lifecycle of a game.
@@ -183,7 +199,9 @@ pub struct GameState {
     /// Compatibility-critical game metadata.
     pub metadata: GameMetadata,
     /// Players in deterministic turn order.
-    pub players: [PlayerId; 2],
+    pub players: Vec<PlayerId>,
+    /// Players who remain eligible to take turns.
+    pub active_players: BTreeSet<PlayerId>,
     /// Player whose command is currently accepted.
     pub active_player: PlayerId,
     /// Committed board tiles.
@@ -194,10 +212,16 @@ pub struct GameState {
     pub bag: Vec<Tile>,
     /// Accumulated scores.
     pub scores: BTreeMap<PlayerId, u32>,
-    /// Number of consecutive passes.
+    /// Legacy consecutive-pass count retained for old snapshot and presentation compatibility.
     pub scoreless_turns: u8,
-    /// Winner after completion, or `None` for an active game or completed tie.
+    /// Number of consecutive passes since the last play or exchange.
+    pub consecutive_passes: usize,
+    /// Legacy-compatible outright winner; `None` for a tie or active game.
     pub winner: Option<PlayerId>,
+    /// Leaders after completion; empty while active.
+    pub leaders: BTreeSet<PlayerId>,
+    /// Why the game completed, if it has completed.
+    pub completion_reason: Option<CompletionReason>,
     /// Current lifecycle.
     pub status: GameStatus,
     /// Number of canonical events applied.
@@ -270,6 +294,9 @@ pub enum GameError {
     /// The actor is not seated in this game.
     #[error("player is not a member of this game")]
     NotAPlayer,
+    /// The actor resigned earlier and is no longer in turn rotation.
+    #[error("player is no longer active in this game")]
+    InactivePlayer,
     /// The actor attempted a command outside their turn.
     #[error("it is not this player's turn")]
     OutOfTurn,

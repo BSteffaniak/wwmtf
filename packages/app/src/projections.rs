@@ -110,7 +110,7 @@ async fn rebuild_score_projections(
         .await?;
 
     if state.status == GameStatus::Completed {
-        for player in state.players {
+        for &player in &state.players {
             let user_id = user_for_player(tx, &game_id, player)
                 .await?
                 .ok_or(ProjectionError::Malformed)?;
@@ -734,9 +734,14 @@ mod tests {
                 DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
                 OffsetDateTime::UNIX_EPOCH,
             );
-            let started =
-                initialize_game(metadata, players, players[0], &initial_rule_profile(), 2)
-                    .expect("game starts");
+            let started = initialize_game(
+                metadata,
+                players.to_vec(),
+                players[0],
+                &initial_rule_profile(),
+                2,
+            )
+            .expect("game starts");
             let mut state = replay([&started]).expect("start replays");
             state.status = GameStatus::Completed;
             state.winner = Some(players[0]);
@@ -811,9 +816,14 @@ mod tests {
                 DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
                 OffsetDateTime::UNIX_EPOCH,
             );
-            let started =
-                initialize_game(metadata, players, players[0], &initial_rule_profile(), 2)
-                    .expect("game starts");
+            let started = initialize_game(
+                metadata,
+                players.to_vec(),
+                players[0],
+                &initial_rule_profile(),
+                2,
+            )
+            .expect("game starts");
             let events = vec![
                 started,
                 GameEvent::TurnPassed {

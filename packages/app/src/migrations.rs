@@ -440,6 +440,67 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["game_id", "user_id"],
         true,
     ));
+    source.add_migration(table_migration(
+        "044_game_lobbies",
+        "game_lobbies",
+        vec![
+            text("lobby_id"),
+            text("creator_user_id"),
+            text("status"),
+            bigint("revision"),
+            bigint("max_players"),
+            bigint("board_size"),
+            bigint("tile_set_count"),
+            text("first_player_policy"),
+            nullable_text("chosen_first_user_id"),
+            text("invitation_token_hash"),
+            bigint("invitation_expires_at_ms"),
+            nullable_text("started_game_id"),
+            bigint("created_at_ms"),
+            bigint("updated_at_ms"),
+        ],
+        "lobby_id",
+    ));
+    source.add_migration(index_migration(
+        "045_game_lobbies_token_unique",
+        "idx_game_lobbies_invitation_token_hash",
+        "game_lobbies",
+        vec!["invitation_token_hash"],
+        true,
+    ));
+    source.add_migration(table_migration(
+        "046_game_lobby_members",
+        "game_lobby_members",
+        vec![
+            text("lobby_member_id"),
+            text("lobby_id"),
+            text("user_id"),
+            bigint("seat"),
+            bigint("joined_at_ms"),
+        ],
+        "lobby_member_id",
+    ));
+    source.add_migration(index_migration(
+        "047_game_lobby_members_user_unique",
+        "idx_game_lobby_members_lobby_user",
+        "game_lobby_members",
+        vec!["lobby_id", "user_id"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "048_game_lobby_members_seat_unique",
+        "idx_game_lobby_members_lobby_seat",
+        "game_lobby_members",
+        vec!["lobby_id", "seat"],
+        true,
+    ));
+    source.add_migration(index_migration(
+        "049_game_players_seat_unique",
+        "idx_game_players_game_seat",
+        "game_players",
+        vec!["game_id", "seat"],
+        true,
+    ));
     source
 }
 
@@ -533,9 +594,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 39);
+        assert_eq!(migrations.len(), 45);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[38].id(), "043_move_plans_game_user_unique");
+        assert_eq!(migrations[44].id(), "049_game_players_seat_unique");
     }
 
     #[test]
@@ -585,6 +646,8 @@ mod tests {
                     "user_profiles",
                     "user_profile_images",
                     "move_plans",
+                    "game_lobbies",
+                    "game_lobby_members",
                 ] {
                     assert!(
                         db.table_exists(table).await.expect("schema query succeeds"),
@@ -623,6 +686,8 @@ mod tests {
                 "user_profiles",
                 "user_profile_images",
                 "move_plans",
+                "game_lobbies",
+                "game_lobby_members",
             ] {
                 assert!(db.table_exists(table).await.expect("schema query succeeds"));
             }
