@@ -253,7 +253,12 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
                 .expect("completed game remains on dashboard");
             assert_eq!(summary.status, "COMPLETED");
             assert_eq!(summary.canonical_revision, completed.revision);
-            assert!(summary.winner_user_id.is_none());
+            assert!(
+                summary
+                    .participants
+                    .iter()
+                    .all(|participant| participant.outcome.as_deref() == Some("TIE"))
+            );
             assert_eq!(summary.latest_activity, "Game completed");
         }
     });

@@ -109,15 +109,59 @@ async fn rebuild_score_projections(
         .execute(tx)
         .await?;
 
+    tx.delete("game_participant_summaries")
+        .where_eq("game_id", game_id.clone())
+        .execute(tx)
+        .await?;
+    for (seat, &player) in state.players.iter().enumerate() {
+        let user_id = user_for_player(tx, &game_id, player)
+            .await?
+            .ok_or(ProjectionError::Malformed)?;
+        let outcome = if state.status == GameStatus::Completed {
+            if state.leaders.contains(&player) {
+                Some(if state.leaders.len() == 1 {
+                    "WIN"
+                } else {
+                    "TIE"
+                })
+            } else {
+                Some("LOSS")
+            }
+        } else {
+            None
+        };
+        tx.insert("game_participant_summaries")
+            .value(
+                "game_participant_summary_id",
+                format!("{game_id}:{user_id}"),
+            )
+            .value("game_id", game_id.clone())
+            .value("user_id", user_id)
+            .value(
+                "seat",
+                i64::try_from(seat).map_err(|_| ProjectionError::Malformed)?,
+            )
+            .value("score", i64::from(state.scores[&player]))
+            .value("active", state.active_players.contains(&player))
+            .value("outcome", outcome)
+            .value("updated_at_ms", updated_at_ms)
+            .execute(tx)
+            .await?;
+    }
+
     if state.status == GameStatus::Completed {
         for &player in &state.players {
             let user_id = user_for_player(tx, &game_id, player)
                 .await?
                 .ok_or(ProjectionError::Malformed)?;
-            let outcome = match state.winner {
-                Some(winner) if winner == player => "WIN",
-                Some(_) => "LOSS",
-                None => "TIE",
+            let outcome = if state.leaders.contains(&player) {
+                if state.leaders.len() == 1 {
+                    "WIN"
+                } else {
+                    "TIE"
+                }
+            } else {
+                "LOSS"
             };
             tx.insert("game_scores")
                 .value("game_player_score_id", format!("{game_id}:{user_id}"))
@@ -451,6 +495,21 @@ pub async fn dashboard_projection(
     })
 }
 
+/// One ordered public participant in a dashboard game summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameParticipantSummary {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+    pub seat: usize,
+    pub score: u32,
+    pub viewer: bool,
+    pub active: bool,
+    pub current_turn: bool,
+    pub outcome: Option<String>,
+}
+
 /// Projected game lifecycle for a user's dashboard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameSummary {
@@ -459,13 +518,8 @@ pub struct GameSummary {
     pub active_player_user_id: Option<String>,
     pub canonical_revision: u64,
     pub last_score: Option<u32>,
-    pub winner_user_id: Option<String>,
     pub updated_at_ms: i64,
-    pub opponent_username: String,
-    pub opponent_display_name: String,
-    pub opponent_avatar_url: Option<String>,
-    pub viewer_score: u32,
-    pub opponent_score: u32,
+    pub participants: Vec<GameParticipantSummary>,
     pub latest_activity: String,
 }
 
@@ -492,35 +546,11 @@ pub async fn user_game_summaries(
             .execute(db)
             .await?;
         if let Some(row) = rows.first() {
-            let players = db
-                .select("game_players")
-                .where_eq("game_id", game_id.clone())
-                .execute(db)
-                .await?;
-            let opponent_user_id = players
-                .iter()
-                .filter_map(|player| optional_string(player, "user_id"))
-                .find(|candidate| candidate != user_id)
-                .ok_or(ProjectionError::Malformed)?;
-            let opponent_username = username_for_user(db, &opponent_user_id)
-                .await?
-                .unwrap_or_else(|| "Opponent".to_string());
-            let (opponent_display_name, opponent_avatar_url) =
-                profile_presentation(db, &opponent_user_id, &opponent_username).await?;
-            let scores = db
-                .select("game_scores")
-                .where_eq("game_id", game_id.clone())
-                .execute(db)
-                .await?;
-            let score_for = |target: &str| {
-                scores
-                    .iter()
-                    .find(|score| optional_string(score, "user_id").as_deref() == Some(target))
-                    .and_then(|score| score.get("score"))
-                    .and_then(|value| value.as_i64())
-                    .and_then(|value| u32::try_from(value).ok())
-                    .unwrap_or_default()
-            };
+            let active_player_user_id = optional_string(row, "active_player_user_id");
+            let status = string_column(row, "status")?;
+            let participants =
+                game_participant_summaries(db, &game_id, user_id, active_player_user_id.as_deref())
+                    .await?;
             let history =
                 game_history(db, game_id.parse().map_err(|_| ProjectionError::Malformed)?).await?;
             let latest_activity = history.last().map_or_else(
@@ -536,17 +566,12 @@ pub async fn user_game_summaries(
             );
             summaries.push(GameSummary {
                 game_id: string_column(row, "game_id")?,
-                status: string_column(row, "status")?,
-                active_player_user_id: optional_string(row, "active_player_user_id"),
+                status,
+                active_player_user_id,
                 canonical_revision: unsigned_column(row, "canonical_revision")?,
                 last_score: optional_unsigned(row, "last_score")?,
-                winner_user_id: optional_string(row, "winner_user_id"),
                 updated_at_ms: signed_column(row, "updated_at_ms")?,
-                opponent_username,
-                opponent_display_name,
-                opponent_avatar_url,
-                viewer_score: score_for(user_id),
-                opponent_score: score_for(&opponent_user_id),
+                participants,
                 latest_activity,
             });
         }
@@ -562,6 +587,57 @@ pub async fn user_game_summaries(
             .then_with(|| left.game_id.cmp(&right.game_id))
     });
     Ok(summaries)
+}
+
+async fn game_participant_summaries(
+    db: &dyn Database,
+    game_id: &str,
+    viewer_user_id: &str,
+    active_player_user_id: Option<&str>,
+) -> Result<Vec<GameParticipantSummary>, ProjectionError> {
+    let mut players = db
+        .select("game_players")
+        .where_eq("game_id", game_id)
+        .execute(db)
+        .await?;
+    players.sort_by_key(|player| {
+        player
+            .get("seat")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(i64::MAX)
+    });
+    let rows = db
+        .select("game_participant_summaries")
+        .where_eq("game_id", game_id)
+        .execute(db)
+        .await?;
+    let mut participants = Vec::with_capacity(players.len());
+    for player in &players {
+        let user_id = string_column(player, "user_id")?;
+        let username = username_for_user(db, &user_id)
+            .await?
+            .unwrap_or_else(|| "Player".to_string());
+        let (display_name, avatar_url) = profile_presentation(db, &user_id, &username).await?;
+        let row = rows
+            .iter()
+            .find(|row| optional_string(row, "user_id").as_deref() == Some(user_id.as_str()))
+            .ok_or(ProjectionError::Malformed)?;
+        participants.push(GameParticipantSummary {
+            user_id: user_id.clone(),
+            username,
+            display_name,
+            avatar_url,
+            seat: usize::try_from(signed_column(player, "seat")?)
+                .map_err(|_| ProjectionError::Malformed)?,
+            score: u32::try_from(unsigned_column(row, "score")?)
+                .map_err(|_| ProjectionError::Malformed)?,
+            viewer: user_id == viewer_user_id,
+            active: signed_column(row, "active")? != 0,
+            current_turn: active_player_user_id == Some(user_id.as_str()),
+            outcome: optional_string(row, "outcome"),
+        });
+    }
+    Ok(participants)
 }
 
 async fn username_for_user(
@@ -745,6 +821,7 @@ mod tests {
             let mut state = replay([&started]).expect("start replays");
             state.status = GameStatus::Completed;
             state.winner = Some(players[0]);
+            state.leaders.insert(players[0]);
             state.scores.insert(players[0], 120);
             state.scores.insert(players[1], 85);
             for (seat, player) in players.into_iter().enumerate() {
@@ -792,6 +869,25 @@ mod tests {
                     .execute(&*db)
                     .await
                     .expect("scores load")
+                    .len(),
+                2
+            );
+            let summaries = user_game_summaries(&*db, "user-0")
+                .await
+                .expect("summaries load");
+            assert_eq!(summaries[0].participants.len(), 2);
+            assert_eq!(summaries[0].participants[0].outcome.as_deref(), Some("WIN"));
+            assert_eq!(
+                summaries[0].participants[1].outcome.as_deref(),
+                Some("LOSS")
+            );
+            assert!(summaries[0].participants[0].viewer);
+            assert_eq!(
+                db.select("game_participant_summaries")
+                    .where_eq("game_id", game_id.to_string())
+                    .execute(&*db)
+                    .await
+                    .expect("participant summaries load")
                     .len(),
                 2
             );

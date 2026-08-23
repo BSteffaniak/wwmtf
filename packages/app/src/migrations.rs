@@ -494,6 +494,28 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["lobby_id", "seat"],
         true,
     ));
+    source.add_migration(table_migration(
+        "049_game_participant_summaries",
+        "game_participant_summaries",
+        vec![
+            text("game_participant_summary_id"),
+            text("game_id"),
+            text("user_id"),
+            bigint("seat"),
+            bigint("score"),
+            bigint("active"),
+            nullable_text("outcome"),
+            bigint("updated_at_ms"),
+        ],
+        "game_participant_summary_id",
+    ));
+    source.add_migration(index_migration(
+        "050_game_participant_summaries_game_seat_unique",
+        "idx_game_participant_summaries_game_seat",
+        "game_participant_summaries",
+        vec!["game_id", "seat"],
+        true,
+    ));
     source.add_migration(index_migration(
         "049_game_players_seat_unique",
         "idx_game_players_game_seat",
@@ -594,9 +616,12 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 45);
+        assert_eq!(migrations.len(), 47);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[44].id(), "049_game_players_seat_unique");
+        assert_eq!(
+            migrations[46].id(),
+            "050_game_participant_summaries_game_seat_unique"
+        );
     }
 
     #[test]
@@ -639,6 +664,7 @@ mod tests {
                     "game_commands",
                     "game_snapshots",
                     "game_scores",
+                    "game_participant_summaries",
                     "rack_preferences",
                     "definition_cache",
                     "external_identities",
@@ -679,6 +705,7 @@ mod tests {
                 "game_snapshots",
                 "projection_checkpoints",
                 "game_scores",
+                "game_participant_summaries",
                 "rack_preferences",
                 "definition_cache",
                 "external_identities",

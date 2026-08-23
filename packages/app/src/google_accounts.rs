@@ -233,6 +233,10 @@ mod tests {
                 .await
                 .unwrap();
             let summaries_before = crate::user_game_summaries(&*db, &user).await.unwrap();
+            let game_ids_before = summaries_before
+                .iter()
+                .map(|summary| summary.game_id.clone())
+                .collect::<Vec<_>>();
             let history_before = crate::game_history(&*db, game_id).await.unwrap();
             let totals_before = crate::user_score_totals(&*db, &user).await.unwrap();
             let old_session = create_session(&*db, &user, now, Duration::days(30))
@@ -282,9 +286,17 @@ mod tests {
                 .unwrap(),
                 Some(user.clone())
             );
+            let summaries_after = crate::user_game_summaries(&*db, &user).await.unwrap();
             assert_eq!(
-                crate::user_game_summaries(&*db, &user).await.unwrap(),
-                summaries_before
+                summaries_after
+                    .iter()
+                    .map(|summary| summary.game_id.clone())
+                    .collect::<Vec<_>>(),
+                game_ids_before
+            );
+            assert_eq!(
+                summaries_after[0].canonical_revision,
+                summaries_before[0].canonical_revision
             );
             assert_eq!(
                 crate::game_history(&*db, game_id).await.unwrap(),

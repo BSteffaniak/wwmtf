@@ -2405,29 +2405,33 @@ fn dashboard_page_content(
                     }
                     @for game in &dashboard.projection.games {
                         @let href = format!("/games/{}", game.game_id);
+                        @let viewer = game.participants.iter().find(|participant| participant.viewer);
+                        @let others = game.participants.iter().filter(|participant| !participant.viewer).collect::<Vec<_>>();
                         @let state = if game.status == "COMPLETED" {
-                            if game.winner_user_id.as_deref() == Some(user_id) {
-                                "You won"
-                            } else if game.winner_user_id.is_none() {
-                                "Tie game"
-                            } else {
-                                "You lost"
+                            match viewer.and_then(|participant| participant.outcome.as_deref()) {
+                                Some("WIN") => "You won",
+                                Some("TIE") => "Tie game",
+                                Some("LOSS") => "You lost",
+                                _ => "Game complete",
                             }
                         } else if game.active_player_user_id.as_deref() == Some(user_id) {
                             "Your turn"
                         } else {
-                            "Waiting for opponent"
+                            "Waiting for another player"
                         };
+                        @let opponents = others.iter().map(|participant| participant.display_name.as_str()).collect::<Vec<_>>().join(", ");
                         div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
                             direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
                             border-bottom=(("#e3ded2", 1)) padding-y=16 padding-x=4 gap="12px" {
                             div gap="3px" {
-                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (game.opponent_display_name.as_str()) }
-                                @if game.opponent_display_name != game.opponent_username {
-                                    span color=#777b73 { "@" (game.opponent_display_name.as_str()) }
-                                }
+                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (opponents) }
                                 span color=#3f5735 font-weight=bold { (state) }
-                                span color=#777b73 { "You " (game.viewer_score) " – " (game.opponent_score) " " (game.opponent_display_name.as_str()) }
+                                span color=#777b73 {
+                                    "You " (viewer.map_or(0, |participant| participant.score))
+                                    @for participant in &others {
+                                        " – " (participant.score) " " (participant.display_name.as_str())
+                                    }
+                                }
                             }
                             span color=#777b73 { (game.latest_activity.as_str()) }
                         }
@@ -4744,7 +4748,7 @@ mod tests {
             .expect("dashboard renders");
             assert!(accepted.contains("class=\"game-summary\""));
             assert!(
-                accepted.contains("Your turn") || accepted.contains("Waiting for opponent"),
+                accepted.contains("Your turn") || accepted.contains("Waiting for another player"),
                 "{accepted}"
             );
         });

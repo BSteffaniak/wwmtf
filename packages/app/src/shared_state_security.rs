@@ -181,8 +181,8 @@ impl GameSharedStateDispatcher {
             let view = game_view(state, player).ok_or("game membership player is not seated")?;
             views_by_user.insert(user_id, view);
         }
-        if views_by_user.len() != 2 {
-            return Err("game must have exactly two members".into());
+        if views_by_user.len() != state.players.len() {
+            return Err("game membership does not match canonical players".into());
         }
         let mut dashboards_by_user = BTreeMap::new();
         for user_id in views_by_user.keys() {
@@ -550,12 +550,15 @@ mod tests {
         CommandEnvelope, CommandId, IdempotencyKey, ParticipantId, TransportSubscribe,
         TransportUnsubscribe,
     };
-    use time::OffsetDateTime;
+    use time::{Duration, OffsetDateTime};
 
     use wwmtf_game_domain::{Coordinate, Dictionary as _, Placement, TileFace, bundled_dictionary};
 
     use super::*;
-    use crate::{accept_challenge, create_challenge, migrate_app, register};
+    use crate::{
+        FirstPlayerPolicy, GameCreationPolicy, LobbySettings, accept_challenge, create_challenge,
+        create_lobby, join_lobby, migrate_app, register, start_lobby,
+    };
 
     async fn fixture() -> (Arc<dyn Database>, GameId, String, String, String) {
         let database: Arc<dyn Database> = Arc::from(
@@ -584,6 +587,56 @@ mod tests {
             .await
             .expect("game starts");
         (database, game_id, alice, bob, mallory)
+    }
+
+    async fn multiplayer_fixture() -> (Arc<dyn Database>, GameId, Vec<String>) {
+        let database: Arc<dyn Database> = Arc::from(
+            switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens"),
+        );
+        migrate_app(&*database).await.expect("migrations run");
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let mut users = Vec::new();
+        for (username, password) in [
+            ("alice", "correct horse battery staple"),
+            ("bob", "another correct horse battery"),
+            ("carol", "third correct horse battery"),
+        ] {
+            users.push(
+                register(&*database, username, password, now)
+                    .await
+                    .expect("member registers"),
+            );
+        }
+        let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+        let (lobby_id, invitation) = create_lobby(
+            &*database,
+            &users[0],
+            LobbySettings {
+                max_players: 8,
+                board_size: 15,
+                tile_set_count: 1,
+                first_player: FirstPlayerPolicy::Creator,
+            },
+            policy,
+            now,
+            Duration::days(1),
+        )
+        .await
+        .expect("lobby creates");
+        for user in &users[1..] {
+            join_lobby(&*database, invitation.expose(), user, policy, now)
+                .await
+                .expect("member joins");
+        }
+        let game_id = start_lobby(&*database, &lobby_id, &users[0], policy, now, 11)
+            .await
+            .expect("lobby starts");
+        (database, game_id, users)
     }
 
     fn context(user_id: &str) -> AuthenticatedTransportContext {
@@ -997,6 +1050,106 @@ mod tests {
                 assert_eq!(view.revision, state.revision + 1);
                 assert_eq!(view.board.len(), 2);
             }
+        });
+    }
+
+    #[test]
+    fn multiplayer_commands_fan_out_private_views_and_reject_stale_simultaneous_turns() {
+        block_on(async {
+            let (database, game_id, users) = multiplayer_fixture().await;
+            let dispatcher = GameSharedStateDispatcher::new(database);
+            let mut subscriptions = Vec::new();
+            for user in &users {
+                let receiver = dispatcher
+                    .subscribe_channel(&context(user), &game_channel(game_id))
+                    .await
+                    .expect("member subscribes");
+                let initial = receiver.recv_async().await.expect("initial view arrives");
+                let view: crate::GameView = dispatcher
+                    .project_event(&context(user), &initial)
+                    .expect("private initial view projects")
+                    .payload
+                    .deserialize()
+                    .expect("initial view decodes");
+                assert_eq!(view.players.len(), 3);
+                assert_eq!(view.rack.len(), 7);
+                subscriptions.push(receiver);
+            }
+
+            let state = recover_game(&*dispatcher.database, game_id)
+                .await
+                .expect("state loads");
+            let accepted = dispatcher
+                .ingest_outbound(
+                    &context(&users[0]),
+                    TransportOutbound::Command(gameplay_command(
+                        game_id,
+                        &users[0],
+                        "multiplayer-pass",
+                        state.revision,
+                        &GameCommand::Pass,
+                    )),
+                )
+                .await
+                .expect("current player command dispatches");
+            assert!(matches!(
+                accepted.as_slice(),
+                [TransportInbound::CommandAccepted { .. }]
+            ));
+
+            for (user, receiver) in users.iter().zip(&subscriptions) {
+                let event = receiver.recv_async().await.expect("fan-out update arrives");
+                let payload = serde_json::to_string(&event).expect("event serializes");
+                assert!(!payload.contains("\"bag\""));
+                let view: crate::GameView = dispatcher
+                    .project_event(&context(user), &event)
+                    .expect("member-specific update projects")
+                    .payload
+                    .deserialize()
+                    .expect("view decodes");
+                assert_eq!(view.revision, state.revision + 1);
+                assert_eq!(view.players.len(), 3);
+                assert_eq!(view.rack.len(), 7);
+            }
+
+            let rejected = dispatcher
+                .ingest_outbound(
+                    &context(&users[1]),
+                    TransportOutbound::Command(gameplay_command(
+                        game_id,
+                        &users[1],
+                        "simultaneous-stale-pass",
+                        state.revision,
+                        &GameCommand::Pass,
+                    )),
+                )
+                .await
+                .expect("stale command is rejected normally");
+            assert!(matches!(
+                rejected.as_slice(),
+                [TransportInbound::CommandRejected { .. }]
+            ));
+            assert_eq!(
+                recover_game(&*dispatcher.database, game_id)
+                    .await
+                    .expect("only accepted command persists")
+                    .revision,
+                state.revision + 1
+            );
+
+            let reconnected = dispatcher
+                .subscribe_channel(&context(&users[2]), &game_channel(game_id))
+                .await
+                .expect("third member reconnects");
+            let event = reconnected.recv_async().await.expect("snapshot arrives");
+            let view: crate::GameView = dispatcher
+                .project_event(&context(&users[2]), &event)
+                .expect("reconnected private view projects")
+                .payload
+                .deserialize()
+                .expect("snapshot decodes");
+            assert_eq!(view.revision, state.revision + 1);
+            assert_eq!(view.players.len(), 3);
         });
     }
 

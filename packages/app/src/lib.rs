@@ -95,8 +95,8 @@ pub use profiles::{
     use_google_avatar, use_google_display_name,
 };
 pub use projections::{
-    DashboardProjection, GameHistoryEntry, GameSummary, PendingItem, ProjectionError,
-    UserScoreTotals, dashboard_projection, game_history, projected_revision,
+    DashboardProjection, GameHistoryEntry, GameParticipantSummary, GameSummary, PendingItem,
+    ProjectionError, UserScoreTotals, dashboard_projection, game_history, projected_revision,
     rebuild_all_user_score_totals, rebuild_game_projections, user_game_summaries,
     user_score_totals,
 };
