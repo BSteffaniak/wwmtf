@@ -1711,7 +1711,7 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                         anchor href=(format!("/games/{game_id}")) background=#526243 color=#ffffff padding-y=12 padding-x=16 border-radius="10px" { "Open game" }
                     }
                 } @else if is_creator {
-                    form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) gap="8px" {
+                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" gap="8px" {
                         input type=hidden name="action" value="UPDATE";
                         h2 { "Edit lobby settings" }
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
@@ -1744,17 +1744,17 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                         button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Save settings" }
                     }
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
-                        form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                        form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
                             input type=hidden name="action" value="START";
                             button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Start game" }
                         }
-                        form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                        form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
                             input type=hidden name="action" value="CANCEL";
                             button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Cancel lobby" }
                         }
                     }
                 } @else {
-                    form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
                         input type=hidden name="action" value="LEAVE";
                         button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Leave lobby" }
                     }
@@ -1765,9 +1765,14 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
     .into()
 }
 
-fn view_with_internal_navigation(container: Container, path: String) -> View {
+fn view_with_internal_navigation(path: String) -> View {
+    let navigate = ActionType::Navigate { url: path.clone() };
     View::builder()
-        .with_primary(container)
+        .with_primary(container! {
+            div id="app-page" fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
+                span { "Loading…" }
+            }
+        })
         .with_response(ResponseMetadata {
             cookies: Vec::new(),
             navigation: Some(
@@ -1786,7 +1791,7 @@ fn lobby_creation_page() -> Container {
                 anchor href="/" color=#526243 { "← Dashboard" }
                 h1 { "Create a multiplayer lobby" }
                 span color=#5d6258 { "Choose the initial settings. You can change them again before starting the game." }
-                form method="post" action="/lobbies/create" gap="14px" {
+                form hx-post="/lobbies/create" hx-target="#app-page" gap="14px" {
                     input type=hidden name="action" value="CREATE";
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
                         div flex=1 min-width="180px" gap="4px" {
@@ -1826,7 +1831,7 @@ async fn lobby_create_route(
     database: &dyn Database,
     request: &RouteRequest,
     policy: GameCreationPolicy,
-    public_base_url: &str,
+    _public_base_url: &str,
     now: OffsetDateTime,
 ) -> View {
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
@@ -1860,10 +1865,7 @@ async fn lobby_create_route(
     .await
     {
         Ok((lobby_id, _token)) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(lobby) => view_with_internal_navigation(
-                lobby_page(&lobby, &user_id, public_base_url),
-                format!("/lobbies/{lobby_id}"),
-            ),
+            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page(
@@ -1877,7 +1879,7 @@ async fn lobby_join_route(
     database: &dyn Database,
     request: &RouteRequest,
     policy: GameCreationPolicy,
-    public_base_url: &str,
+    _public_base_url: &str,
     now: OffsetDateTime,
 ) -> View {
     let lobby_id = request
@@ -1904,7 +1906,7 @@ async fn lobby_join_route(
         );
         return View::from(container! {
             div id="app-page" padding=24 {
-                form method="post" action=(action) gap="10px" {
+                form hx-post=(action) hx-target="#app-page" gap="10px" {
                     span { "Join this private multiplayer lobby?" }
                     @if let Some(token) = legacy_token.as_deref() {
                         input type=hidden name="invitation_token" value=(token);
@@ -1923,10 +1925,7 @@ async fn lobby_join_route(
     };
     match result {
         Ok(lobby_id) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(lobby) => view_with_internal_navigation(
-                lobby_page(&lobby, &user_id, public_base_url),
-                format!("/lobbies/{lobby_id}"),
-            ),
+            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
@@ -1957,7 +1956,7 @@ async fn lobby_action_route(
     database: &dyn Database,
     request: &RouteRequest,
     policy: GameCreationPolicy,
-    public_base_url: &str,
+    _public_base_url: &str,
     now: OffsetDateTime,
 ) -> View {
     let lobby_id = request
@@ -2013,19 +2012,12 @@ async fn lobby_action_route(
         }
     };
     match result {
-        Ok(Some(game_id)) => view_with_internal_navigation(
-            invitation_joined_page(game_id),
-            format!("/games/{game_id}"),
-        ),
+        Ok(Some(game_id)) => view_with_internal_navigation(format!("/games/{game_id}")),
         Ok(None) if matches!(action, "CANCEL" | "LEAVE") => {
-            let dashboard = dashboard_route(database, request, now).await;
-            view_with_internal_navigation(dashboard, "/".to_string())
+            view_with_internal_navigation("/".to_string())
         }
         Ok(None) => match load_lobby(database, lobby_id, &user_id).await {
-            Ok(lobby) => view_with_internal_navigation(
-                lobby_page(&lobby, &user_id, public_base_url),
-                format!("/lobbies/{lobby_id}"),
-            ),
+            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page(
@@ -4025,10 +4017,14 @@ mod tests {
             let rendered = created
                 .primary
                 .as_ref()
-                .expect("lobby page")
+                .expect("navigation marker")
                 .display_to_string(false, false)
                 .expect("renders");
-            assert!(rendered.contains("/lobbies/join/"));
+            assert!(
+                rendered.contains("fx-immediate") || rendered.contains("v-onload"),
+                "{rendered}"
+            );
+            assert!(rendered.contains(canonical));
             assert!(!rendered.contains("?invite="));
         });
     }
@@ -4067,6 +4063,13 @@ mod tests {
             .await
             .expect("lobby creates");
             let share_url = lobby_invitation_url("https://games.example.test", &lobby_id);
+            let lobby = load_lobby(&*database, &lobby_id, &creator)
+                .await
+                .expect("lobby loads");
+            let canonical_page = lobby_page(&lobby, &creator, "https://games.example.test")
+                .display_to_string(false, false)
+                .expect("canonical lobby renders");
+            assert!(canonical_page.contains(&share_url));
             let mut update = RouteRequest::from_path(
                 &format!("/lobbies/{lobby_id}/action"),
                 RequestInfo::default(),
@@ -4094,11 +4097,12 @@ mod tests {
             let updated_html = updated
                 .primary
                 .as_ref()
-                .expect("updated lobby is primary")
+                .expect("navigation marker")
                 .display_to_string(false, false)
-                .expect("updated lobby renders");
-            assert!(updated_html.contains(&share_url));
+                .expect("navigation renders");
             let expected_lobby_path = format!("/lobbies/{lobby_id}");
+            assert!(updated_html.contains("fx-immediate") || updated_html.contains("v-onload"));
+            assert!(updated_html.contains(&expected_lobby_path));
             assert_eq!(
                 updated
                     .response
@@ -4121,10 +4125,11 @@ mod tests {
             let cancelled_html = cancelled
                 .primary
                 .as_ref()
-                .expect("dashboard is primary")
+                .expect("navigation marker")
                 .display_to_string(false, false)
-                .expect("cancel response renders");
-            assert!(!cancelled_html.contains("only the lobby creator"));
+                .expect("navigation renders");
+            assert!(cancelled_html.contains("fx-immediate") || cancelled_html.contains("v-onload"));
+            assert!(cancelled_html.contains('/'));
             assert_eq!(
                 cancelled
                     .response
