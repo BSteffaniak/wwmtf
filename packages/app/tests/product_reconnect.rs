@@ -210,12 +210,12 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
                 .expect("completed page renders");
             assert!(rendered.contains("completed-game-summary"));
             assert!(!rendered.contains("game-overlay"));
-            assert!(rendered.contains("Game details"));
+            assert!(rendered.contains("final-standings"));
             assert!(rendered.contains("Close"));
             assert!(rendered.contains("Consecutive-pass limit"));
-            assert!(rendered.contains("Tie game"));
-            assert!(rendered.contains("alice: 0"));
-            assert!(rendered.contains("bob: 0"));
+            assert!(rendered.contains("Co-leaders: alice, bob"));
+            assert!(rendered.contains("alice"));
+            assert!(rendered.contains("bob"));
             assert!(rendered.contains("move-history"));
             let opponent_player = completed
                 .players

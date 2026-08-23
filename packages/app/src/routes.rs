@@ -22,16 +22,63 @@ use wwmtf_game_domain::{
 };
 
 use crate::{
-    AuthenticatedDashboard, AuthorizedGamePage, GoogleOidcClient, OidcAttemptPurpose,
-    PresentationError, ProductWorkflowError, UserScoreTotals, accept_pending_challenge,
-    cancel_pending_challenge, challenge_username, claim_oidc_attempt, cleanup_oidc_attempts,
-    clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt, create_oidc_attempt,
+    AuthenticatedDashboard, AuthorizedGamePage, FirstPlayerPolicy, GameCreationPolicy, GameLobby,
+    GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError, ProductWorkflowError,
+    UserScoreTotals, accept_pending_challenge, cancel_lobby, cancel_pending_challenge,
+    challenge_username, claim_oidc_attempt, cleanup_oidc_attempts, clear_move_plan,
+    complete_legacy_google_migration, consume_oidc_attempt, create_lobby, create_oidc_attempt,
     create_shareable_invitation, decline_pending_challenge, error_component,
-    find_or_create_development_user, google_login_and_create_session, load_authenticated_dashboard,
-    load_authorized_game_page, load_move_plan, logout_session, move_history_component,
-    redeem_shareable_invitation, redeem_shareable_invitation_by_id, revoke_shareable_invitation,
-    save_move_plan,
+    find_or_create_development_user, google_login_and_create_session, join_lobby, leave_lobby,
+    load_authenticated_dashboard, load_authorized_game_page, load_lobby, load_move_plan,
+    logout_session, move_history_component, redeem_shareable_invitation,
+    redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan, start_lobby,
+    update_lobby_settings,
 };
+
+#[derive(Debug, Deserialize)]
+struct LobbyActionForm {
+    action: String,
+    #[serde(default)]
+    invitation_token: String,
+    #[serde(default = "default_lobby_max_players")]
+    max_players: usize,
+    #[serde(default = "default_lobby_board_size")]
+    board_size: u8,
+    #[serde(default = "default_lobby_tile_sets")]
+    tile_set_count: u8,
+    #[serde(default)]
+    first_player_policy: String,
+    #[serde(default)]
+    chosen_first_user_id: String,
+}
+
+const fn default_lobby_max_players() -> usize {
+    4
+}
+const fn default_lobby_board_size() -> u8 {
+    15
+}
+const fn default_lobby_tile_sets() -> u8 {
+    1
+}
+
+fn lobby_settings(form: &LobbyActionForm, creator_user_id: &str) -> LobbySettings {
+    let first_player = match form.first_player_policy.as_str() {
+        "RANDOM" => FirstPlayerPolicy::Random,
+        "CHOSEN" => FirstPlayerPolicy::Chosen(if form.chosen_first_user_id.is_empty() {
+            creator_user_id.to_string()
+        } else {
+            form.chosen_first_user_id.clone()
+        }),
+        _ => FirstPlayerPolicy::Creator,
+    };
+    LobbySettings {
+        max_players: form.max_players,
+        board_size: form.board_size,
+        tile_set_count: form.tile_set_count,
+        first_player,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct DashboardActionForm {
@@ -1613,6 +1660,246 @@ async fn invitation_route(
     }
 }
 
+fn lobby_invitation_url(public_base_url: &str, token: &str) -> String {
+    format!(
+        "{}/lobbies/join?invite={token}",
+        public_base_url.trim_end_matches('/')
+    )
+}
+
+fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&str>) -> Container {
+    let is_creator = lobby.creator_user_id == viewer_user_id;
+    let first_player = match &lobby.settings.first_player {
+        FirstPlayerPolicy::Random => "Random".to_string(),
+        FirstPlayerPolicy::Creator => "Creator".to_string(),
+        FirstPlayerPolicy::Chosen(user_id) => format!("Chosen member: {user_id}"),
+    };
+    container! {
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
+            main id="multiplayer-lobby" width="100%" max-width="760px" background=#ffffff
+                border=(("#ded8c9", 1)) border-radius="18px" padding="28px" gap="18px" {
+                anchor href="/" color=#526243 { "← Dashboard" }
+                h1 { "Multiplayer lobby" }
+                span color=#5d6258 { (lobby.members.len()) " of " (lobby.settings.max_players) " seats joined" }
+                section id="lobby-settings" gap="5px" {
+                    h2 { "Game settings" }
+                    span { (lobby.settings.board_size) " × " (lobby.settings.board_size) " board" }
+                    span { (lobby.settings.tile_set_count) " complete tile set(s)" }
+                    span { "First player: " (first_player) }
+                }
+                @if let Some(invitation_url) = invitation_url {
+                    section id="lobby-invitation" background=#e8f1e3 padding=14 border-radius="10px" gap="5px" {
+                        span font-weight=bold { "Private invitation" }
+                        anchor href=(invitation_url) overflow-wrap="anywhere" color="#36512e" { (invitation_url) }
+                        span color=#5d6258 { "This secret link is shown only after lobby creation. Members may join while the lobby is open." }
+                    }
+                }
+                section id="lobby-members" gap="6px" {
+                    h2 { "Members" }
+                    @for member in &lobby.members {
+                        div direction="row" gap="8px" border-bottom=(("#ded8c9", 1)) padding-y="6px" {
+                            span font-weight=bold { "Seat " (member.seat + 1) }
+                            span { (member.user_id.as_str()) }
+                            @if member.user_id == lobby.creator_user_id { span color=#526243 { "Creator" } }
+                        }
+                    }
+                }
+                @if lobby.status == "STARTED" {
+                    @if let Some(game_id) = lobby.started_game_id {
+                        anchor href=(format!("/games/{game_id}")) background=#526243 color=#ffffff padding-y=12 padding-x=16 border-radius="10px" { "Open game" }
+                    }
+                } @else if is_creator {
+                    form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) gap="8px" {
+                        input type=hidden name="action" value="UPDATE";
+                        input type=text name="max_players" value=(lobby.settings.max_players);
+                        input type=text name="board_size" value=(lobby.settings.board_size);
+                        input type=text name="tile_set_count" value=(lobby.settings.tile_set_count);
+                        select name="first_player_policy" {
+                            option value="CREATOR" { "Creator starts" }
+                            option value="RANDOM" { "Random member starts" }
+                            option value="CHOSEN" { "Choose a member" }
+                        }
+                        input type=text name="chosen_first_user_id" placeholder="Chosen member user ID";
+                        button type=submit { "Save settings" }
+                    }
+                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
+                        form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                            input type=hidden name="action" value="START";
+                            button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Start game" }
+                        }
+                        form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                            input type=hidden name="action" value="CANCEL";
+                            button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Cancel lobby" }
+                        }
+                    }
+                } @else {
+                    form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
+                        input type=hidden name="action" value="LEAVE";
+                        button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Leave lobby" }
+                    }
+                }
+            }
+        }
+    }
+    .into()
+}
+
+async fn lobby_create_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    policy: GameCreationPolicy,
+    public_base_url: &str,
+    now: OffsetDateTime,
+) -> Container {
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return product_error_page("Sign in required", "Sign in before creating a lobby.");
+    };
+    if request.method.as_ref() != "POST" {
+        return product_error_page(
+            "Lobby unavailable",
+            "Lobby creation requires a POST request.",
+        );
+    }
+    let form = request
+        .parse_form::<LobbyActionForm>()
+        .unwrap_or_else(|_| LobbyActionForm {
+            action: "CREATE".to_string(),
+            invitation_token: String::new(),
+            max_players: 4,
+            board_size: 15,
+            tile_set_count: 1,
+            first_player_policy: "CREATOR".to_string(),
+            chosen_first_user_id: String::new(),
+        });
+    match create_lobby(
+        database,
+        &user_id,
+        lobby_settings(&form, &user_id),
+        policy,
+        now,
+        Duration::days(30),
+    )
+    .await
+    {
+        Ok((lobby_id, token)) => match load_lobby(database, &lobby_id, &user_id).await {
+            Ok(lobby) => lobby_page(
+                &lobby,
+                &user_id,
+                Some(&lobby_invitation_url(public_base_url, token.expose())),
+            ),
+            Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+        },
+        Err(error) => product_error_page("Lobby could not be created", &error.to_string()),
+    }
+}
+
+async fn lobby_join_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> Container {
+    let token = request
+        .query
+        .get("invite")
+        .cloned()
+        .or_else(|| {
+            request
+                .parse_form::<LobbyActionForm>()
+                .ok()
+                .map(|form| form.invitation_token)
+        })
+        .unwrap_or_default();
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return product_error_page("Sign in required", "Sign in before joining this lobby.");
+    };
+    if request.method.as_ref() != "POST" {
+        return container! { div id="app-page" padding=24 { form method="post" action=(format!("/lobbies/join?invite={token}")) { button type=submit { "Join multiplayer lobby" } } } }.into();
+    }
+    match join_lobby(database, &token, &user_id, policy, now).await {
+        Ok(lobby_id) => match load_lobby(database, &lobby_id, &user_id).await {
+            Ok(lobby) => lobby_page(&lobby, &user_id, None),
+            Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+        },
+        Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+    }
+}
+
+async fn lobby_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    now: OffsetDateTime,
+) -> Container {
+    let lobby_id = request
+        .path
+        .strip_prefix("/lobbies/")
+        .unwrap_or_default()
+        .trim_end_matches("/action");
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return product_error_page("Sign in required", "Sign in to view this lobby.");
+    };
+    match load_lobby(database, lobby_id, &user_id).await {
+        Ok(lobby) => lobby_page(&lobby, &user_id, None),
+        Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+    }
+}
+
+async fn lobby_action_route(
+    database: &dyn Database,
+    request: &RouteRequest,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> Container {
+    let lobby_id = request
+        .path
+        .strip_prefix("/lobbies/")
+        .unwrap_or_default()
+        .trim_end_matches("/action");
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return product_error_page("Sign in required", "Sign in to update this lobby.");
+    };
+    let Ok(form) = request.parse_form::<LobbyActionForm>() else {
+        return product_error_page("Lobby unavailable", "The lobby action was invalid.");
+    };
+    let result = match form.action.as_str() {
+        "UPDATE" => update_lobby_settings(
+            database,
+            lobby_id,
+            &user_id,
+            lobby_settings(&form, &user_id),
+            policy,
+            now,
+        )
+        .await
+        .map(|()| None),
+        "START" => start_lobby(
+            database,
+            lobby_id,
+            &user_id,
+            policy,
+            now,
+            u64::try_from(now.unix_timestamp_nanos()).unwrap_or_default(),
+        )
+        .await
+        .map(Some),
+        "CANCEL" => cancel_lobby(database, lobby_id, &user_id, now)
+            .await
+            .map(|()| None),
+        "LEAVE" => leave_lobby(database, lobby_id, &user_id, now)
+            .await
+            .map(|()| None),
+        _ => return product_error_page("Lobby unavailable", "The lobby action is unknown."),
+    };
+    match result {
+        Ok(Some(game_id)) => invitation_joined_page(game_id),
+        Ok(None) => match load_lobby(database, lobby_id, &user_id).await {
+            Ok(lobby) => lobby_page(&lobby, &user_id, None),
+            Err(_) => dashboard_route(database, request, now).await,
+        },
+        Err(error) => product_error_page("Lobby action failed", &error.to_string()),
+    }
+}
+
 /// Builds the database-backed renderer-neutral application router.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -1629,7 +1916,8 @@ pub fn create_product_router(
     secure_cookies: bool,
 ) -> Router {
     let router = Router::new();
-    let _ = game_creation_policy;
+    let lobby_policy = game_creation_policy;
+    let lobby_public_base_url = Arc::new(public_base_url.clone());
     router.add_route_result("/health/live", |_request: RouteRequest| async move {
         Ok(Content::Raw {
             data: b"ok\n".to_vec().into(),
@@ -1678,6 +1966,55 @@ pub fn create_product_router(
             }) as Result<Content, Box<dyn std::error::Error>>
         }
     });
+    let lobby_create_database = database.clone();
+    router.add_route_result("/lobbies/create", move |request: RouteRequest| {
+        let database = lobby_create_database.clone();
+        let public_base_url = lobby_public_base_url.clone();
+        async move {
+            Ok(lobby_create_route(
+                &*database,
+                &request,
+                lobby_policy,
+                &public_base_url,
+                OffsetDateTime::now_utc(),
+            )
+            .await) as Result<Container, Box<dyn std::error::Error>>
+        }
+    });
+    let join_database = database.clone();
+    router.add_route_result("/lobbies/join", move |request: RouteRequest| {
+        let database = join_database.clone();
+        async move {
+            Ok(lobby_join_route(
+                &*database,
+                &request,
+                lobby_policy,
+                OffsetDateTime::now_utc(),
+            )
+            .await) as Result<Container, Box<dyn std::error::Error>>
+        }
+    });
+    let lobby_database = database.clone();
+    router.add_route_result(
+        RoutePath::LiteralPrefix("/lobbies/".to_string()),
+        move |request: RouteRequest| {
+            let database = lobby_database.clone();
+            async move {
+                let page = if request.path.ends_with("/action") {
+                    lobby_action_route(
+                        &*database,
+                        &request,
+                        lobby_policy,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await
+                } else {
+                    lobby_route(&*database, &request, OffsetDateTime::now_utc()).await
+                };
+                Ok(page) as Result<Container, Box<dyn std::error::Error>>
+            }
+        },
+    );
     let dashboard_database = database.clone();
     router.add_route_result("/", move |request: RouteRequest| {
         let database = dashboard_database.clone();
@@ -2304,9 +2641,23 @@ fn start_game_component() -> Container {
                 div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
                     border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
             }
+            form method="post" action="/lobbies/create" gap="8px" background=#e8f1e3 padding=14 border-radius="10px" {
+                h3 { "Create multiplayer lobby" }
+                span color=#5d6258 { "Configure a private lobby, share its invitation, and start when at least two members have joined." }
+                input type=hidden name="action" value="CREATE";
+                input type=text name="max_players" value="4" placeholder="Maximum players";
+                input type=text name="board_size" value="15" placeholder="Board size";
+                input type=text name="tile_set_count" value="1" placeholder="Tile sets";
+                select name="first_player_policy" {
+                    option value="CREATOR" { "Creator starts" }
+                    option value="RANDOM" { "Random member starts" }
+                }
+                button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
+                    border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Open multiplayer lobby" }
+            }
             form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
                 fx-http-before-request=(dashboard_request_before())
-                fx-http-after-request=(dashboard_request_after())
+                fx-http-after_request=(dashboard_request_after())
                 fx-http-error=(dashboard_request_error()) {
                 input type=hidden name="action" value="CHALLENGE";
                 input type=text name="username" placeholder="Exact @handle" padding-y=13 padding-x=14
@@ -3054,87 +3405,70 @@ fn confirmed_command_forms(
 }
 
 fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
-    let viewer_score = game
-        .view
-        .players
+    let current_turn_name = game
+        .participants
         .iter()
-        .find(|player| player.player_id == game.viewer_player)
-        .map_or(0, |player| player.score);
-    let opponent_score = game
-        .view
-        .players
-        .iter()
-        .find(|player| player.player_id != game.viewer_player)
-        .map_or(0, |player| player.score);
-    let opponent_active = !game.completed && game.view.active_player != game.viewer_player;
-    let viewer_active = !game.completed && game.view.active_player == game.viewer_player;
+        .find(|participant| participant.player_id == game.view.active_player)
+        .map_or("Player", |participant| participant.display_name.as_str());
     let turn = if game.completed {
-        "Game complete"
-    } else if viewer_active {
-        "Your move"
+        "Game complete".to_string()
+    } else if game.view.active_player == game.viewer_player {
+        "Your move".to_string()
     } else {
-        "Their move"
+        format!("{current_turn_name}'s move")
     };
-    let viewer_initial = game
-        .viewer_username
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .to_string();
-    let opponent_initial = game
-        .opponent_username
-        .chars()
-        .next()
-        .unwrap_or('?')
-        .to_uppercase()
-        .to_string();
     container! {
         section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
-            overflow-x="hidden" background=#f4c95d color=#2d2515
-            border=(("#ffe29a", 2)) border-radius="999px" padding-y="6px" padding-x="8px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="5px" min-width=0 {
-                div id="viewer-scoreboard" direction="row" align-items="center" gap="5px" min-width=0 flex=1 overflow-x="hidden" {
-                    @if let Some(avatar_url) = game.viewer_avatar_url.as_deref() {
-                        image src=(avatar_url) alt="Your profile avatar" width="34" height="34" border-radius="999px";
-                    } @else {
-                        span width="34px" height="34px" border-radius="999px"
-                            background=(if viewer_active { "#2e7049" } else { "#d6b361" }) color=#ffffff
-                            border=((if viewer_active { "#73ba8d" } else { "#f2d98d" }, 2))
-                            align-items="center" justify-content="center" font-size="16px" font-weight=bold { (viewer_initial) }
-                    }
-                    span min-width="34px" align-items="center" justify-content="center"
-                        background=(if viewer_active { "#fff1bd" } else { "#e1bd63" })
-                        border-radius="999px" padding-y="3px" padding-x="6px"
-                        font-size="19px" font-weight=bold { (viewer_score) }
+            overflow-x="auto" overflow-y="hidden" background=#f4c95d color=#2d2515
+            border=(("#ffe29a", 2)) border-radius="16px" padding-y="6px" padding-x="8px" gap="5px" {
+            div min-width=0 align-items="center" {
+                span id="named-turn-status" font-size="11px" font-weight=bold white-space="preserve" { (turn) }
+                div direction="row" gap="5px" align-items="center" {
+                    span id="live-status-connected" hidden fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "● Live" }
+                    span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                    span id="live-status-disconnected" hidden fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
                 }
-                div min-width=0 align-items="center" overflow-x="hidden" {
-                    span id="named-turn-status" font-size="11px" font-weight=bold white-space="preserve" { (turn) }
-                    div id="live-status" font-size="10px" overflow-x="hidden" {
-                        span id="live-status-connecting"
-                            fx-global-shared-state-connecting=(live_status_action("live-status-connecting")) { "● Connecting" }
-                        span id="live-status-connected" hidden
-                            fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "● Live" }
-                        span hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                        span id="live-status-reconnecting" hidden color=#9a651f
-                            fx-global-shared-state-reconnecting=(live_status_action("live-status-reconnecting")) { "● Reconnecting" }
-                        span id="live-status-disconnected" hidden color=#9b3f35
-                            fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
-                    }
-                }
-                div id="opponent-scoreboard" direction="row" align-items="center" justify-content="end"
-                    gap="5px" min-width=0 flex=1 overflow-x="hidden" {
-                    span min-width="34px" align-items="center" justify-content="center"
-                        background=(if opponent_active { "#fff1bd" } else { "#e1bd63" })
-                        border-radius="999px" padding-y="3px" padding-x="6px"
-                        font-size="19px" font-weight=bold { (opponent_score) }
-                    @if let Some(avatar_url) = game.opponent_avatar_url.as_deref() {
-                        image src=(avatar_url) alt="Opponent profile avatar" width="34" height="34" border-radius="999px";
-                    } @else {
-                        span width="34px" height="34px" border-radius="999px"
-                            background=(if opponent_active { "#4d3821" } else { "#d6b361" }) color=#ffffff
-                            border=((if opponent_active { "#7b5a35" } else { "#f2d98d" }, 2))
-                            align-items="center" justify-content="center" font-size="16px" font-weight=bold { (opponent_initial) }
+            }
+            div id="participant-scoreboard" direction="row" gap="6px" min-width=0 overflow-x="auto" overflow-y="hidden" {
+                @for participant in &game.participants {
+                    @let public = game.view.players.iter().find(|player| player.player_id == participant.player_id);
+                    @let score = public.map_or(0, |player| player.score);
+                    @let is_viewer = participant.player_id == game.viewer_player;
+                    @let active = public.is_some_and(|player| player.active);
+                    @let leader = public.is_some_and(|player| player.leader);
+                    @let initial = participant.username.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    @let state = if game.completed && leader {
+                        "Leader"
+                    } else if game.completed {
+                        "Completed"
+                    } else if !active {
+                        "Resigned"
+                    } else if participant.player_id == game.view.active_player {
+                        "Playing"
+                    } else {
+                        "Waiting"
+                    };
+                    div id=(format!("player-scoreboard-{}", participant.player_id.as_uuid()))
+                        direction="row" align-items="center" gap="5px" flex="0 0 auto"
+                        background=(if is_viewer { "#fff1bd" } else { "#e1bd63" })
+                        border=((if leader { "#2e7049" } else { "#b08e43" }, 2)) border-radius="999px"
+                        padding-y="3px" padding-x="6px" {
+                        @if let Some(avatar_url) = participant.avatar_url.as_deref() {
+                            image src=(avatar_url) alt=(format!("{} profile avatar", participant.display_name)) width="30" height="30" border-radius="999px";
+                        } @else {
+                            span width="30px" height="30px" border-radius="999px"
+                                background=(if active { "#2e7049" } else { "#776f5d" }) color=#ffffff
+                                align-items="center" justify-content="center" font-size="14px" font-weight=bold { (initial) }
+                        }
+                        div gap="1px" min-width="70px" {
+                            span font-size="12px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
+                                (participant.display_name.as_str()) @if is_viewer { " (you)" }
+                            }
+                            span font-size="10px" white-space="preserve" { (state) }
+                        }
+                        span min-width="30px" align-items="center" justify-content="center"
+                            background=#ffffff border-radius="999px" padding-y="2px" padding-x="5px"
+                            font-size="17px" font-weight=bold { (score) }
                     }
                 }
             }
@@ -3144,34 +3478,40 @@ fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
 }
 
 fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
-    let viewer_score = game
-        .view
-        .players
+    let mut standings = game
+        .participants
         .iter()
-        .find(|player| player.player_id == game.viewer_player)
-        .map_or(0, |player| player.score);
-    let opponent = game
-        .view
-        .players
+        .filter_map(|participant| {
+            game.view
+                .players
+                .iter()
+                .find(|player| player.player_id == participant.player_id)
+                .map(|player| {
+                    (
+                        participant,
+                        player.score,
+                        game.final_score_adjustments
+                            .get(&participant.player_id)
+                            .copied()
+                            .unwrap_or_default(),
+                        player.leader,
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    standings.sort_by_key(|standing| std::cmp::Reverse(standing.1));
+    let leaders = standings
         .iter()
-        .find(|player| player.player_id != game.viewer_player)
-        .copied();
-    let opponent_score = opponent.map_or(0, |player| player.score);
-    let outcome = match game.view.winner {
-        None => "Tie game".to_string(),
-        Some(winner) if winner == game.viewer_player => {
-            format!("{} won", game.viewer_display_name)
-        }
-        Some(_) => format!("{} won", game.opponent_display_name),
+        .filter(|standing| standing.3)
+        .map(|standing| standing.0.display_name.as_str())
+        .collect::<Vec<_>>();
+    let outcome = if leaders.len() > 1 {
+        format!("Co-leaders: {}", leaders.join(", "))
+    } else if let Some(leader) = leaders.first() {
+        format!("{leader} won")
+    } else {
+        "Game complete".to_string()
     };
-    let viewer_adjustment = game
-        .final_score_adjustments
-        .get(&game.viewer_player)
-        .copied()
-        .unwrap_or_default();
-    let opponent_adjustment = opponent
-        .and_then(|player| game.final_score_adjustments.get(&player.player_id).copied())
-        .unwrap_or_default();
     container! {
         section id="completed-game-summary" width="100%" background=#ffffff color=#26382d border=(("#c8b88f", 2))
             border-radius="12px" padding-y="8px" padding-x="10px" gap="6px" {
@@ -3181,25 +3521,25 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                     background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
                     padding-y="4px" padding-x="8px" cursor=pointer { "Close" }
             }
-            div direction="row" justify-content="center" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
-                span font-weight=bold { (game.viewer_display_name.as_str()) ": " (viewer_score) }
-                span font-weight=bold { (game.opponent_display_name.as_str()) ": " (opponent_score) }
-            }
-            @if game.completion_reason.is_some() || viewer_adjustment != 0 || opponent_adjustment != 0 {
-                details width="100%" {
-                    summary cursor=pointer color=#5d6258 { "Game details" }
-                    div padding-top="5px" gap="4px" {
-                        @if let Some(reason) = &game.completion_reason {
-                            span color=#5d6258 { "Completed by: " (reason.as_str()) }
+            div id="final-standings" width="100%" overflow-x="auto" overflow-y="hidden" gap="4px" {
+                @for (rank, (participant, score, adjustment, leader)) in standings.iter().enumerate() {
+                    @let is_viewer = participant.player_id == game.viewer_player;
+                    div direction="row" justify-content="space-between" align-items="center" gap="8px"
+                        border-bottom=(("#ded8c9", 1)) padding-y="4px" padding-x="2px" {
+                        span {
+                            @if *leader { span font-weight=bold { (rank + 1) ". " (participant.display_name.as_str()) } }
+                            @else { span { (rank + 1) ". " (participant.display_name.as_str()) } }
+                            @if is_viewer { " (you)" }
+                            @if *leader { " · leader" }
                         }
-                        @if viewer_adjustment != 0 || opponent_adjustment != 0 {
-                            span color=#5d6258 {
-                                "Final adjustments — " (game.viewer_display_name.as_str()) ": " (format!("{viewer_adjustment:+}"))
-                                ", " (game.opponent_display_name.as_str()) ": " (format!("{opponent_adjustment:+}"))
-                            }
+                        span white-space="preserve" {
+                            (score) @if *adjustment != 0 { " (" (format!("{adjustment:+}")) ")" }
                         }
                     }
                 }
+            }
+            @if let Some(reason) = &game.completion_reason {
+                span color=#5d6258 { "Completed by: " (reason.as_str()) }
             }
         }
     }
@@ -3219,8 +3559,9 @@ fn rules_component(game: &AuthorizedGamePage) -> Container {
                 span { "A tile scores its printed value. DL and TL multiply a newly placed tile; DW and TW multiply the whole word. Premium squares apply only when first covered." }
                 span { "Playing all " (rack_size) " rack tiles adds a " (full_rack_bonus) "-point full-rack bonus." }
                 span { "Exchange replaces selected tiles and ends your turn. It is available only while at least " (exchange_requirement) " tiles remain in the reserve; exchanged tile identities stay private." }
-                span { "Passing ends your turn without playing. After each player passes three times consecutively (" (scoreless_turn_limit) " total consecutive passes), the game ends and the player with the higher current score wins." }
-                span { "Resigning immediately completes the game for your opponent. Otherwise, emptying a rack after the reserve is exhausted completes the game and applies the remaining-tile score adjustments." }
+                span { "Passing ends your turn without playing. Three uninterrupted complete rounds of passes by all active players end the game. For the classic two-player profile this is " (scoreless_turn_limit) " consecutive passes; the threshold scales with active membership." }
+                span { "Resigning removes that player from turn rotation. Their rack stays locked and hidden while play continues; resignation ends the game only when fewer than two active players remain." }
+                span { "When the game ends, remaining rack values are applied according to the completion reason. Final adjusted scores determine the ordered standings, and equal highest scores produce co-leaders." }
             }
         }
     }
@@ -3303,7 +3644,7 @@ fn visual_game_page(
                         section class="dock-message" width="100%" direction="row" justify-content="center"
                             background=#214c38 border=(("#376d53", 1)) border-radius="10px" padding-y="4px" padding-x="8px" {
                             span font-size="13px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                                (game.opponent_display_name.as_str()) " is playing · rearrange your rack while you wait"
+                                (game.participants.iter().find(|participant| participant.player_id == game.view.active_player).map_or("Player", |participant| participant.display_name.as_str())) " is playing · rearrange your rack while you wait"
                             }
                         }
                     }
@@ -4190,8 +4531,8 @@ mod tests {
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
             assert!(page.contains("game-awareness"));
-            assert!(page.contains("viewer-scoreboard"));
-            assert!(page.contains("opponent-scoreboard"));
+            assert!(page.contains("participant-scoreboard"));
+            assert!(page.contains("player-scoreboard-"));
             assert!(page.contains("game-scene"));
             assert!(page.contains("game-arena"));
             assert!(page.contains("player-hud"));
@@ -4249,7 +4590,7 @@ mod tests {
             assert!(page.contains("eligible-square-highlight"));
             assert!(page.contains("game-rules"));
             assert!(page.contains("50-point full-rack bonus"));
-            assert!(page.contains("6 total consecutive passes"));
+            assert!(page.contains("Three uninterrupted complete rounds"));
             assert!(page.contains("dock-message"));
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));

@@ -48,6 +48,7 @@ pub fn shuffle_bag(tiles: &mut [Tile], seed: u64) {
 /// * Returns [`InitializationError::TooFewPlayers`] when fewer than two players are supplied.
 /// * Returns [`InitializationError::DuplicatePlayer`] when a player occupies multiple seats.
 /// * Returns [`InitializationError::UnknownFirstPlayer`] when `first_player` is not seated.
+/// * Returns [`InitializationError::InvalidRules`] when profile dimensions or arithmetic are invalid.
 /// * Returns [`InitializationError::InsufficientTiles`] when the profile cannot fill every rack.
 pub fn initialize_game(
     metadata: GameMetadata,
@@ -59,6 +60,9 @@ pub fn initialize_game(
     if players.len() < 2 {
         return Err(InitializationError::TooFewPlayers);
     }
+    profile
+        .validate()
+        .map_err(|_| InitializationError::InvalidRules)?;
     if players.iter().copied().collect::<BTreeSet<_>>().len() != players.len() {
         return Err(InitializationError::DuplicatePlayer);
     }
@@ -132,6 +136,7 @@ pub fn apply_event(state: Option<GameState>, event: &GameEvent) -> Result<GameSt
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameState, ReplayError> {
     if state.status == GameStatus::Completed {
         return Err(ReplayError::EventAfterCompletion);
@@ -158,10 +163,13 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
             }
             take_drawn_tiles(&mut state.bag, drawn)?;
             rack.extend_from_slice(drawn);
-            *state
+            let score_value = state
                 .scores
                 .get_mut(player_id)
-                .ok_or(ReplayError::UnknownPlayer)? += score;
+                .ok_or(ReplayError::UnknownPlayer)?;
+            *score_value = score_value
+                .checked_add(*score)
+                .ok_or(ReplayError::ArithmeticOverflow)?;
             state.scoreless_turns = 0;
             state.consecutive_passes = 0;
             advance_turn(&mut state);
@@ -229,7 +237,10 @@ fn apply_active_event(mut state: GameState, event: &GameEvent) -> Result<GameSta
         }
         GameEvent::GameStarted { .. } => unreachable!("handled before active events"),
     }
-    state.revision += 1;
+    state.revision = state
+        .revision
+        .checked_add(1)
+        .ok_or(ReplayError::ArithmeticOverflow)?;
     validate_tile_uniqueness(&state)?;
     Ok(state)
 }
@@ -385,7 +396,9 @@ pub enum InitializationError {
     DuplicatePlayer,
     #[error("first player must occupy a seat")]
     UnknownFirstPlayer,
-    #[error("tile distribution cannot fill both starting racks")]
+    #[error("game rules are invalid or exceed canonical representations")]
+    InvalidRules,
+    #[error("tile distribution cannot fill every starting rack")]
     InsufficientTiles,
 }
 
@@ -422,6 +435,8 @@ pub enum ReplayError {
     DuplicateTile,
     #[error("final scores do not contain exactly the seated players")]
     InvalidFinalScores,
+    #[error("canonical score or revision arithmetic overflowed")]
+    ArithmeticOverflow,
 }
 
 #[cfg(test)]

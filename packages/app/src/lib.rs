@@ -82,9 +82,9 @@ pub use oidc_attempts::{
     cleanup_oidc_attempts, consume_oidc_attempt, create_oidc_attempt,
 };
 pub use presentation::{
-    AuthenticatedDashboard, AuthorizedGamePage, CSRF_COOKIE_NAME, CSRF_HEADER_NAME,
-    OIDC_BINDING_COOKIE_NAME, PresentationError, SESSION_COOKIE_NAME, authenticated_user,
-    load_authenticated_dashboard, load_authorized_game_page,
+    AuthenticatedDashboard, AuthorizedGamePage, AuthorizedGameParticipant, CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME, OIDC_BINDING_COOKIE_NAME, PresentationError, SESSION_COOKIE_NAME,
+    authenticated_user, load_authenticated_dashboard, load_authorized_game_page,
 };
 pub use profiles::{
     AvatarSource, ProfileError, ProfileFieldSource, ProfileImage, UserProfile,

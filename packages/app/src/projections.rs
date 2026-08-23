@@ -553,17 +553,7 @@ pub async fn user_game_summaries(
                     .await?;
             let history =
                 game_history(db, game_id.parse().map_err(|_| ProjectionError::Malformed)?).await?;
-            let latest_activity = history.last().map_or_else(
-                || "Game started".to_string(),
-                |entry| match entry.event_kind.as_str() {
-                    "TILES_PLAYED" => format!("Last play: {} points", entry.score_delta),
-                    "TILES_EXCHANGED" => "Tiles exchanged".to_string(),
-                    "TURN_PASSED" => "Turn passed".to_string(),
-                    "GAME_RESIGNED" => "Game resigned".to_string(),
-                    "GAME_COMPLETED" => "Game completed".to_string(),
-                    _ => "Game started".to_string(),
-                },
-            );
+            let latest_activity = latest_activity(&history, &participants);
             summaries.push(GameSummary {
                 game_id: string_column(row, "game_id")?,
                 status,
@@ -587,6 +577,41 @@ pub async fn user_game_summaries(
             .then_with(|| left.game_id.cmp(&right.game_id))
     });
     Ok(summaries)
+}
+
+fn latest_activity(
+    history: &[GameHistoryEntry],
+    participants: &[GameParticipantSummary],
+) -> String {
+    let names = participants
+        .iter()
+        .map(|participant| {
+            (
+                participant.user_id.as_str(),
+                participant.display_name.as_str(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    history.last().map_or_else(
+        || "Game started".to_string(),
+        |entry| {
+            let player_name = entry
+                .player_user_id
+                .as_deref()
+                .and_then(|user_id| names.get(user_id).copied())
+                .unwrap_or("A player");
+            match entry.event_kind.as_str() {
+                "TILES_PLAYED" => {
+                    format!("{player_name} played for {} points", entry.score_delta)
+                }
+                "TILES_EXCHANGED" => format!("{player_name} exchanged tiles"),
+                "TURN_PASSED" => format!("{player_name} passed"),
+                "GAME_RESIGNED" => format!("{player_name} resigned"),
+                "GAME_COMPLETED" => "Game completed".to_string(),
+                _ => "Game started".to_string(),
+            }
+        },
+    )
 }
 
 async fn game_participant_summaries(
@@ -734,6 +759,48 @@ mod tests {
 
     use super::*;
     use crate::{create_challenge, create_invitation, migrate_app, register};
+
+    #[test]
+    fn latest_activity_resolves_every_participant_by_user_id() {
+        let participants = vec![
+            GameParticipantSummary {
+                user_id: "user-0".to_string(),
+                username: "alice".to_string(),
+                display_name: "Alice".to_string(),
+                avatar_url: None,
+                seat: 0,
+                score: 12,
+                viewer: true,
+                active: true,
+                current_turn: false,
+                outcome: None,
+            },
+            GameParticipantSummary {
+                user_id: "user-2".to_string(),
+                username: "carol".to_string(),
+                display_name: "Carol".to_string(),
+                avatar_url: None,
+                seat: 2,
+                score: 20,
+                viewer: false,
+                active: true,
+                current_turn: true,
+                outcome: None,
+            },
+        ];
+        let history = vec![GameHistoryEntry {
+            revision: 4,
+            player_user_id: Some("user-2".to_string()),
+            event_kind: "TILES_PLAYED".to_string(),
+            score_delta: 20,
+            created_at_ms: 0,
+        }];
+
+        assert_eq!(
+            latest_activity(&history, &participants),
+            "Carol played for 20 points"
+        );
+    }
 
     #[test]
     fn dashboard_combines_pending_items_with_ordered_games() {

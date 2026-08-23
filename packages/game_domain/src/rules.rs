@@ -138,8 +138,51 @@ impl RuleProfile {
         if self.scoreless_turn_limit == 0 {
             return Err(RuleProfileError::ZeroScorelessTurnLimit);
         }
+        self.validate_score_bounds()?;
         if self.dictionary_id.trim().is_empty() {
             return Err(RuleProfileError::EmptyDictionaryId);
+        }
+        Ok(())
+    }
+
+    fn validate_score_bounds(&self) -> Result<(), RuleProfileError> {
+        let maximum_tile_points = self
+            .tiles
+            .iter()
+            .map(|tile| u32::from(tile.points))
+            .max()
+            .unwrap_or_default();
+        for horizontal in [true, false] {
+            for line in 0..self.board_size {
+                let mut letters = 0_u32;
+                let mut word_multiplier = 1_u32;
+                for offset in 0..self.board_size {
+                    let coordinate = if horizontal {
+                        Coordinate::new(offset, line)
+                    } else {
+                        Coordinate::new(line, offset)
+                    };
+                    let letter_score = match self.premiums.get(&coordinate) {
+                        Some(PremiumSquare::Letter(multiplier)) => maximum_tile_points
+                            .checked_mul(u32::from(*multiplier))
+                            .ok_or(RuleProfileError::ScoreOverflow)?,
+                        Some(PremiumSquare::Word(multiplier)) => {
+                            word_multiplier = word_multiplier
+                                .checked_mul(u32::from(*multiplier))
+                                .ok_or(RuleProfileError::ScoreOverflow)?;
+                            maximum_tile_points
+                        }
+                        None => maximum_tile_points,
+                    };
+                    letters = letters
+                        .checked_add(letter_score)
+                        .ok_or(RuleProfileError::ScoreOverflow)?;
+                }
+                letters
+                    .checked_mul(word_multiplier)
+                    .and_then(|score| score.checked_add(u32::from(self.full_rack_bonus)))
+                    .ok_or(RuleProfileError::ScoreOverflow)?;
+            }
         }
         Ok(())
     }
@@ -202,6 +245,9 @@ pub enum RuleProfileError {
     /// At least one complete tile set is required.
     #[error("tile set count must be greater than zero")]
     EmptyTileSets,
+    /// Configured board scoring cannot fit canonical score values.
+    #[error("configured scoring can overflow canonical score values")]
+    ScoreOverflow,
     /// Multiplied tile quantities must remain representable.
     #[error("configured tile set count overflows tile quantities")]
     TileQuantityOverflow,
@@ -512,6 +558,21 @@ mod tests {
             Some(&PremiumSquare::Word(2))
         );
         assert_eq!(profile.validate(), Ok(()));
+    }
+
+    #[test]
+    fn profile_validation_rejects_score_and_tile_overflow() {
+        assert_eq!(
+            generated_rule_profile(15, u8::MAX),
+            Err(RuleProfileError::TileQuantityOverflow)
+        );
+        let mut profile = initial_rule_profile();
+        for x in 0..profile.board_size {
+            profile
+                .premiums
+                .insert(Coordinate::new(x, 0), PremiumSquare::Word(u8::MAX));
+        }
+        assert_eq!(profile.validate(), Err(RuleProfileError::ScoreOverflow));
     }
 
     #[test]

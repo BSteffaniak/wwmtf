@@ -87,8 +87,14 @@ pub struct LobbySettings {
 }
 
 /// Raw secret returned once to the creator for link transport.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LobbyInvitationToken(String);
+
+impl std::fmt::Debug for LobbyInvitationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LobbyInvitationToken([REDACTED])")
+    }
+}
 
 impl LobbyInvitationToken {
     #[must_use]
@@ -642,6 +648,58 @@ mod tests {
     use futures_lite::future::block_on;
 
     #[test]
+    fn lobby_secrets_are_redacted_and_never_persisted_or_returned_in_authorized_views() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*db, "alice", "correct horse battery staple", now)
+                .await
+                .expect("alice");
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let (lobby_id, token) = create_lobby(
+                &*db,
+                &alice,
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby creates");
+            let token_debug = format!("{token:?}");
+            assert!(!token_debug.contains(token.expose()));
+            let row = db
+                .select("game_lobbies")
+                .where_eq("lobby_id", lobby_id.clone())
+                .execute(&*db)
+                .await
+                .expect("lobby row loads")
+                .remove(0);
+            let stored = row
+                .get("invitation_token_hash")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .expect("hash stored");
+            assert_ne!(stored, token.expose());
+            let authorized = load_lobby(&*db, &lobby_id, &alice)
+                .await
+                .expect("authorized view loads");
+            assert!(!format!("{authorized:?}").contains(token.expose()));
+            assert!(!LobbyError::Unavailable.to_string().contains(token.expose()));
+        });
+    }
+
+    #[test]
     fn three_members_join_and_creator_starts_exactly_once() {
         block_on(async {
             let db = switchy_database_connection::builder()
@@ -695,6 +753,165 @@ mod tests {
                     .expect("idempotent"),
                 game_id
             );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn multiplayer_lobby_product_matrix_covers_policies_capacity_leave_cancel_and_large_membership()
+    {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let mut users = Vec::new();
+            for index in 0..8 {
+                users.push(
+                    register(
+                        &*db,
+                        &format!("player-{index}"),
+                        &format!("correct horse battery password {index}"),
+                        now,
+                    )
+                    .await
+                    .expect("member registers"),
+                );
+            }
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+
+            for (policy_index, first_player) in [
+                FirstPlayerPolicy::Creator,
+                FirstPlayerPolicy::Random,
+                FirstPlayerPolicy::Chosen(users[2].clone()),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let chosen_at_creation = matches!(first_player, FirstPlayerPolicy::Chosen(_));
+                let initial_policy = if chosen_at_creation {
+                    FirstPlayerPolicy::Creator
+                } else {
+                    first_player.clone()
+                };
+                let (lobby_id, token) = create_lobby(
+                    &*db,
+                    &users[0],
+                    LobbySettings {
+                        max_players: 8,
+                        board_size: 21,
+                        tile_set_count: 2,
+                        first_player: initial_policy,
+                    },
+                    policy,
+                    now,
+                    Duration::days(1),
+                )
+                .await
+                .expect("lobby creates");
+                for user in &users[1..] {
+                    join_lobby(&*db, token.expose(), user, policy, now)
+                        .await
+                        .expect("large membership joins");
+                }
+                if chosen_at_creation {
+                    update_lobby_settings(
+                        &*db,
+                        &lobby_id,
+                        &users[0],
+                        LobbySettings {
+                            max_players: 8,
+                            board_size: 21,
+                            tile_set_count: 2,
+                            first_player: first_player.clone(),
+                        },
+                        policy,
+                        now,
+                    )
+                    .await
+                    .expect("chosen member configured");
+                }
+                let game_id = start_lobby(
+                    &*db,
+                    &lobby_id,
+                    &users[0],
+                    policy,
+                    now,
+                    u64::try_from(policy_index).expect("index fits") + 17,
+                )
+                .await
+                .expect("manual start succeeds");
+                let state = recover_game(&*db, game_id).await.expect("game recovers");
+                assert_eq!(state.players.len(), 8);
+                match first_player {
+                    FirstPlayerPolicy::Creator => assert_eq!(state.active_player, state.players[0]),
+                    FirstPlayerPolicy::Chosen(_) => {
+                        assert_eq!(state.active_player, state.players[2]);
+                    }
+                    FirstPlayerPolicy::Random => {
+                        assert!(state.players.contains(&state.active_player));
+                    }
+                }
+            }
+
+            let (leave_id, leave_token) = create_lobby(
+                &*db,
+                &users[0],
+                LobbySettings {
+                    max_players: 3,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("leave lobby creates");
+            join_lobby(&*db, leave_token.expose(), &users[1], policy, now)
+                .await
+                .expect("member joins");
+            join_lobby(&*db, leave_token.expose(), &users[2], policy, now)
+                .await
+                .expect("capacity fills");
+            assert!(matches!(
+                join_lobby(&*db, leave_token.expose(), &users[3], policy, now).await,
+                Err(LobbyError::Unavailable)
+            ));
+            leave_lobby(&*db, &leave_id, &users[2], now)
+                .await
+                .expect("member leaves");
+            join_lobby(&*db, leave_token.expose(), &users[3], policy, now)
+                .await
+                .expect("released seat can be joined");
+
+            let (cancel_id, cancel_token) = create_lobby(
+                &*db,
+                &users[0],
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("cancel lobby creates");
+            cancel_lobby(&*db, &cancel_id, &users[0], now)
+                .await
+                .expect("creator cancels");
+            assert!(matches!(
+                join_lobby(&*db, cancel_token.expose(), &users[1], policy, now).await,
+                Err(LobbyError::Unavailable)
+            ));
         });
     }
 

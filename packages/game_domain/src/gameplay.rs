@@ -33,7 +33,10 @@ pub fn decide_command(
         GameCommand::Resign => decide_resignation(state, actor),
     };
     Ok(MoveResult {
-        resulting_revision: state.revision + u64::try_from(events.len()).unwrap_or(u64::MAX),
+        resulting_revision: state
+            .revision
+            .checked_add(u64::try_from(events.len()).map_err(|_| GameError::ArithmeticOverflow)?)
+            .ok_or(GameError::ArithmeticOverflow)?,
         events,
     })
 }
@@ -182,17 +185,16 @@ pub fn analyze_committed_play(
     let axis = placement_axis(placements)?;
     let board = combined_board(&state.board, placements);
     validate_connection(state, placements, &board, profile, axis)?;
-    let words = formed_words(&board, placements, axis)
-        .into_iter()
-        .map(|word| {
-            let score = score_word(&word, &board, placements, profile);
-            AnalyzedWord {
-                text: word.text,
-                coordinates: word.coordinates,
-                score,
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut analyzed_words = Vec::new();
+    for word in formed_words(&board, placements, axis) {
+        let score = score_word(&word, &board, placements, profile)?;
+        analyzed_words.push(AnalyzedWord {
+            text: word.text,
+            coordinates: word.coordinates,
+            score,
+        });
+    }
+    let words = analyzed_words;
     let full_rack_bonus = if placements.len() == usize::from(profile.rack_size) {
         profile.full_rack_bonus
     } else {
@@ -200,9 +202,9 @@ pub fn analyze_committed_play(
     };
     let score = words
         .iter()
-        .map(|word| word.score)
-        .sum::<u32>()
-        .saturating_add(u32::from(full_rack_bonus));
+        .try_fold(0_u32, |total, word| total.checked_add(word.score))
+        .and_then(|total| total.checked_add(u32::from(full_rack_bonus)))
+        .ok_or(GameError::ArithmeticOverflow)?;
     Ok(PlayAnalysis {
         words,
         score,
@@ -233,18 +235,21 @@ fn prepare_play(
     } else {
         0
     };
-    let words = words
-        .into_iter()
-        .map(|word| {
-            let score = score_word(&word, &board, &placed, profile);
-            AnalyzedWord {
-                text: word.text,
-                coordinates: word.coordinates,
-                score,
-            }
-        })
-        .collect::<Vec<_>>();
-    let score = words.iter().map(|word| word.score).sum::<u32>() + u32::from(full_rack_bonus);
+    let mut analyzed_words = Vec::new();
+    for word in words {
+        let score = score_word(&word, &board, &placed, profile)?;
+        analyzed_words.push(AnalyzedWord {
+            text: word.text,
+            coordinates: word.coordinates,
+            score,
+        });
+    }
+    let words = analyzed_words;
+    let score = words
+        .iter()
+        .try_fold(0_u32, |total, word| total.checked_add(word.score))
+        .and_then(|total| total.checked_add(u32::from(full_rack_bonus)))
+        .ok_or(GameError::ArithmeticOverflow)?;
     Ok(PreparedPlay {
         placed,
         candidate: CandidatePlayAnalysis {
@@ -669,31 +674,37 @@ fn score_word(
     board: &BTreeMap<Coordinate, BoardTile>,
     placed: &BTreeMap<Coordinate, BoardTile>,
     profile: &RuleProfile,
-) -> u32 {
+) -> Result<u32, GameError> {
     let mut word_multiplier = 1_u32;
-    let letters = word
-        .coordinates
-        .iter()
-        .map(|coordinate| {
-            let points = u32::from(board[coordinate].tile.points);
-            if let Some(premium) = placed
-                .contains_key(coordinate)
-                .then(|| profile.premiums.get(coordinate))
-                .flatten()
-            {
-                match premium {
-                    PremiumSquare::Letter(multiplier) => {
-                        return points * u32::from(*multiplier);
-                    }
-                    PremiumSquare::Word(multiplier) => {
-                        word_multiplier *= u32::from(*multiplier);
-                    }
+    let mut letters = 0_u32;
+    for coordinate in &word.coordinates {
+        let points = u32::from(board[coordinate].tile.points);
+        let letter_score = if let Some(premium) = placed
+            .contains_key(coordinate)
+            .then(|| profile.premiums.get(coordinate))
+            .flatten()
+        {
+            match premium {
+                PremiumSquare::Letter(multiplier) => points
+                    .checked_mul(u32::from(*multiplier))
+                    .ok_or(GameError::ArithmeticOverflow)?,
+                PremiumSquare::Word(multiplier) => {
+                    word_multiplier = word_multiplier
+                        .checked_mul(u32::from(*multiplier))
+                        .ok_or(GameError::ArithmeticOverflow)?;
+                    points
                 }
             }
+        } else {
             points
-        })
-        .sum::<u32>();
-    letters * word_multiplier
+        };
+        letters = letters
+            .checked_add(letter_score)
+            .ok_or(GameError::ArithmeticOverflow)?;
+    }
+    letters
+        .checked_mul(word_multiplier)
+        .ok_or(GameError::ArithmeticOverflow)
 }
 
 fn neighbors(coordinate: Coordinate) -> [Option<Coordinate>; 4] {

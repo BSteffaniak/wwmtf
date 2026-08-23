@@ -354,6 +354,9 @@ pub enum GameError {
     /// Exchange requires enough tiles in the bag.
     #[error("the bag does not contain enough tiles for an exchange")]
     ExchangeUnavailable,
+    /// Deterministic score or revision arithmetic exceeded its canonical representation.
+    #[error("game arithmetic exceeds the supported range")]
+    ArithmeticOverflow,
     /// A tile appeared more than once in the command.
     #[error("the same tile was selected more than once")]
     DuplicateTile,

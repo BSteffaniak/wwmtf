@@ -11,10 +11,11 @@ use switchy_database::query::FilterableQuery as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use wwmtf_app::{
-    GameSharedStateDispatcher, accept_challenge, create_challenge, create_session,
-    dashboard_channel, dashboard_projection, game_channel, load_events, migrate_app,
-    rebuild_game_projections, recover_game, register, resolve_session, store_snapshot,
-    user_game_summaries,
+    FirstPlayerPolicy, GameCreationPolicy, GameSharedStateDispatcher, LobbySettings,
+    accept_challenge, create_challenge, create_lobby, create_session, dashboard_channel,
+    dashboard_projection, game_channel, join_lobby, load_events, load_lobby, migrate_app,
+    rebuild_game_projections, recover_game, register, resolve_session, start_lobby, store_snapshot,
+    submit_game_command, user_game_summaries,
 };
 use wwmtf_game_domain::{GameCommand, GameId, GameState};
 
@@ -249,6 +250,127 @@ fn accounts_concurrent_games_and_projections_survive_restart() {
             );
         }
 
+        drop(db);
+        remove_database_files(&path);
+    });
+}
+
+#[test]
+fn active_lobby_and_multiplayer_lifecycle_survive_file_backed_restart() {
+    block_on(async {
+        let path = database_path();
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+        let (lobby_id, game_id, users, active_expected, resigned_expected, completed_expected) = {
+            let db = open_database(&path).await;
+            migrate_app(&*db).await.expect("migrations run");
+            let mut users = Vec::new();
+            for (username, password) in [
+                ("alice", "correct horse battery staple"),
+                ("bob", "another correct horse battery"),
+                ("carol", "third correct horse battery"),
+            ] {
+                users.push(
+                    register(&*db, username, password, now)
+                        .await
+                        .expect("register"),
+                );
+            }
+            let settings = LobbySettings {
+                max_players: 6,
+                board_size: 21,
+                tile_set_count: 2,
+                first_player: FirstPlayerPolicy::Creator,
+            };
+            let (waiting_lobby_id, waiting_token) = create_lobby(
+                &*db,
+                &users[0],
+                settings.clone(),
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("waiting lobby creates");
+            join_lobby(&*db, waiting_token.expose(), &users[1], policy, now)
+                .await
+                .expect("waiting member joins");
+
+            let (started_lobby_id, token) =
+                create_lobby(&*db, &users[0], settings, policy, now, Duration::days(1))
+                    .await
+                    .expect("started lobby creates");
+            for user in &users[1..] {
+                join_lobby(&*db, token.expose(), user, policy, now)
+                    .await
+                    .expect("member joins");
+            }
+            let game_id = start_lobby(&*db, &started_lobby_id, &users[0], policy, now, 17)
+                .await
+                .expect("starts");
+            let active_expected = recover_game(&*db, game_id).await.expect("active recovers");
+            let resigned_expected = submit_game_command(
+                &*db,
+                game_id,
+                &users[0],
+                "restart-resign",
+                "restart-resign-idem",
+                active_expected.revision,
+                &GameCommand::Resign,
+                1,
+            )
+            .await
+            .expect("non-current member resigns");
+            let mut completed_expected = resigned_expected.clone();
+            while completed_expected.status == wwmtf_game_domain::GameStatus::Active {
+                let active_index = completed_expected
+                    .players
+                    .iter()
+                    .position(|player| *player == completed_expected.active_player)
+                    .expect("active player seated");
+                completed_expected = submit_game_command(
+                    &*db,
+                    game_id,
+                    &users[active_index],
+                    &format!("restart-pass-{}", completed_expected.revision),
+                    &format!("restart-pass-idem-{}", completed_expected.revision),
+                    completed_expected.revision,
+                    &GameCommand::Pass,
+                    i64::try_from(completed_expected.revision).expect("revision fits"),
+                )
+                .await
+                .expect("pass completes");
+            }
+            drop(db);
+            (
+                waiting_lobby_id,
+                game_id,
+                users,
+                active_expected,
+                resigned_expected,
+                completed_expected,
+            )
+        };
+
+        let db = open_database(&path).await;
+        migrate_app(&*db).await.expect("restart migrations run");
+        let lobby = load_lobby(&*db, &lobby_id, &users[0])
+            .await
+            .expect("active lobby survives");
+        assert_eq!(lobby.status, "OPEN");
+        assert_eq!(lobby.members.len(), 2);
+        assert_eq!(active_expected.players.len(), 3);
+        assert!(
+            !resigned_expected
+                .active_players
+                .contains(&resigned_expected.players[0])
+        );
+        assert_eq!(
+            recover_game(&*db, game_id)
+                .await
+                .expect("completed game survives"),
+            completed_expected
+        );
         drop(db);
         remove_database_files(&path);
     });

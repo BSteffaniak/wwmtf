@@ -14,7 +14,11 @@ Every game start event and game row pins:
 
 ## Canonical payload versions
 
-Version 1 remains immutable and readable. Version 2 is the current writer format for events and snapshots; it represents coordinate-keyed maps as deterministically ordered entry arrays so canonical board state is valid JSON. Readers retain explicit decoders for both versions and reject unknown versions.
+Versions 1 and 2 remain immutable and readable. Version 3 is the current writer format for events and snapshots. Version 2 introduced deterministically ordered coordinate entry arrays; version 3 adds ordered variable-size membership, active/resigned participation, completion reasons and leaders, and the complete resolved `RuleProfile` used by configurable games.
+
+A version 3 start record pins the generated profile identity/version and its complete public rules content: board dimension, start square, premium map, tile distribution, rack/exchange/bonus/pass settings, and dictionary identity. Replay consumes that resolved content and never consults lobby rows or current runtime creation limits. Generated profile identifiers include their generation inputs and immutable generator version; changing the generator requires a new profile version rather than reinterpreting retained payloads.
+
+Readers retain explicit decoders for versions 1, 2, and 3 and reject unknown versions.
 
 Before advancing either writer version:
 

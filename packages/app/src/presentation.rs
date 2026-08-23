@@ -36,6 +36,16 @@ pub struct AuthenticatedDashboard {
     pub score_totals: Option<UserScoreTotals>,
 }
 
+/// Public participant presentation attached to one authorized game page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedGameParticipant {
+    pub player_id: wwmtf_game_domain::PlayerId,
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+}
+
 /// Authorized game presentation reconstructed from canonical persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedGamePage {
@@ -48,6 +58,7 @@ pub struct AuthorizedGamePage {
     pub final_score_adjustments: std::collections::BTreeMap<wwmtf_game_domain::PlayerId, i64>,
     pub rack_order: Vec<u16>,
     pub exchange_available: bool,
+    pub participants: Vec<AuthorizedGameParticipant>,
     pub viewer_username: String,
     pub viewer_display_name: String,
     pub viewer_avatar_url: Option<String>,
@@ -192,6 +203,50 @@ pub async fn load_authenticated_dashboard(
     })
 }
 
+async fn authorized_game_participants(
+    db: &dyn Database,
+    game_id: GameId,
+) -> Result<Vec<AuthorizedGameParticipant>, PresentationError> {
+    let mut rows = db
+        .select("game_players")
+        .where_eq("game_id", game_id.to_string())
+        .execute(db)
+        .await?;
+    rows.sort_by_key(|row| {
+        row.get("seat")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(i64::MAX)
+    });
+    let mut participants = Vec::with_capacity(rows.len());
+    for row in rows {
+        let user_id = row
+            .get("user_id")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or(PresentationError::Malformed)?;
+        let player_id = row
+            .get("game_player_id")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or(PresentationError::Malformed)?
+            .parse()
+            .map_err(|_| PresentationError::Malformed)?;
+        let username = username_for_user(db, &user_id).await?;
+        let display_name = crate::load_profile(db, &user_id)
+            .await?
+            .map_or_else(|| username.clone(), |profile| profile.display_name);
+        let avatar_url = crate::profile_image_hash(db, &user_id)
+            .await?
+            .map(|hash| format!("/profiles/{user_id}/avatar/{hash}"));
+        participants.push(AuthorizedGameParticipant {
+            player_id,
+            user_id,
+            username,
+            display_name,
+            avatar_url,
+        });
+    }
+    Ok(participants)
+}
+
 /// Loads an authorized game view and chronological canonical history.
 ///
 /// # Errors
@@ -224,45 +279,34 @@ pub async fn load_authorized_game_page(
         .into_iter()
         .map(|event| event.event)
         .collect::<Vec<_>>();
-    let viewer_username = username_for_user(db, &user_id).await?;
-    let opponent_user_id = db
-        .select("game_players")
-        .where_eq("game_id", game_id.to_string())
-        .execute(db)
-        .await?
+    let participants = authorized_game_participants(db, game_id).await?;
+    let viewer = participants
         .iter()
-        .filter_map(|row| row.get("user_id"))
-        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-        .find(|candidate| candidate != &user_id)
+        .find(|participant| participant.player_id == player)
         .ok_or(PresentationError::Malformed)?;
-    let opponent_username = username_for_user(db, &opponent_user_id).await?;
-    let viewer_display_name = crate::load_profile(db, &user_id)
-        .await?
-        .map_or_else(|| viewer_username.clone(), |profile| profile.display_name);
-    let opponent_display_name = crate::load_profile(db, &opponent_user_id)
-        .await?
-        .map_or_else(|| opponent_username.clone(), |profile| profile.display_name);
-    let viewer_avatar_url = crate::profile_image_hash(db, &user_id)
-        .await?
-        .map(|hash| format!("/profiles/{user_id}/avatar/{hash}"));
-    let opponent_avatar_url = crate::profile_image_hash(db, &opponent_user_id)
-        .await?
-        .map(|hash| format!("/profiles/{opponent_user_id}/avatar/{hash}"));
+    let opponent = participants
+        .iter()
+        .find(|participant| participant.player_id != player)
+        .ok_or(PresentationError::Malformed)?;
+    let viewer_username = viewer.username.clone();
+    let viewer_display_name = viewer.display_name.clone();
+    let viewer_avatar_url = viewer.avatar_url.clone();
+    let opponent_username = opponent.username.clone();
+    let opponent_display_name = opponent.display_name.clone();
+    let opponent_avatar_url = opponent.avatar_url.clone();
+    let names = participants
+        .iter()
+        .map(|participant| (participant.player_id, participant.display_name.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let name = |event_player| {
-        if event_player == player {
-            viewer_display_name.clone()
-        } else {
-            opponent_display_name.clone()
-        }
+        names
+            .get(&event_player)
+            .cloned()
+            .unwrap_or_else(|| "Player".to_string())
     };
     let history = move_history_view(&events, &rules, name)?;
     let final_score_adjustments = final_score_adjustments(&events)?;
-    let (latest_action, latest_play_coordinates) = latest_public_action(
-        &events,
-        &viewer_display_name,
-        &opponent_display_name,
-        player,
-    );
+    let (latest_action, latest_play_coordinates) = latest_public_action(&events, &names);
     let viewer_play_coordinates = player_play_coordinates(&events, player);
     let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
     let rack_order = crate::load_rack_order(db, game_id, &user_id).await?;
@@ -278,6 +322,7 @@ pub async fn load_authorized_game_page(
         final_score_adjustments,
         rack_order,
         exchange_available,
+        participants,
         viewer_username,
         viewer_display_name,
         viewer_avatar_url,
@@ -325,22 +370,14 @@ fn player_play_coordinates(
 
 fn latest_public_action(
     events: &[wwmtf_game_domain::GameEvent],
-    viewer_username: &str,
-    opponent_username: &str,
-    viewer: wwmtf_game_domain::PlayerId,
+    player_names: &std::collections::BTreeMap<wwmtf_game_domain::PlayerId, String>,
 ) -> (
     Option<String>,
     std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
 ) {
     use wwmtf_game_domain::GameEvent;
 
-    let name = |player| {
-        if player == viewer {
-            viewer_username
-        } else {
-            opponent_username
-        }
-    };
+    let name = |player| player_names.get(&player).map_or("Player", String::as_str);
     for event in events.iter().rev() {
         match event {
             GameEvent::TilesPlayed {
@@ -547,6 +584,9 @@ mod tests {
             assert_eq!(page.game_id, game_id);
             assert_eq!(page.view.rack.len(), 7);
             assert_eq!(page.history.len(), 1);
+            assert_eq!(page.participants.len(), 2);
+            assert_eq!(page.participants[0].user_id, alice);
+            assert_eq!(page.participants[1].user_id, bob);
 
             assert!(matches!(
                 load_authorized_game_page(&*db, &mallory_cookies, &game_id.to_string(), now).await,
