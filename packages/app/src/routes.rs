@@ -1667,6 +1667,7 @@ fn lobby_invitation_url(public_base_url: &str, lobby_id: &str) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) -> Container {
     let is_creator = lobby.creator_user_id == viewer_user_id;
     let first_player = match &lobby.settings.first_player {
@@ -1676,10 +1677,18 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
     };
     let invitation_url =
         (lobby.status == "OPEN").then(|| lobby_invitation_url(public_base_url, &lobby.lobby_id));
+    let dashboard_channel = format!("dashboard:{viewer_user_id}");
+    let lobby_path = format!("/lobbies/{}", lobby.lobby_id);
+    let refresh_lobby = ActionType::Navigate { url: lobby_path };
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
+        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
+            fx-global-shared-state-event=(refresh_lobby)
+            min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
             main id="multiplayer-lobby" width="100%" max-width="760px" background=#ffffff
                 border=(("#ded8c9", 1)) border-radius="18px" padding="28px" gap="18px" {
+                @if let Some(game_id) = lobby.started_game_id {
+                    span hidden fx-immediate=(ActionType::Navigate { url: format!("/games/{game_id}") }) { }
+                }
                 anchor href="/" color=#526243 { "← Dashboard" }
                 h1 { "Multiplayer lobby" }
                 span color=#5d6258 { (lobby.members.len()) " of " (lobby.settings.max_players) " seats joined" }
@@ -1827,8 +1836,23 @@ fn lobby_creation_page() -> Container {
     .into()
 }
 
+async fn refresh_lobby_dashboards(
+    dispatcher: &crate::GameSharedStateDispatcher,
+    now: OffsetDateTime,
+) {
+    if dispatcher
+        .refresh_dashboard_subscribers(now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX))
+        .await
+        .is_err()
+    {
+        #[cfg(feature = "metrics")]
+        crate::observability::record_database_failure("refresh_lobby_dashboards");
+    }
+}
+
 async fn lobby_create_route(
     database: &dyn Database,
+    dispatcher: &crate::GameSharedStateDispatcher,
     request: &RouteRequest,
     policy: GameCreationPolicy,
     _public_base_url: &str,
@@ -1865,7 +1889,10 @@ async fn lobby_create_route(
     .await
     {
         Ok((lobby_id, _token)) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
+            Ok(_lobby) => {
+                refresh_lobby_dashboards(dispatcher, now).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+            }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page(
@@ -1877,6 +1904,7 @@ async fn lobby_create_route(
 
 async fn lobby_join_route(
     database: &dyn Database,
+    dispatcher: &crate::GameSharedStateDispatcher,
     request: &RouteRequest,
     policy: GameCreationPolicy,
     _public_base_url: &str,
@@ -1925,7 +1953,10 @@ async fn lobby_join_route(
     };
     match result {
         Ok(lobby_id) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
+            Ok(_lobby) => {
+                refresh_lobby_dashboards(dispatcher, now).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+            }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
@@ -1954,6 +1985,7 @@ async fn lobby_route(
 
 async fn lobby_action_route(
     database: &dyn Database,
+    dispatcher: &crate::GameSharedStateDispatcher,
     request: &RouteRequest,
     policy: GameCreationPolicy,
     _public_base_url: &str,
@@ -2012,12 +2044,19 @@ async fn lobby_action_route(
         }
     };
     match result {
-        Ok(Some(game_id)) => view_with_internal_navigation(format!("/games/{game_id}")),
+        Ok(Some(game_id)) => {
+            refresh_lobby_dashboards(dispatcher, now).await;
+            view_with_internal_navigation(format!("/games/{game_id}"))
+        }
         Ok(None) if matches!(action, "CANCEL" | "LEAVE") => {
+            refresh_lobby_dashboards(dispatcher, now).await;
             view_with_internal_navigation("/".to_string())
         }
         Ok(None) => match load_lobby(database, lobby_id, &user_id).await {
-            Ok(_lobby) => view_with_internal_navigation(format!("/lobbies/{lobby_id}")),
+            Ok(_lobby) => {
+                refresh_lobby_dashboards(dispatcher, now).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+            }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
         Err(error) => View::from(product_error_page(
@@ -2094,13 +2133,16 @@ pub fn create_product_router(
         }
     });
     let lobby_new_database = database.clone();
+    let lobby_new_dispatcher = dispatcher.clone();
     let lobby_new_public_base_url = lobby_public_base_url.clone();
     router.add_route_result("/lobbies/new", move |request: RouteRequest| {
         let database = lobby_new_database.clone();
+        let dispatcher = lobby_new_dispatcher.clone();
         let public_base_url = lobby_new_public_base_url.clone();
         async move {
             Ok(lobby_create_route(
                 &*database,
+                &dispatcher,
                 &request,
                 lobby_policy,
                 &public_base_url,
@@ -2110,13 +2152,16 @@ pub fn create_product_router(
         }
     });
     let lobby_create_database = database.clone();
+    let lobby_create_dispatcher = dispatcher.clone();
     let lobby_create_public_base_url = lobby_public_base_url.clone();
     router.add_route_result("/lobbies/create", move |request: RouteRequest| {
         let database = lobby_create_database.clone();
+        let dispatcher = lobby_create_dispatcher.clone();
         let public_base_url = lobby_create_public_base_url.clone();
         async move {
             Ok(lobby_create_route(
                 &*database,
+                &dispatcher,
                 &request,
                 lobby_policy,
                 &public_base_url,
@@ -2126,15 +2171,18 @@ pub fn create_product_router(
         }
     });
     let join_database = database.clone();
+    let join_dispatcher = dispatcher.clone();
     let join_public_base_url = lobby_public_base_url.clone();
     router.add_route_result(
         RoutePath::LiteralPrefix("/lobbies/join".to_string()),
         move |request: RouteRequest| {
             let database = join_database.clone();
+            let dispatcher = join_dispatcher.clone();
             let public_base_url = join_public_base_url.clone();
             async move {
                 Ok(lobby_join_route(
                     &*database,
+                    &dispatcher,
                     &request,
                     lobby_policy,
                     &public_base_url,
@@ -2145,16 +2193,19 @@ pub fn create_product_router(
         },
     );
     let lobby_database = database.clone();
+    let lobby_dispatcher = dispatcher.clone();
     let lobby_action_public_base_url = lobby_public_base_url;
     router.add_route_result(
         RoutePath::LiteralPrefix("/lobbies/".to_string()),
         move |request: RouteRequest| {
             let database = lobby_database.clone();
+            let dispatcher = lobby_dispatcher.clone();
             let public_base_url = lobby_action_public_base_url.clone();
             async move {
                 let page = if request.path.ends_with("/action") {
                     lobby_action_route(
                         &*database,
+                        &dispatcher,
                         &request,
                         lobby_policy,
                         &public_base_url,
@@ -3935,15 +3986,21 @@ pub fn game_view_response(game: &AuthorizedGamePage) -> View {
 #[cfg(test)]
 mod tests {
     use futures_lite::future::block_on;
-    use hyperchad::router::RequestInfo;
+    use hyperchad::{
+        router::RequestInfo,
+        shared_state_models::ParticipantId,
+        shared_state_transport::{
+            AuthenticatedTransportContext, SharedStateTransportDispatcher as _,
+        },
+    };
     use switchy_database::query::FilterableQuery as _;
     use time::Duration;
     use wwmtf_game_domain::Dictionary as _;
 
     use super::*;
     use crate::{
-        SESSION_COOKIE_NAME, VerifiedExternalIdentity, accept_challenge, create_challenge,
-        create_session, migrate_app, register,
+        GameSharedStateDispatcher, SESSION_COOKIE_NAME, VerifiedExternalIdentity, accept_challenge,
+        create_challenge, create_session, migrate_app, register,
     };
 
     async fn test_database() -> Arc<dyn Database> {
@@ -3957,6 +4014,117 @@ mod tests {
         );
         migrate_app(&*database).await.expect("migrations run");
         database
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn lobby_join_and_start_publish_live_refreshes_to_waiting_members() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let creator = register(
+                &*database,
+                "live-creator",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("creator registers");
+            let joiner = register(
+                &*database,
+                "live-joiner",
+                "another correct horse battery",
+                now,
+            )
+            .await
+            .expect("joiner registers");
+            let creator_session = create_session(&*database, &creator, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let joiner_session = create_session(&*database, &joiner, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let context = AuthenticatedTransportContext {
+                participant_id: ParticipantId::new(&creator),
+                identity_binding: "creator-browser".to_string(),
+            };
+            let events = dispatcher
+                .subscribe_channel(&context, &crate::dashboard_channel(&creator))
+                .await
+                .expect("creator subscribes");
+            events.recv_async().await.expect("initial dashboard");
+            let (lobby_id, _) = create_lobby(
+                &*database,
+                &creator,
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby creates");
+
+            let mut join = RouteRequest::from_path(
+                &format!("/lobbies/join/{lobby_id}"),
+                RequestInfo::default(),
+            );
+            join.method = "POST".parse().expect("POST parses");
+            join.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                joiner_session.expose().to_string(),
+            );
+            lobby_join_route(
+                &*database,
+                &dispatcher,
+                &join,
+                policy,
+                "https://games.example.test",
+                now,
+            )
+            .await;
+            events.recv_async().await.expect("join refresh publishes");
+
+            let mut start = RouteRequest::from_path(
+                &format!("/lobbies/{lobby_id}/action"),
+                RequestInfo::default(),
+            );
+            start.method = "POST".parse().expect("POST parses");
+            start.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            start.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                creator_session.expose().to_string(),
+            );
+            start.body = Some(Arc::new("action=START".into()));
+            let started = lobby_action_route(
+                &*database,
+                &dispatcher,
+                &start,
+                policy,
+                "https://games.example.test",
+                now,
+            )
+            .await;
+            events.recv_async().await.expect("start refresh publishes");
+            assert!(
+                started
+                    .response
+                    .navigation
+                    .as_ref()
+                    .expect("game navigation")
+                    .location()
+                    .starts_with("/games/")
+            );
+        });
     }
 
     #[test]
@@ -3976,14 +4144,21 @@ mod tests {
                 .await
                 .expect("session creates");
             let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
             let mut get = RouteRequest::from_path("/lobbies/new", RequestInfo::default());
             get.cookies.insert(
                 SESSION_COOKIE_NAME.to_string(),
                 session.expose().to_string(),
             );
-            let page =
-                lobby_create_route(&*database, &get, policy, "https://games.example.test", now)
-                    .await;
+            let page = lobby_create_route(
+                &*database,
+                &dispatcher,
+                &get,
+                policy,
+                "https://games.example.test",
+                now,
+            )
+            .await;
             assert!(page.response.navigation.is_none());
             assert!(
                 page.primary
@@ -4004,9 +4179,15 @@ mod tests {
             post.body = Some(Arc::new(
                 "action=CREATE&max_players=4&board_size=15&tile_set_count=1&first_player_policy=CREATOR".into(),
             ));
-            let created =
-                lobby_create_route(&*database, &post, policy, "https://games.example.test", now)
-                    .await;
+            let created = lobby_create_route(
+                &*database,
+                &dispatcher,
+                &post,
+                policy,
+                "https://games.example.test",
+                now,
+            )
+            .await;
             let canonical = created
                 .response
                 .navigation
@@ -4047,6 +4228,7 @@ mod tests {
                 .await
                 .expect("session creates");
             let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
             let (lobby_id, _token) = create_lobby(
                 &*database,
                 &creator,
@@ -4088,6 +4270,7 @@ mod tests {
             ));
             let updated = lobby_action_route(
                 &*database,
+                &dispatcher,
                 &update,
                 policy,
                 "https://games.example.test",
@@ -4116,6 +4299,7 @@ mod tests {
             cancel.body = Some(Arc::new("action=CANCEL".into()));
             let cancelled = lobby_action_route(
                 &*database,
+                &dispatcher,
                 &cancel,
                 policy,
                 "https://games.example.test",
