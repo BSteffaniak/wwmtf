@@ -3052,16 +3052,16 @@ fn confirmed_command_forms(
 fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
     let viewer_score = game
         .view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player == game.viewer_player)
-        .map_or(0, |(_, score)| *score);
+        .find(|player| player.player_id == game.viewer_player)
+        .map_or(0, |player| player.score);
     let opponent_score = game
         .view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player != game.viewer_player)
-        .map_or(0, |(_, score)| *score);
+        .find(|player| player.player_id != game.viewer_player)
+        .map_or(0, |player| player.score);
     let opponent_active = !game.completed && game.view.active_player != game.viewer_player;
     let viewer_active = !game.completed && game.view.active_player == game.viewer_player;
     let turn = if game.completed {
@@ -3142,17 +3142,17 @@ fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
 fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
     let viewer_score = game
         .view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player == game.viewer_player)
-        .map_or(0, |(_, score)| *score);
+        .find(|player| player.player_id == game.viewer_player)
+        .map_or(0, |player| player.score);
     let opponent = game
         .view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player != game.viewer_player)
+        .find(|player| player.player_id != game.viewer_player)
         .copied();
-    let opponent_score = opponent.map_or(0, |(_, score)| score);
+    let opponent_score = opponent.map_or(0, |player| player.score);
     let outcome = match game.view.winner {
         None => "Tie game".to_string(),
         Some(winner) if winner == game.viewer_player => {
@@ -3166,7 +3166,7 @@ fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
         .copied()
         .unwrap_or_default();
     let opponent_adjustment = opponent
-        .and_then(|(player, _)| game.final_score_adjustments.get(&player).copied())
+        .and_then(|player| game.final_score_adjustments.get(&player.player_id).copied())
         .unwrap_or_default();
     container! {
         section id="completed-game-summary" width="100%" background=#ffffff color=#26382d border=(("#c8b88f", 2))

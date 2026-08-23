@@ -7,8 +7,8 @@ use hyperchad::{
 };
 use serde::{Deserialize, Serialize};
 use wwmtf_game_domain::{
-    Coordinate, GameEvent, GameState, GameStatus, PlayerId, RuleProfile, analyze_committed_play,
-    apply_event,
+    CompletionReason, Coordinate, GameEvent, GameState, GameStatus, PlayerId, RuleProfile,
+    analyze_committed_play, apply_event,
 };
 
 /// Premium kind rendered on one board square.
@@ -122,6 +122,16 @@ pub enum PendingMoveError {
     InvalidBlankLetter,
 }
 
+/// Public state for one participant, in durable seat order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerView {
+    pub player_id: PlayerId,
+    pub score: u32,
+    pub active: bool,
+    pub current_turn: bool,
+    pub leader: bool,
+}
+
 /// Public/private game view projection supplied to rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
@@ -130,10 +140,12 @@ pub struct GameView {
     pub board_size: u8,
     pub start: Coordinate,
     pub rack: Vec<(u16, char, u8)>,
-    pub scores: Vec<(PlayerId, u32)>,
+    pub players: Vec<PlayerView>,
     pub active_player: PlayerId,
     pub status: GameStatus,
     pub winner: Option<PlayerId>,
+    pub leaders: Vec<PlayerId>,
+    pub completion_reason: Option<CompletionReason>,
     pub revision: u64,
 }
 
@@ -175,14 +187,23 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
                 (tile.id.get(), letter, tile.points)
             })
             .collect(),
-        scores: state
-            .scores
+        players: state
+            .players
             .iter()
-            .map(|(&player, &score)| (player, score))
+            .map(|&player_id| PlayerView {
+                player_id,
+                score: state.scores[&player_id],
+                active: state.active_players.contains(&player_id),
+                current_turn: state.status == GameStatus::Active
+                    && state.active_player == player_id,
+                leader: state.leaders.contains(&player_id),
+            })
             .collect(),
         active_player: state.active_player,
         status: state.status,
         winner: state.winner,
+        leaders: state.leaders.iter().copied().collect(),
+        completion_reason: state.completion_reason,
         revision: state.revision,
     })
 }
@@ -518,15 +539,15 @@ pub fn rack_component(view: &GameView) -> Container {
 #[must_use]
 pub fn status_component(view: &GameView, viewer: PlayerId) -> Container {
     let viewer_score = view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player == viewer)
-        .map_or(0, |(_, score)| *score);
+        .find(|player| player.player_id == viewer)
+        .map_or(0, |player| player.score);
     let opponent_score = view
-        .scores
+        .players
         .iter()
-        .find(|(player, _)| *player != viewer)
-        .map_or(0, |(_, score)| *score);
+        .find(|player| player.player_id != viewer)
+        .map_or(0, |player| player.score);
     container! {
         section id="game-status" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="12px" {
             div flex=1 background=#ffffff border=(("#ded8c9", 1)) border-radius="12px" padding-y=14 padding-x=18 gap="4px" {
@@ -671,8 +692,8 @@ mod tests {
     }
 
     #[test]
-    fn viewer_projection_contains_only_their_private_rack() {
-        let players = [PlayerId::new(), PlayerId::new()];
+    fn viewer_projection_contains_only_their_private_rack_for_large_membership() {
+        let players = (0..12).map(|_| PlayerId::new()).collect::<Vec<_>>();
         let metadata = GameMetadata::new(
             GameId::new(),
             RuleProfileRef::new("classic-en", 1).expect("rules reference"),
@@ -681,7 +702,7 @@ mod tests {
         );
         let started = initialize_game(
             metadata,
-            players.to_vec(),
+            players.clone(),
             players[0],
             &initial_rule_profile(),
             4,
@@ -693,6 +714,18 @@ mod tests {
 
         assert_eq!(first.rack.len(), 7);
         assert_eq!(second.rack.len(), 7);
+        assert_eq!(first.players.len(), players.len());
+        assert_eq!(
+            first
+                .players
+                .iter()
+                .map(|player| player.player_id)
+                .collect::<Vec<_>>(),
+            players
+        );
+        assert!(first.players[0].active);
+        assert!(first.players[0].current_turn);
+        assert!(!first.players[0].leader);
         assert_ne!(first.rack, second.rack);
         assert!(game_view(&state, PlayerId::new()).is_none());
         let rendered = rack_component(&first)

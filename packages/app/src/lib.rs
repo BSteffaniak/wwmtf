@@ -40,7 +40,7 @@ pub use challenges::{
 };
 pub use components::{
     GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,
-    PremiumView, board_component, error_component, final_score_adjustments, game_view,
+    PlayerView, PremiumView, board_component, error_component, final_score_adjustments, game_view,
     move_history_component, move_history_view, pending_move_component, premium_square_component,
     rack_component, status_component, tile_component, viewer_turn_component,
 };
