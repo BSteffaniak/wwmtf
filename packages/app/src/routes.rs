@@ -28,9 +28,9 @@ use crate::{
     challenge_username, claim_oidc_attempt, cleanup_oidc_attempts, clear_move_plan,
     complete_legacy_google_migration, consume_oidc_attempt, create_lobby, create_oidc_attempt,
     create_shareable_invitation, decline_pending_challenge, error_component,
-    find_or_create_development_user, google_login_and_create_session, join_lobby, leave_lobby,
-    load_authenticated_dashboard, load_authorized_game_page, load_lobby, load_move_plan,
-    logout_session, move_history_component, redeem_shareable_invitation,
+    find_or_create_development_user, google_login_and_create_session, join_lobby, join_lobby_by_id,
+    leave_lobby, load_authenticated_dashboard, load_authorized_game_page, load_lobby,
+    load_move_plan, logout_session, move_history_component, redeem_shareable_invitation,
     redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan, start_lobby,
     update_lobby_settings,
 };
@@ -1660,23 +1660,22 @@ async fn invitation_route(
     }
 }
 
-fn lobby_invitation_url(public_base_url: &str, token: &str) -> String {
+fn lobby_invitation_url(public_base_url: &str, lobby_id: &str) -> String {
     format!(
-        "{}/lobbies/join?invite={token}",
+        "{}/lobbies/join/{lobby_id}",
         public_base_url.trim_end_matches('/')
     )
 }
 
-fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&str>) -> Container {
+fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) -> Container {
     let is_creator = lobby.creator_user_id == viewer_user_id;
     let first_player = match &lobby.settings.first_player {
         FirstPlayerPolicy::Random => "Random".to_string(),
         FirstPlayerPolicy::Creator => "Creator".to_string(),
         FirstPlayerPolicy::Chosen(user_id) => format!("Chosen member: {user_id}"),
     };
-    let invitation_token = invitation_url
-        .and_then(|url| url.split_once("?invite=").map(|(_, token)| token))
-        .unwrap_or_default();
+    let invitation_url =
+        (lobby.status == "OPEN").then(|| lobby_invitation_url(public_base_url, &lobby.lobby_id));
     container! {
         div id="app-page" min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
             main id="multiplayer-lobby" width="100%" max-width="760px" background=#ffffff
@@ -1690,7 +1689,7 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&s
                     span { (lobby.settings.tile_set_count) " complete tile set(s)" }
                     span { "First player: " (first_player) }
                 }
-                @if let Some(invitation_url) = invitation_url {
+                @if let Some(invitation_url) = invitation_url.as_deref() {
                     section id="lobby-invitation" background=#e8f1e3 padding=14 border-radius="10px" gap="5px" {
                         span font-weight=bold { "Private invitation" }
                         anchor href=(invitation_url) overflow-wrap="anywhere" color="#36512e" { (invitation_url) }
@@ -1714,7 +1713,6 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&s
                 } @else if is_creator {
                     form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) gap="8px" {
                         input type=hidden name="action" value="UPDATE";
-                        input type=hidden name="invitation_token" value=(invitation_token);
                         h2 { "Edit lobby settings" }
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
                             div flex=1 min-width="180px" gap="4px" {
@@ -1748,21 +1746,75 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&s
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
                         form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
                             input type=hidden name="action" value="START";
-                            input type=hidden name="invitation_token" value=(invitation_token);
                             button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Start game" }
                         }
                         form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
                             input type=hidden name="action" value="CANCEL";
-                            input type=hidden name="invitation_token" value=(invitation_token);
                             button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Cancel lobby" }
                         }
                     }
                 } @else {
                     form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
                         input type=hidden name="action" value="LEAVE";
-                        input type=hidden name="invitation_token" value=(invitation_token);
                         button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Leave lobby" }
                     }
+                }
+            }
+        }
+    }
+    .into()
+}
+
+fn view_with_internal_navigation(container: Container, path: String) -> View {
+    View::builder()
+        .with_primary(container)
+        .with_response(ResponseMetadata {
+            cookies: Vec::new(),
+            navigation: Some(
+                hyperchad::renderer::ResponseNavigation::internal(path)
+                    .expect("application lobby paths are valid internal navigation"),
+            ),
+        })
+        .build()
+}
+
+fn lobby_creation_page() -> Container {
+    container! {
+        div id="app-page" min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
+            main width="100%" max-width="760px" background=#ffffff border=(("#ded8c9", 1))
+                border-radius="18px" padding="28px" gap="18px" {
+                anchor href="/" color=#526243 { "← Dashboard" }
+                h1 { "Create a multiplayer lobby" }
+                span color=#5d6258 { "Choose the initial settings. You can change them again before starting the game." }
+                form method="post" action="/lobbies/create" gap="14px" {
+                    input type=hidden name="action" value="CREATE";
+                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+                        div flex=1 min-width="180px" gap="4px" {
+                            span font-weight=bold { "Maximum players" }
+                            span color=#5d6258 font-size="12px" { "Total lobby capacity, including you." }
+                            input type=text name="max_players" value="4" placeholder="For example, 4" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                        }
+                        div flex=1 min-width="180px" gap="4px" {
+                            span font-weight=bold { "Board size" }
+                            span color=#5d6258 font-size="12px" { "Width and height of the square board." }
+                            input type=text name="board_size" value="15" placeholder="For example, 15" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                        }
+                        div flex=1 min-width="180px" gap="4px" {
+                            span font-weight=bold { "Tile sets" }
+                            span color=#5d6258 font-size="12px" { "Number of complete 100-tile distributions." }
+                            input type=text name="tile_set_count" value="1" placeholder="For example, 1" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                        }
+                    }
+                    div gap="4px" {
+                        span font-weight=bold { "Who takes the first turn?" }
+                        span color=#5d6258 font-size="12px" { "Choose yourself or select a random joined member when the game starts." }
+                        select name="first_player_policy" {
+                            option value="CREATOR" { "Creator starts" }
+                            option value="RANDOM" { "Random member starts" }
+                        }
+                    }
+                    button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
+                        border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Create lobby" }
                 }
             }
         }
@@ -1776,15 +1828,15 @@ async fn lobby_create_route(
     policy: GameCreationPolicy,
     public_base_url: &str,
     now: OffsetDateTime,
-) -> Container {
+) -> View {
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return product_error_page("Sign in required", "Sign in before creating a lobby.");
+        return View::from(product_error_page(
+            "Sign in required",
+            "Sign in before creating a lobby.",
+        ));
     };
     if request.method.as_ref() != "POST" {
-        return product_error_page(
-            "Lobby unavailable",
-            "Lobby creation requires a POST request.",
-        );
+        return View::from(lobby_creation_page());
     }
     let form = request
         .parse_form::<LobbyActionForm>()
@@ -1807,15 +1859,17 @@ async fn lobby_create_route(
     )
     .await
     {
-        Ok((lobby_id, token)) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(lobby) => lobby_page(
-                &lobby,
-                &user_id,
-                Some(&lobby_invitation_url(public_base_url, token.expose())),
+        Ok((lobby_id, _token)) => match load_lobby(database, &lobby_id, &user_id).await {
+            Ok(lobby) => view_with_internal_navigation(
+                lobby_page(&lobby, &user_id, public_base_url),
+                format!("/lobbies/{lobby_id}"),
             ),
-            Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+            Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
-        Err(error) => product_error_page("Lobby could not be created", &error.to_string()),
+        Err(error) => View::from(product_error_page(
+            "Lobby could not be created",
+            &error.to_string(),
+        )),
     }
 }
 
@@ -1823,37 +1877,66 @@ async fn lobby_join_route(
     database: &dyn Database,
     request: &RouteRequest,
     policy: GameCreationPolicy,
+    public_base_url: &str,
     now: OffsetDateTime,
-) -> Container {
-    let token = request
-        .query
-        .get("invite")
-        .cloned()
-        .or_else(|| {
-            request
-                .parse_form::<LobbyActionForm>()
-                .ok()
-                .map(|form| form.invitation_token)
-        })
-        .unwrap_or_default();
+) -> View {
+    let lobby_id = request
+        .path
+        .strip_prefix("/lobbies/join/")
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let legacy_token = request.query.get("invite").cloned().or_else(|| {
+        request
+            .parse_form::<LobbyActionForm>()
+            .ok()
+            .map(|form| form.invitation_token)
+    });
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return product_error_page("Sign in required", "Sign in before joining this lobby.");
+        return View::from(product_error_page(
+            "Sign in required",
+            "Sign in before joining this lobby.",
+        ));
     };
     if request.method.as_ref() != "POST" {
-        return container! { div id="app-page" padding=24 { form method="post" action=(format!("/lobbies/join?invite={token}")) { button type=submit { "Join multiplayer lobby" } } } }.into();
+        let action = lobby_id.as_ref().map_or_else(
+            || "/lobbies/join".to_string(),
+            |lobby_id| format!("/lobbies/join/{lobby_id}"),
+        );
+        return View::from(container! {
+            div id="app-page" padding=24 {
+                form method="post" action=(action) gap="10px" {
+                    span { "Join this private multiplayer lobby?" }
+                    @if let Some(token) = legacy_token.as_deref() {
+                        input type=hidden name="invitation_token" value=(token);
+                    }
+                    button type=submit { "Join multiplayer lobby" }
+                }
+            }
+        });
     }
-    match join_lobby(database, &token, &user_id, policy, now).await {
+    let result = if let Some(lobby_id) = lobby_id {
+        join_lobby_by_id(database, &lobby_id, &user_id, policy, now).await
+    } else if let Some(token) = legacy_token {
+        join_lobby(database, &token, &user_id, policy, now).await
+    } else {
+        Err(crate::LobbyError::Unavailable)
+    };
+    match result {
         Ok(lobby_id) => match load_lobby(database, &lobby_id, &user_id).await {
-            Ok(lobby) => lobby_page(&lobby, &user_id, None),
-            Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+            Ok(lobby) => view_with_internal_navigation(
+                lobby_page(&lobby, &user_id, public_base_url),
+                format!("/lobbies/{lobby_id}"),
+            ),
+            Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
-        Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
+        Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
     }
 }
 
 async fn lobby_route(
     database: &dyn Database,
     request: &RouteRequest,
+    public_base_url: &str,
     now: OffsetDateTime,
 ) -> Container {
     let lobby_id = request
@@ -1865,7 +1948,7 @@ async fn lobby_route(
         return product_error_page("Sign in required", "Sign in to view this lobby.");
     };
     match load_lobby(database, lobby_id, &user_id).await {
-        Ok(lobby) => lobby_page(&lobby, &user_id, None),
+        Ok(lobby) => lobby_page(&lobby, &user_id, public_base_url),
         Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
     }
 }
@@ -1876,20 +1959,26 @@ async fn lobby_action_route(
     policy: GameCreationPolicy,
     public_base_url: &str,
     now: OffsetDateTime,
-) -> Container {
+) -> View {
     let lobby_id = request
         .path
         .strip_prefix("/lobbies/")
         .unwrap_or_default()
         .trim_end_matches("/action");
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return product_error_page("Sign in required", "Sign in to update this lobby.");
+        return View::from(product_error_page(
+            "Sign in required",
+            "Sign in to update this lobby.",
+        ));
     };
     let Ok(form) = request.parse_form::<LobbyActionForm>() else {
-        return product_error_page("Lobby unavailable", "The lobby action was invalid.");
+        return View::from(product_error_page(
+            "Lobby unavailable",
+            "The lobby action was invalid.",
+        ));
     };
-    let invitation_url = (!form.invitation_token.is_empty()).then(|| form.invitation_token.clone());
-    let result = match form.action.as_str() {
+    let action = form.action.as_str();
+    let result = match action {
         "UPDATE" => update_lobby_settings(
             database,
             lobby_id,
@@ -1916,24 +2005,33 @@ async fn lobby_action_route(
         "LEAVE" => leave_lobby(database, lobby_id, &user_id, now)
             .await
             .map(|()| None),
-        _ => return product_error_page("Lobby unavailable", "The lobby action is unknown."),
+        _ => {
+            return View::from(product_error_page(
+                "Lobby unavailable",
+                "The lobby action is unknown.",
+            ));
+        }
     };
     match result {
-        Ok(Some(game_id)) => invitation_joined_page(game_id),
+        Ok(Some(game_id)) => view_with_internal_navigation(
+            invitation_joined_page(game_id),
+            format!("/games/{game_id}"),
+        ),
+        Ok(None) if matches!(action, "CANCEL" | "LEAVE") => {
+            let dashboard = dashboard_route(database, request, now).await;
+            view_with_internal_navigation(dashboard, "/".to_string())
+        }
         Ok(None) => match load_lobby(database, lobby_id, &user_id).await {
-            Ok(lobby) => {
-                let link = invitation_url.as_deref().map(|token| {
-                    if token.starts_with("http://") || token.starts_with("https://") {
-                        token.to_string()
-                    } else {
-                        lobby_invitation_url(public_base_url, token)
-                    }
-                });
-                lobby_page(&lobby, &user_id, link.as_deref())
-            }
-            Err(_) => dashboard_route(database, request, now).await,
+            Ok(lobby) => view_with_internal_navigation(
+                lobby_page(&lobby, &user_id, public_base_url),
+                format!("/lobbies/{lobby_id}"),
+            ),
+            Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
-        Err(error) => product_error_page("Lobby action failed", &error.to_string()),
+        Err(error) => View::from(product_error_page(
+            "Lobby action failed",
+            &error.to_string(),
+        )),
     }
 }
 
@@ -2016,22 +2114,28 @@ pub fn create_product_router(
                 &public_base_url,
                 OffsetDateTime::now_utc(),
             )
-            .await) as Result<Container, Box<dyn std::error::Error>>
+            .await) as Result<View, Box<dyn std::error::Error>>
         }
     });
     let join_database = database.clone();
-    router.add_route_result("/lobbies/join", move |request: RouteRequest| {
-        let database = join_database.clone();
-        async move {
-            Ok(lobby_join_route(
-                &*database,
-                &request,
-                lobby_policy,
-                OffsetDateTime::now_utc(),
-            )
-            .await) as Result<Container, Box<dyn std::error::Error>>
-        }
-    });
+    let join_public_base_url = lobby_public_base_url.clone();
+    router.add_route_result(
+        RoutePath::LiteralPrefix("/lobbies/join".to_string()),
+        move |request: RouteRequest| {
+            let database = join_database.clone();
+            let public_base_url = join_public_base_url.clone();
+            async move {
+                Ok(lobby_join_route(
+                    &*database,
+                    &request,
+                    lobby_policy,
+                    &public_base_url,
+                    OffsetDateTime::now_utc(),
+                )
+                .await) as Result<View, Box<dyn std::error::Error>>
+            }
+        },
+    );
     let lobby_database = database.clone();
     let lobby_action_public_base_url = lobby_public_base_url;
     router.add_route_result(
@@ -2050,9 +2154,17 @@ pub fn create_product_router(
                     )
                     .await
                 } else {
-                    lobby_route(&*database, &request, OffsetDateTime::now_utc()).await
+                    View::from(
+                        lobby_route(
+                            &*database,
+                            &request,
+                            &public_base_url,
+                            OffsetDateTime::now_utc(),
+                        )
+                        .await,
+                    )
                 };
-                Ok(page) as Result<Container, Box<dyn std::error::Error>>
+                Ok(page) as Result<View, Box<dyn std::error::Error>>
             }
         },
     );
@@ -2682,37 +2794,11 @@ fn start_game_component() -> Container {
                 div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
                     border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
             }
-            form method="post" action="/lobbies/create" gap="8px" background=#e8f1e3 padding=14 border-radius="10px" {
+            section background=#e8f1e3 padding=14 border-radius="10px" gap="8px" {
                 h3 { "Create multiplayer lobby" }
                 span color=#5d6258 { "Configure a private lobby, share its invitation, and start when at least two members have joined." }
-                input type=hidden name="action" value="CREATE";
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
-                    div flex=1 min-width="180px" gap="4px" {
-                        span font-weight=bold { "Maximum players" }
-                        span color=#5d6258 font-size="12px" { "Total lobby capacity, including you." }
-                        input type=text name="max_players" value="4" placeholder="For example, 4" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                    }
-                    div flex=1 min-width="180px" gap="4px" {
-                        span font-weight=bold { "Board size" }
-                        span color=#5d6258 font-size="12px" { "Width and height of the square board." }
-                        input type=text name="board_size" value="15" placeholder="For example, 15" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                    }
-                    div flex=1 min-width="180px" gap="4px" {
-                        span font-weight=bold { "Tile sets" }
-                        span color=#5d6258 font-size="12px" { "Number of complete 100-tile distributions." }
-                        input type=text name="tile_set_count" value="1" placeholder="For example, 1" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                    }
-                }
-                div gap="4px" {
-                    span font-weight=bold { "Who takes the first turn?" }
-                    span color=#5d6258 font-size="12px" { "Choose yourself or select a random joined member when the game starts." }
-                    select name="first_player_policy" {
-                        option value="CREATOR" { "Creator starts" }
-                        option value="RANDOM" { "Random member starts" }
-                    }
-                }
-                button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
-                    border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Open multiplayer lobby" }
+                anchor href="/lobbies/new" background=#2f8a57 color=#ffffff padding-y=12 padding-x=16
+                    border=(("#246d45", 1)) border-radius="10px" { "Create multiplayer lobby" }
             }
             form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
                 fx-http-before-request=(dashboard_request_before())
@@ -3866,6 +3952,73 @@ mod tests {
     }
 
     #[test]
+    fn lobby_creation_uses_refreshable_get_and_canonical_navigation() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let creator = register(
+                &*database,
+                "refreshable-creator",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("creator registers");
+            let session = create_session(&*database, &creator, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let mut get = RouteRequest::from_path("/lobbies/new", RequestInfo::default());
+            get.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            let page =
+                lobby_create_route(&*database, &get, policy, "https://games.example.test", now)
+                    .await;
+            assert!(page.response.navigation.is_none());
+            assert!(
+                page.primary
+                    .as_ref()
+                    .expect("creation page")
+                    .display_to_string(false, false)
+                    .expect("renders")
+                    .contains("Create a multiplayer lobby")
+            );
+
+            let mut post = get;
+            post.path = "/lobbies/create".to_string();
+            post.method = "POST".parse().expect("POST parses");
+            post.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            post.body = Some(Arc::new(
+                "action=CREATE&max_players=4&board_size=15&tile_set_count=1&first_player_policy=CREATOR".into(),
+            ));
+            let created =
+                lobby_create_route(&*database, &post, policy, "https://games.example.test", now)
+                    .await;
+            let canonical = created
+                .response
+                .navigation
+                .as_ref()
+                .expect("canonical navigation")
+                .location();
+            assert!(canonical.starts_with("/lobbies/"));
+            let rendered = created
+                .primary
+                .as_ref()
+                .expect("lobby page")
+                .display_to_string(false, false)
+                .expect("renders");
+            assert!(rendered.contains("/lobbies/join/"));
+            assert!(!rendered.contains("?invite="));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
     fn creator_can_cancel_lobby_after_settings_update_and_share_link_remains_visible() {
         block_on(async {
             let database = test_database().await;
@@ -3882,7 +4035,7 @@ mod tests {
                 .await
                 .expect("session creates");
             let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
-            let (lobby_id, token) = create_lobby(
+            let (lobby_id, _token) = create_lobby(
                 &*database,
                 &creator,
                 LobbySettings {
@@ -3897,7 +4050,7 @@ mod tests {
             )
             .await
             .expect("lobby creates");
-            let share_url = lobby_invitation_url("https://games.example.test", token.expose());
+            let share_url = lobby_invitation_url("https://games.example.test", &lobby_id);
             let mut update = RouteRequest::from_path(
                 &format!("/lobbies/{lobby_id}/action"),
                 RequestInfo::default(),
@@ -3912,7 +4065,7 @@ mod tests {
                 session.expose().to_string(),
             );
             update.body = Some(Arc::new(
-                format!("action=UPDATE&max_players=6&board_size=21&tile_set_count=2&first_player_policy=CREATOR&invitation_token={}", token.expose()).into(),
+                "action=UPDATE&max_players=6&board_size=21&tile_set_count=2&first_player_policy=CREATOR".into(),
             ));
             let updated = lobby_action_route(
                 &*database,
@@ -3921,15 +4074,26 @@ mod tests {
                 "https://games.example.test",
                 now,
             )
-            .await
-            .display_to_string(false, false)
-            .expect("updated lobby renders");
-            assert!(updated.contains(&share_url));
+            .await;
+            let updated_html = updated
+                .primary
+                .as_ref()
+                .expect("updated lobby is primary")
+                .display_to_string(false, false)
+                .expect("updated lobby renders");
+            assert!(updated_html.contains(&share_url));
+            let expected_lobby_path = format!("/lobbies/{lobby_id}");
+            assert_eq!(
+                updated
+                    .response
+                    .navigation
+                    .as_ref()
+                    .map(hyperchad::renderer::ResponseNavigation::location),
+                Some(expected_lobby_path.as_str())
+            );
 
             let mut cancel = update;
-            cancel.body = Some(Arc::new(
-                format!("action=CANCEL&invitation_token={}", token.expose()).into(),
-            ));
+            cancel.body = Some(Arc::new("action=CANCEL".into()));
             let cancelled = lobby_action_route(
                 &*database,
                 &cancel,
@@ -3937,10 +4101,22 @@ mod tests {
                 "https://games.example.test",
                 now,
             )
-            .await
-            .display_to_string(false, false)
-            .expect("cancel response renders");
-            assert!(!cancelled.contains("only the lobby creator"));
+            .await;
+            let cancelled_html = cancelled
+                .primary
+                .as_ref()
+                .expect("dashboard is primary")
+                .display_to_string(false, false)
+                .expect("cancel response renders");
+            assert!(!cancelled_html.contains("only the lobby creator"));
+            assert_eq!(
+                cancelled
+                    .response
+                    .navigation
+                    .as_ref()
+                    .map(hyperchad::renderer::ResponseNavigation::location),
+                Some("/")
+            );
             assert_eq!(
                 database
                     .select("game_lobbies")

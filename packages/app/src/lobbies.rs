@@ -244,6 +244,58 @@ pub async fn join_lobby(
     Ok(lobby_id)
 }
 
+/// Joins an open lobby through its unguessable durable lobby identity.
+///
+/// # Errors
+///
+/// Returns [`LobbyError::Unavailable`] for unknown, expired, duplicate, closed, or full lobbies.
+pub async fn join_lobby_by_id(
+    db: &dyn Database,
+    lobby_id: &str,
+    user_id: &str,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> Result<String, LobbyError> {
+    let tx = db.begin_transaction().await?;
+    let rows = tx
+        .select("game_lobbies")
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("status", "OPEN")
+        .execute(&*tx)
+        .await?;
+    let row = rows.first().ok_or(LobbyError::Unavailable)?;
+    let settings = settings(row)?;
+    policy.validate(&settings)?;
+    if signed(row, "invitation_expires_at_ms")? <= timestamp_ms(now)? {
+        return Err(LobbyError::Unavailable);
+    }
+    let members = member_rows(&*tx, lobby_id).await?;
+    if members.len() >= settings.max_players
+        || members.iter().any(|member| member.user_id == user_id)
+    {
+        return Err(LobbyError::Unavailable);
+    }
+    insert_member(&*tx, lobby_id, user_id, members.len(), timestamp_ms(now)?).await?;
+    let revision = signed(row, "revision")?;
+    let updated = tx
+        .update("game_lobbies")
+        .value(
+            "revision",
+            revision.checked_add(1).ok_or(LobbyError::Invalid)?,
+        )
+        .value("updated_at_ms", timestamp_ms(now)?)
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("status", "OPEN")
+        .where_eq("revision", revision)
+        .execute(&*tx)
+        .await?;
+    if updated.len() != 1 {
+        return Err(LobbyError::Conflict);
+    }
+    tx.commit().await?;
+    Ok(lobby_id.to_string())
+}
+
 /// Loads a lobby for one current member.
 ///
 /// # Errors
@@ -663,6 +715,58 @@ mod tests {
     use super::*;
     use crate::{migrate_app, recover_game, register};
     use futures_lite::future::block_on;
+
+    #[test]
+    fn durable_lobby_identity_joins_only_while_open() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let creator = register(&*db, "durable-creator", "correct horse battery staple", now)
+                .await
+                .expect("creator");
+            let joiner = register(&*db, "durable-joiner", "another correct horse battery", now)
+                .await
+                .expect("joiner");
+            let late = register(&*db, "durable-late", "third correct horse battery", now)
+                .await
+                .expect("late");
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let (lobby_id, _) = create_lobby(
+                &*db,
+                &creator,
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby creates");
+            assert_eq!(
+                join_lobby_by_id(&*db, &lobby_id, &joiner, policy, now)
+                    .await
+                    .expect("durable identity joins"),
+                lobby_id
+            );
+            start_lobby(&*db, &lobby_id, &creator, policy, now, 17)
+                .await
+                .expect("starts");
+            assert!(matches!(
+                join_lobby_by_id(&*db, &lobby_id, &late, policy, now).await,
+                Err(LobbyError::Unavailable)
+            ));
+        });
+    }
 
     #[test]
     fn lobby_secrets_are_redacted_and_never_persisted_or_returned_in_authorized_views() {

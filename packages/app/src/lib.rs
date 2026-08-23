@@ -69,8 +69,8 @@ pub use journal::{
 };
 pub use lobbies::{
     FirstPlayerPolicy, GameCreationPolicy, GameLobby, LobbyError, LobbyInvitationToken,
-    LobbyMember, LobbySettings, cancel_lobby, create_lobby, join_lobby, leave_lobby, load_lobby,
-    start_lobby, update_lobby_settings,
+    LobbyMember, LobbySettings, cancel_lobby, create_lobby, join_lobby, join_lobby_by_id,
+    leave_lobby, load_lobby, start_lobby, update_lobby_settings,
 };
 pub use migrations::{app_migrations, migrate_app};
 pub use move_plans::{MovePlanError, clear_move_plan, load_move_plan, save_move_plan};
