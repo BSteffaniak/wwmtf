@@ -353,18 +353,35 @@ pub async fn cancel_lobby(
     creator_user_id: &str,
     now: OffsetDateTime,
 ) -> Result<(), LobbyError> {
-    let updated = db
-        .update("game_lobbies")
-        .value("status", "CANCELLED")
-        .value("updated_at_ms", timestamp_ms(now)?)
+    let tx = db.begin_transaction().await?;
+    let rows = tx
+        .select("game_lobbies")
         .where_eq("lobby_id", lobby_id)
-        .where_eq("creator_user_id", creator_user_id)
         .where_eq("status", "OPEN")
-        .execute(db)
+        .execute(&*tx)
         .await?;
-    if updated.len() != 1 {
+    let row = rows.first().ok_or(LobbyError::Unavailable)?;
+    if string(row, "creator_user_id")? != creator_user_id {
         return Err(LobbyError::Unauthorized);
     }
+    let revision = signed(row, "revision")?;
+    let updated = tx
+        .update("game_lobbies")
+        .value("status", "CANCELLED")
+        .value(
+            "revision",
+            revision.checked_add(1).ok_or(LobbyError::Invalid)?,
+        )
+        .value("updated_at_ms", timestamp_ms(now)?)
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("status", "OPEN")
+        .where_eq("revision", revision)
+        .execute(&*tx)
+        .await?;
+    if updated.len() != 1 {
+        return Err(LobbyError::Conflict);
+    }
+    tx.commit().await?;
     Ok(())
 }
 
