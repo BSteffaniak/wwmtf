@@ -1711,16 +1711,35 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, invitation_url: Option<&s
                 } @else if is_creator {
                     form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) gap="8px" {
                         input type=hidden name="action" value="UPDATE";
-                        input type=text name="max_players" value=(lobby.settings.max_players);
-                        input type=text name="board_size" value=(lobby.settings.board_size);
-                        input type=text name="tile_set_count" value=(lobby.settings.tile_set_count);
-                        select name="first_player_policy" {
-                            option value="CREATOR" { "Creator starts" }
-                            option value="RANDOM" { "Random member starts" }
-                            option value="CHOSEN" { "Choose a member" }
+                        h2 { "Edit lobby settings" }
+                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+                            div flex=1 min-width="180px" gap="4px" {
+                                span font-weight=bold { "Maximum players" }
+                                input type=text name="max_players" value=(lobby.settings.max_players) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                            }
+                            div flex=1 min-width="180px" gap="4px" {
+                                span font-weight=bold { "Board size" }
+                                input type=text name="board_size" value=(lobby.settings.board_size) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                            }
+                            div flex=1 min-width="180px" gap="4px" {
+                                span font-weight=bold { "Tile sets" }
+                                input type=text name="tile_set_count" value=(lobby.settings.tile_set_count) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                            }
                         }
-                        input type=text name="chosen_first_user_id" placeholder="Chosen member user ID";
-                        button type=submit { "Save settings" }
+                        div gap="4px" {
+                            span font-weight=bold { "Who takes the first turn?" }
+                            select name="first_player_policy" {
+                                option value="CREATOR" { "Creator starts" }
+                                option value="RANDOM" { "Random member starts" }
+                                option value="CHOSEN" { "Choose a joined member" }
+                            }
+                        }
+                        div gap="4px" {
+                            span font-weight=bold { "Chosen member" }
+                            span color=#5d6258 font-size="12px" { "Only used when ‘Choose a joined member’ is selected." }
+                            input type=text name="chosen_first_user_id" placeholder="Joined member user ID" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                        }
+                        button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Save settings" }
                     }
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
                         form method="post" action=(format!("/lobbies/{}/action", lobby.lobby_id)) {
@@ -2645,12 +2664,30 @@ fn start_game_component() -> Container {
                 h3 { "Create multiplayer lobby" }
                 span color=#5d6258 { "Configure a private lobby, share its invitation, and start when at least two members have joined." }
                 input type=hidden name="action" value="CREATE";
-                input type=text name="max_players" value="4" placeholder="Maximum players";
-                input type=text name="board_size" value="15" placeholder="Board size";
-                input type=text name="tile_set_count" value="1" placeholder="Tile sets";
-                select name="first_player_policy" {
-                    option value="CREATOR" { "Creator starts" }
-                    option value="RANDOM" { "Random member starts" }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+                    div flex=1 min-width="180px" gap="4px" {
+                        span font-weight=bold { "Maximum players" }
+                        span color=#5d6258 font-size="12px" { "Total lobby capacity, including you." }
+                        input type=text name="max_players" value="4" placeholder="For example, 4" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                    }
+                    div flex=1 min-width="180px" gap="4px" {
+                        span font-weight=bold { "Board size" }
+                        span color=#5d6258 font-size="12px" { "Width and height of the square board." }
+                        input type=text name="board_size" value="15" placeholder="For example, 15" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                    }
+                    div flex=1 min-width="180px" gap="4px" {
+                        span font-weight=bold { "Tile sets" }
+                        span color=#5d6258 font-size="12px" { "Number of complete 100-tile distributions." }
+                        input type=text name="tile_set_count" value="1" placeholder="For example, 1" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                    }
+                }
+                div gap="4px" {
+                    span font-weight=bold { "Who takes the first turn?" }
+                    span color=#5d6258 font-size="12px" { "Choose yourself or select a random joined member when the game starts." }
+                    select name="first_player_policy" {
+                        option value="CREATOR" { "Creator starts" }
+                        option value="RANDOM" { "Random member starts" }
+                    }
                 }
                 button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
                     border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Open multiplayer lobby" }
