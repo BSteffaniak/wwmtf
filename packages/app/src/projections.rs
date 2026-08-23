@@ -614,6 +614,32 @@ fn latest_activity(
     )
 }
 
+async fn rebuild_missing_participant_summaries(
+    db: &dyn Database,
+    game_id: &str,
+) -> Result<(), ProjectionError> {
+    let game_id = game_id.parse().map_err(|_| ProjectionError::Malformed)?;
+    let state = crate::recover_game(db, game_id).await?;
+    let events = crate::load_events(db, game_id, 0)
+        .await?
+        .into_iter()
+        .map(|event| event.event)
+        .collect::<Vec<_>>();
+    let tx = db.begin_transaction().await?;
+    rebuild_game_projections(
+        &*tx,
+        &state,
+        &events,
+        time::OffsetDateTime::now_utc()
+            .unix_timestamp_nanos()
+            .try_into()
+            .unwrap_or(i64::MAX),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn game_participant_summaries(
     db: &dyn Database,
     game_id: &str,
@@ -631,11 +657,19 @@ async fn game_participant_summaries(
             .and_then(|value| value.as_i64())
             .unwrap_or(i64::MAX)
     });
-    let rows = db
+    let mut rows = db
         .select("game_participant_summaries")
         .where_eq("game_id", game_id)
         .execute(db)
         .await?;
+    if rows.len() != players.len() && !players.is_empty() {
+        rebuild_missing_participant_summaries(db, game_id).await?;
+        rows = db
+            .select("game_participant_summaries")
+            .where_eq("game_id", game_id)
+            .execute(db)
+            .await?;
+    }
     let mut participants = Vec::with_capacity(players.len());
     for player in &players {
         let user_id = string_column(player, "user_id")?;
@@ -717,6 +751,8 @@ pub enum ProjectionError {
     Revision,
     #[error("projection row is malformed")]
     Malformed,
+    #[error(transparent)]
+    Journal(#[from] crate::JournalError),
     #[error(transparent)]
     Profile(#[from] crate::ProfileError),
     #[error(transparent)]
@@ -800,6 +836,85 @@ mod tests {
             latest_activity(&history, &participants),
             "Carol played for 20 points"
         );
+    }
+
+    #[test]
+    fn missing_participant_projection_rows_repair_from_canonical_state() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("Turso opens");
+            migrate_app(&*db).await.expect("migrations run");
+            let game_id = GameId::new();
+            let players = [PlayerId::new(), PlayerId::new()];
+            let metadata = GameMetadata::new(
+                game_id,
+                RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+                DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+                OffsetDateTime::UNIX_EPOCH,
+            );
+            let started = initialize_game(
+                metadata,
+                players.to_vec(),
+                players[0],
+                &initial_rule_profile(),
+                7,
+            )
+            .expect("game starts");
+            let state = replay([&started]).expect("start replays");
+            db.insert("games")
+                .value("game_id", game_id.to_string())
+                .value("rules_id", "classic-en")
+                .value("rules_version", 1_i64)
+                .value("dictionary_id", "enable1-en")
+                .value("dictionary_version", 1_i64)
+                .value("dictionary_checksum", "sha256:test")
+                .value("canonical_revision", 0_i64)
+                .value("status", "ACTIVE")
+                .value("created_at_ms", 0_i64)
+                .value("updated_at_ms", 0_i64)
+                .execute(&*db)
+                .await
+                .expect("game inserts");
+            for (seat, player) in players.into_iter().enumerate() {
+                db.insert("game_players")
+                    .value("game_player_id", player.as_uuid().to_string())
+                    .value("game_id", game_id.to_string())
+                    .value("user_id", format!("user-{seat}"))
+                    .value("seat", i64::try_from(seat).expect("seat fits"))
+                    .execute(&*db)
+                    .await
+                    .expect("member inserts");
+            }
+            crate::append_events_transactionally(
+                &*db,
+                game_id,
+                "repair-start",
+                "repair-start-idem",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("start persists");
+            let tx = db.begin_transaction().await.expect("transaction");
+            rebuild_game_projections(&*tx, &state, std::slice::from_ref(&started), 0)
+                .await
+                .expect("projections build");
+            tx.commit().await.expect("commits");
+            db.delete("game_participant_summaries")
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("derived rows removed");
+
+            let summaries = user_game_summaries(&*db, "user-0")
+                .await
+                .expect("dashboard repairs");
+            assert_eq!(summaries[0].participants.len(), 2);
+        });
     }
 
     #[test]
