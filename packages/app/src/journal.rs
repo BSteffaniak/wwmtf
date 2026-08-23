@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use switchy_database::{
     Database,
     query::{FilterableQuery as _, SortDirection},
@@ -16,6 +17,8 @@ use wwmtf_game_domain::{
 
 const GAME_EVENT_PAYLOAD_VERSION: u32 = 3;
 const GAME_SNAPSHOT_PAYLOAD_VERSION: u32 = 3;
+const CLASSIC_RULE_GENERATOR_ID: &str = "scaled-classic-premiums";
+const CLASSIC_RULE_GENERATOR_VERSION: u32 = 1;
 
 /// Compatibility policy for canonical persisted payloads.
 ///
@@ -267,6 +270,9 @@ impl From<GameStateV2> for GameState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RuleProfileV3 {
     reference: RuleProfileRef,
+    generator_id: String,
+    generator_version: u32,
+    public_rules_checksum: String,
     board_size: u8,
     start: Coordinate,
     premiums: Vec<CoordinateEntry<PremiumSquare>>,
@@ -280,8 +286,12 @@ struct RuleProfileV3 {
 
 impl From<&RuleProfile> for RuleProfileV3 {
     fn from(profile: &RuleProfile) -> Self {
+        let public_rules_checksum = resolved_rules_checksum(profile);
         Self {
             reference: profile.reference.clone(),
+            generator_id: CLASSIC_RULE_GENERATOR_ID.to_string(),
+            generator_version: CLASSIC_RULE_GENERATOR_VERSION,
+            public_rules_checksum,
             board_size: profile.board_size,
             start: profile.start,
             premiums: coordinate_entries(&profile.premiums),
@@ -295,9 +305,20 @@ impl From<&RuleProfile> for RuleProfileV3 {
     }
 }
 
-impl From<RuleProfileV3> for RuleProfile {
-    fn from(profile: RuleProfileV3) -> Self {
-        Self {
+impl TryFrom<RuleProfileV3> for RuleProfile {
+    type Error = JournalError;
+
+    fn try_from(profile: RuleProfileV3) -> Result<Self, Self::Error> {
+        if profile.generator_id != CLASSIC_RULE_GENERATOR_ID
+            || profile.generator_version != CLASSIC_RULE_GENERATOR_VERSION
+        {
+            return Err(JournalError::UnsupportedRuleGenerator {
+                id: profile.generator_id,
+                version: profile.generator_version,
+            });
+        }
+        let checksum = profile.public_rules_checksum.clone();
+        let rules = Self {
             reference: profile.reference,
             board_size: profile.board_size,
             start: profile.start,
@@ -308,6 +329,56 @@ impl From<RuleProfileV3> for RuleProfile {
             minimum_tiles_for_exchange: profile.minimum_tiles_for_exchange,
             scoreless_turn_limit: profile.scoreless_turn_limit,
             dictionary_id: profile.dictionary_id,
+        };
+        rules
+            .validate()
+            .map_err(|_| JournalError::UnsupportedRules)?;
+        if resolved_rules_checksum(&rules) != checksum {
+            return Err(JournalError::RulesChecksumMismatch);
+        }
+        Ok(rules)
+    }
+}
+
+fn resolved_rules_checksum(profile: &RuleProfile) -> String {
+    let bytes = serde_json::to_vec(&RuleProfileV3Checksum::from(profile))
+        .expect("resolved rules are serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::from("sha256:"), |mut checksum, byte| {
+            use std::fmt::Write as _;
+            write!(checksum, "{byte:02x}").expect("writing to String is infallible");
+            checksum
+        })
+}
+
+#[derive(Serialize)]
+struct RuleProfileV3Checksum<'a> {
+    reference: &'a RuleProfileRef,
+    board_size: u8,
+    start: Coordinate,
+    premiums: Vec<CoordinateEntry<PremiumSquare>>,
+    tiles: &'a [TileDefinition],
+    rack_size: u8,
+    full_rack_bonus: u16,
+    minimum_tiles_for_exchange: u8,
+    scoreless_turn_limit: u8,
+    dictionary_id: &'a str,
+}
+
+impl<'a> From<&'a RuleProfile> for RuleProfileV3Checksum<'a> {
+    fn from(profile: &'a RuleProfile) -> Self {
+        Self {
+            reference: &profile.reference,
+            board_size: profile.board_size,
+            start: profile.start,
+            premiums: coordinate_entries(&profile.premiums),
+            tiles: &profile.tiles,
+            rack_size: profile.rack_size,
+            full_rack_bonus: profile.full_rack_bonus,
+            minimum_tiles_for_exchange: profile.minimum_tiles_for_exchange,
+            scoreless_turn_limit: profile.scoreless_turn_limit,
+            dictionary_id: &profile.dictionary_id,
         }
     }
 }
@@ -413,9 +484,11 @@ impl From<&GameEvent> for GameEventV3 {
     }
 }
 
-impl From<GameEventV3> for GameEvent {
-    fn from(event: GameEventV3) -> Self {
-        match event {
+impl TryFrom<GameEventV3> for GameEvent {
+    type Error = JournalError;
+
+    fn try_from(event: GameEventV3) -> Result<Self, Self::Error> {
+        Ok(match event {
             GameEventV3::GameStarted {
                 metadata,
                 players,
@@ -427,7 +500,7 @@ impl From<GameEventV3> for GameEvent {
                 metadata,
                 players,
                 first_player,
-                rules: rules.into(),
+                rules: rules.try_into()?,
                 racks,
                 bag,
             },
@@ -466,7 +539,7 @@ impl From<GameEventV3> for GameEvent {
                 leaders,
                 reason,
             },
-        }
+        })
     }
 }
 
@@ -512,11 +585,13 @@ impl From<&GameState> for GameStateV3 {
     }
 }
 
-impl From<GameStateV3> for GameState {
-    fn from(state: GameStateV3) -> Self {
-        Self {
+impl TryFrom<GameStateV3> for GameState {
+    type Error = JournalError;
+
+    fn try_from(state: GameStateV3) -> Result<Self, Self::Error> {
+        Ok(Self {
             metadata: state.metadata,
-            rules: state.rules.into(),
+            rules: state.rules.try_into()?,
             players: state.players,
             active_players: state.active_players,
             active_player: state.active_player,
@@ -531,7 +606,7 @@ impl From<GameStateV3> for GameState {
             completion_reason: state.completion_reason,
             status: state.status,
             revision: state.revision,
-        }
+        })
     }
 }
 
@@ -564,7 +639,7 @@ fn decode_game_event(version: u64, payload: &str) -> Result<GameEvent, JournalEr
     match version {
         1 => Ok(serde_json::from_str(payload)?),
         2 => Ok(serde_json::from_str::<GameEventV2>(payload)?.into()),
-        3 => Ok(serde_json::from_str::<GameEventV3>(payload)?.into()),
+        3 => serde_json::from_str::<GameEventV3>(payload)?.try_into(),
         _ => Err(JournalError::UnsupportedPayloadVersion(version)),
     }
 }
@@ -577,7 +652,7 @@ fn decode_game_state(version: u64, payload: &str) -> Result<GameState, JournalEr
     match version {
         1 => Ok(serde_json::from_str(payload)?),
         2 => Ok(serde_json::from_str::<GameStateV2>(payload)?.into()),
-        3 => Ok(serde_json::from_str::<GameStateV3>(payload)?.into()),
+        3 => serde_json::from_str::<GameStateV3>(payload)?.try_into(),
         _ => Err(JournalError::UnsupportedPayloadVersion(version)),
     }
 }
@@ -891,6 +966,15 @@ pub enum JournalError {
     /// Persisted payload version is not understood by this application.
     #[error("unsupported payload version {0}")]
     UnsupportedPayloadVersion(u64),
+    /// Persisted rules generator identity/version is unsupported.
+    #[error("unsupported rules generator {id} version {version}")]
+    UnsupportedRuleGenerator { id: String, version: u32 },
+    /// Persisted resolved rules failed validation.
+    #[error("persisted resolved rules are unsupported")]
+    UnsupportedRules,
+    /// Persisted resolved rules do not match their checksum.
+    #[error("persisted resolved rules checksum does not match")]
+    RulesChecksumMismatch,
     /// No canonical start event or snapshot exists.
     #[error("canonical journal is empty")]
     EmptyJournal,
@@ -1135,6 +1219,67 @@ mod tests {
                     .expect("fixture snapshot loads"),
                 Some(state)
             );
+        });
+    }
+
+    #[test]
+    fn version_three_rules_pin_generator_and_checksum_and_fail_closed() {
+        block_on(async {
+            let (db, game_id, state) = initialized_database().await;
+            let started = started_event(&state);
+            append_events_transactionally(
+                &*db,
+                game_id,
+                "rules-command",
+                "rules-idempotency",
+                0,
+                std::slice::from_ref(&started),
+            )
+            .await
+            .expect("start persists");
+            let rows = db
+                .select("game_journal")
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("journal loads");
+            let payload = string_column(&rows[0], "payload").expect("payload");
+            assert!(payload.contains(CLASSIC_RULE_GENERATOR_ID));
+            assert!(payload.contains("public_rules_checksum"));
+
+            let mut value: serde_json::Value = serde_json::from_str(&payload).expect("json");
+            value["GameStarted"]["rules"]["generator_version"] = serde_json::json!(99);
+            db.update("game_journal")
+                .value(
+                    "payload",
+                    serde_json::to_string(&value).expect("json encodes"),
+                )
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("payload changes");
+            assert!(matches!(
+                load_events(&*db, game_id, 0).await,
+                Err(JournalError::UnsupportedRuleGenerator { version: 99, .. })
+            ));
+
+            value["GameStarted"]["rules"]["generator_version"] =
+                serde_json::json!(CLASSIC_RULE_GENERATOR_VERSION);
+            value["GameStarted"]["rules"]["public_rules_checksum"] =
+                serde_json::json!("sha256:tampered");
+            db.update("game_journal")
+                .value(
+                    "payload",
+                    serde_json::to_string(&value).expect("json encodes"),
+                )
+                .where_eq("game_id", game_id.to_string())
+                .execute(&*db)
+                .await
+                .expect("payload changes");
+            assert!(matches!(
+                load_events(&*db, game_id, 0).await,
+                Err(JournalError::RulesChecksumMismatch)
+            ));
         });
     }
 
