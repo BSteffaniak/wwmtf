@@ -2101,6 +2101,22 @@ pub fn create_product_router(
             }) as Result<Content, Box<dyn std::error::Error>>
         }
     });
+    let lobby_new_database = database.clone();
+    let lobby_new_public_base_url = lobby_public_base_url.clone();
+    router.add_route_result("/lobbies/new", move |request: RouteRequest| {
+        let database = lobby_new_database.clone();
+        let public_base_url = lobby_new_public_base_url.clone();
+        async move {
+            Ok(lobby_create_route(
+                &*database,
+                &request,
+                lobby_policy,
+                &public_base_url,
+                OffsetDateTime::now_utc(),
+            )
+            .await) as Result<View, Box<dyn std::error::Error>>
+        }
+    });
     let lobby_create_database = database.clone();
     let lobby_create_public_base_url = lobby_public_base_url.clone();
     router.add_route_result("/lobbies/create", move |request: RouteRequest| {
@@ -5707,6 +5723,58 @@ mod tests {
                 .expect("panel error renders");
             assert!(panel_error.contains("game-definition-layer"));
             assert!(panel_error.contains("not authorized"));
+        });
+    }
+
+    #[test]
+    fn lobby_new_route_shows_creation_page_instead_of_treating_new_as_an_id() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::now_utc();
+            let creator = register(
+                &*database,
+                "new-route-creator",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("creator registers");
+            let session = create_session(&*database, &creator, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let dispatcher = Arc::new(crate::GameSharedStateDispatcher::new(database.clone()));
+            let router = create_product_router(
+                database,
+                dispatcher,
+                None,
+                None,
+                false,
+                crate::GameCreationPolicy::new(16, 64, 16).expect("policy"),
+                "csrf-test".to_string(),
+                "https://games.example.test".to_string(),
+                true,
+            );
+            let mut request = RouteRequest::from_path("/lobbies/new", RequestInfo::default());
+            request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            let content = router
+                .navigate(request)
+                .await
+                .expect("new lobby route resolves")
+                .expect("new lobby route returns content");
+            let Content::View(view) = content else {
+                panic!("new lobby route should return a view");
+            };
+            let page = view
+                .primary
+                .as_ref()
+                .expect("creation page is primary")
+                .display_to_string(false, false)
+                .expect("creation page renders");
+            assert!(page.contains("Create a multiplayer lobby"));
+            assert!(!page.contains("Lobby unavailable"));
         });
     }
 
