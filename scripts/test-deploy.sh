@@ -181,4 +181,11 @@ if grep -Fq '$http_origin $origin_allowed' "$ROOT_DIR/config/nginx.conf"; then
     exit 1
 fi
 
+grep -F 'WWMTF_MAX_GAME_PLAYERS = "16"' "$ROOT_DIR/fly.toml" >/dev/null
+grep -F 'WWMTF_MAX_BOARD_SIZE = "64"' "$ROOT_DIR/fly.toml" >/dev/null
+grep -F 'WWMTF_MAX_TILE_SETS = "16"' "$ROOT_DIR/fly.toml" >/dev/null
+grep -F 'WWMTF_MAX_GAME_PLAYERS=16' "$ROOT_DIR/Dockerfile" >/dev/null
+grep -F 'WWMTF_MAX_BOARD_SIZE=64' "$ROOT_DIR/Dockerfile" >/dev/null
+grep -F 'WWMTF_MAX_TILE_SETS=16' "$ROOT_DIR/Dockerfile" >/dev/null
+
 echo "deployment restart, secret, and Google smoke tests passed"

@@ -44,6 +44,9 @@ ENV WWMTF_PRODUCTION_MODE=true \
     WWMTF_PORT=8343 \
     WWMTF_DATABASE_PATH=/data/wwmtf.db \
     WWMTF_PUBLIC_BASE_URL=https://wwmtf.hyperchad.dev \
+    WWMTF_MAX_GAME_PLAYERS=16 \
+    WWMTF_MAX_BOARD_SIZE=64 \
+    WWMTF_MAX_TILE_SETS=16 \
     RUST_LOG=info,moosicbox_middleware::api_logger=off
 
 CMD ["./container-entrypoint.sh"]
