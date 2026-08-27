@@ -251,6 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = open_database()?;
     futures_lite::future::block_on(wwmtf_app::migrate_app(&*database))?;
     bootstrap_legacy_account(&*database)?;
+    let _ = wwmtf_game_domain::bundled_dictionary();
 
     let dispatcher =
         std::sync::Arc::new(wwmtf_app::GameSharedStateDispatcher::new(database.clone()));

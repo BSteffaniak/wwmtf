@@ -1,6 +1,6 @@
 //! Deterministic dictionary normalization and membership interfaces.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::LazyLock};
 
 use crate::{DictionaryRef, ProfileReferenceError};
 
@@ -13,6 +13,9 @@ pub const BUNDLED_DICTIONARY_VERSION: u32 = 1;
 /// SHA-256 of the exact bundled UTF-8 word-list bytes.
 pub const BUNDLED_DICTIONARY_SHA256: &str =
     "3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89";
+
+static BUNDLED_DICTIONARY: LazyLock<WordSetDictionary> =
+    LazyLock::new(|| WordSetDictionary::new(BUNDLED_WORDS.lines()));
 
 /// Read-only dictionary used by move validation.
 pub trait Dictionary {
@@ -62,7 +65,7 @@ impl Dictionary for WordSetDictionary {
 /// Unknown references fail closed so an application upgrade cannot silently replay a persisted
 /// game against different word data.
 #[must_use]
-pub fn dictionary(reference: &DictionaryRef) -> Option<WordSetDictionary> {
+pub fn dictionary(reference: &DictionaryRef) -> Option<&'static WordSetDictionary> {
     (reference.id() == BUNDLED_DICTIONARY_ID
         && reference.version() == BUNDLED_DICTIONARY_VERSION
         && reference.checksum() == format!("sha256:{BUNDLED_DICTIONARY_SHA256}"))
@@ -71,8 +74,8 @@ pub fn dictionary(reference: &DictionaryRef) -> Option<WordSetDictionary> {
 
 /// Loads the immutable dictionary bundled with this crate.
 #[must_use]
-pub fn bundled_dictionary() -> WordSetDictionary {
-    WordSetDictionary::new(BUNDLED_WORDS.lines())
+pub fn bundled_dictionary() -> &'static WordSetDictionary {
+    &BUNDLED_DICTIONARY
 }
 
 /// Returns the compatibility reference persisted with games using the bundled dictionary.
@@ -118,6 +121,8 @@ mod tests {
     fn bundled_dictionary_has_stable_identity_and_content() {
         let reference = bundled_dictionary_ref().expect("bundled reference is valid");
         let bundled = bundled_dictionary();
+
+        assert!(std::ptr::eq(bundled, bundled_dictionary(),));
 
         assert!(dictionary(&reference).is_some());
         let unsupported = DictionaryRef::new(

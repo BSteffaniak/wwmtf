@@ -105,7 +105,7 @@ async fn submit_in_transaction(
         return Err(GameServiceError::UnsupportedCompatibility);
     }
 
-    let result = decide_command(&current, actor, command, profile, &dictionary)?;
+    let result = decide_command(&current, actor, command, profile, dictionary)?;
     crate::append_events(
         tx,
         game_id,

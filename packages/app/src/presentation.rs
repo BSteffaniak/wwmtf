@@ -70,7 +70,7 @@ pub struct AuthorizedGamePage {
     pub viewer_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
     pub completion_reason: Option<String>,
     state: wwmtf_game_domain::GameState,
-    dictionary: wwmtf_game_domain::WordSetDictionary,
+    dictionary: &'static wwmtf_game_domain::WordSetDictionary,
     pub completed: bool,
 }
 
@@ -90,7 +90,7 @@ impl AuthorizedGamePage {
             self.viewer_player,
             placements,
             &self.rules,
-            &self.dictionary,
+            self.dictionary,
         )
     }
 
@@ -105,7 +105,7 @@ impl AuthorizedGamePage {
             self.viewer_player,
             placements,
             &self.rules,
-            &self.dictionary,
+            self.dictionary,
         )
     }
 
