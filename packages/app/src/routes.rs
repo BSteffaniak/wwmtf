@@ -415,8 +415,6 @@ struct ComposeTurnForm {
     y: Option<u8>,
     #[serde(default)]
     letter: Option<char>,
-    #[serde(default)]
-    board_action: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1204,7 +1202,6 @@ async fn game_compose_route(
         }
     };
     if form.expected_revision != game.view.revision {
-        let targeted = form.board_action.as_deref() == Some("true");
         let mut draft = load_move_plan(database, game.game_id, &game.user_id)
             .await
             .ok()
@@ -1218,11 +1215,7 @@ async fn game_compose_route(
         } else {
             "The board changed. Your plan was preserved and rescored against the latest board."
         };
-        return if targeted {
-            visual_game_interaction(&game, &draft, Some(message))
-        } else {
-            draft_error_page(&game, &draft, message)
-        };
+        return draft_error_page(&game, &draft, message);
     }
     let mut draft = parse_draft(&form.draft).unwrap_or_default();
     let action = form.action.as_str();
@@ -1460,9 +1453,6 @@ async fn game_compose_route(
     }
     if persist_draft(database, &game, &draft, now).await.is_err() {
         return draft_error_page(&game, &draft, "Your move plan could not be saved.");
-    }
-    if form.board_action.as_deref() == Some("true") {
-        return visual_game_interaction(&game, &draft, None);
     }
     visual_game_page(&game, &draft, None)
 }
@@ -3296,7 +3286,7 @@ fn visual_board(
                                         .map(|(_, _, points)| *points)
                                 });
                                 @if let Some((tile_id, _)) = drafted {
-                                    form hx-post=(action.as_str()) hx-target="#game-interaction" {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square" width=(square_size) height=(square_size)
@@ -3322,7 +3312,7 @@ fn visual_board(
                                         }
                                     }
                                 } @else {
-                                    form hx-post=(action.as_str()) hx-target="#game-interaction" {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "PLACE_TILE"))
                                         input type=hidden name="x" value=(x);
                                         input type=hidden name="y" value=(y);
@@ -3793,46 +3783,6 @@ fn live_status_action(visible_id: &str) -> ActionType {
     ])
 }
 
-fn visual_game_interaction(
-    game: &AuthorizedGamePage,
-    draft: &TurnDraft,
-    error: Option<&str>,
-) -> Container {
-    let feedback = draft_feedback(game, draft);
-    let board = visual_board(game, draft, &feedback);
-    let draft_preview = draft_feedback_component(game, &feedback, draft);
-    let rack = visual_rack(game, draft);
-    let actions = visual_turn_actions(game, draft);
-    let turn_feedback_view = turn_feedback(error);
-    container! {
-        div id="game-interaction" width="100%" min-height=0 flex=1 direction="column" {
-            main id="game-layout" class="game-arena" width="100%" min-height=0
-                flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
-                section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
-                    overflow-x="hidden" overflow-y="hidden" {
-                    (board)
-                }
-            }
-            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
-                section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
-                    background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
-                    padding-y="6px" padding-x="8px" gap="5px" {
-                    @if error.is_some() {
-                        (turn_feedback_view)
-                    } @else {
-                        (draft_preview)
-                    }
-                    (rack)
-                    @if !game.completed && game.view.active_player == game.viewer_player {
-                        (actions)
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
 #[allow(clippy::too_many_lines)]
 fn visual_game_page(
     game: &AuthorizedGamePage,
@@ -3878,15 +3828,14 @@ fn visual_game_page(
                         border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer { "Menu ···" }
                 }
             }
-            div id="game-interaction" width="100%" min-height=0 flex=1 direction="column" {
-                main id="game-layout" class="game-arena" width="100%" min-height=0
-                    flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
-                    section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
-                        overflow-x="hidden" overflow-y="hidden" {
-                        (board)
-                    }
+            main id="game-layout" class="game-arena" width="100%" min-height=0
+                flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
+                section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
+                    overflow-x="hidden" overflow-y="hidden" {
+                    (board)
                 }
-                section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
+            }
+            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
                 section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
                     background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
                     padding-y="6px" padding-x="8px" gap="5px" {
@@ -3926,7 +3875,6 @@ fn visual_game_page(
                         }
                     }
                 }
-            }
             }
             aside id="activity-rail" hidden position="fixed" top=62 right=6 width="340px" max-width="92vw"
                 max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
@@ -5108,8 +5056,7 @@ mod tests {
                 .display_to_string(false, false)
                 .expect("game renders");
             assert!(page.contains("player-rack"));
-            assert!(page.contains("id=\"game-interaction\""));
-            assert!(page.contains("hx-target=\"#game-interaction\""));
+            assert!(page.contains("hx-target=\"#app-page\""));
             assert!(page.contains("move-history"));
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
@@ -5297,7 +5244,7 @@ mod tests {
             };
             placement_request.body = Some(std::sync::Arc::new(
                 format!(
-                    "action=PLACE_TILE&expected_revision={}&draft={}&x=7&y=7&board_action=true",
+                    "action=PLACE_TILE&expected_revision={}&draft={}&x=7&y=7",
                     game.view.revision,
                     draft_token(&placement_draft)
                 )
@@ -5308,9 +5255,9 @@ mod tests {
                     .await
                     .display_to_string(false, false)
                     .expect("placement response renders");
-            assert!(placement_response.contains("id=\"game-interaction\""));
+            assert!(placement_response.contains("id=\"app-page\""));
             assert!(placement_response.contains("pending-square"));
-            assert!(!placement_response.contains("activity-rail"));
+            assert!(placement_response.contains("activity-rail"));
 
             let rendered = visual_game_page(&game, &draft, None)
                 .display_to_string(false, false)
@@ -5326,14 +5273,6 @@ mod tests {
             assert!(rendered.contains("draft-score-bubble"));
             assert!(rendered.contains("sx-position=\"absolute\""));
             assert!(rendered.contains(&format!("draft_revision={}", game.view.revision)));
-
-            let interaction = visual_game_interaction(&game, &draft, None)
-                .display_to_string(false, false)
-                .expect("targeted compose response renders");
-            assert!(interaction.contains("id=\"game-interaction\""));
-            assert!(interaction.contains("draft-score-bubble"));
-            assert!(!interaction.contains("activity-rail"));
-            assert!(!interaction.contains("participant-scoreboard"));
 
             let inactive_rack = &state.racks[&inactive_player];
             let (inactive_first, inactive_second) = inactive_rack
