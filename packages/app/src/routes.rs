@@ -3411,16 +3411,19 @@ fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     .into()
 }
 
+fn blank_letter_picker_open(draft: &TurnDraft, rack: &[(u16, char, u8)]) -> bool {
+    draft.selected_blank_letter.is_none()
+        && draft.selected_tile.is_some_and(|tile_id| {
+            rack.iter()
+                .any(|(id, letter, _)| *id == tile_id && *letter == ' ')
+        })
+}
+
 fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
-    let selected_blank = draft.selected_tile.is_some_and(|tile_id| {
-        game.view
-            .rack
-            .iter()
-            .any(|(id, letter, _)| *id == tile_id && *letter == ' ')
-    });
+    let selected_blank_needs_letter = blank_letter_picker_open(draft, &game.view.rack);
     container! {
-        @if selected_blank {
+        @if selected_blank_needs_letter {
             section class="blank-letter-layer" position="fixed" top=0 right=0 bottom=0 left=0
                 width="100vw" height="100dvh" align-items="center" justify-content="end"
                 background=#00000066 padding="2vw" {
@@ -4768,6 +4771,22 @@ mod tests {
 
         assert_eq!(rack_action(&draft), "PICK_RACK_TILE");
         assert_eq!(draft.selected_tile, Some(7));
+    }
+
+    #[test]
+    fn selecting_a_blank_letter_closes_the_picker_and_preserves_the_selection() {
+        let rack = [(7, ' ', 0)];
+        let mut draft = TurnDraft {
+            selected_tile: Some(7),
+            ..TurnDraft::default()
+        };
+
+        assert!(blank_letter_picker_open(&draft, &rack));
+
+        draft.selected_blank_letter = Some('Q');
+        assert!(!blank_letter_picker_open(&draft, &rack));
+        assert_eq!(draft.selected_tile, Some(7));
+        assert_eq!(draft.selected_blank_letter, Some('Q'));
     }
 
     #[test]
