@@ -6,6 +6,8 @@ use hyperchad::{
     template::{LayoutOverflow, container},
 };
 use serde::{Deserialize, Serialize};
+
+use crate::GameVisibilitySettings;
 use wwmtf_game_domain::{
     CompletionReason, Coordinate, GameEvent, GameState, GameStatus, PlayerId, RuleProfile,
     analyze_committed_play, apply_event,
@@ -132,6 +134,13 @@ pub struct PlayerView {
     pub leader: bool,
 }
 
+/// One unordered remaining tile face and its quantity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemainingTileFaceView {
+    pub letter: Option<char>,
+    pub count: usize,
+}
+
 /// Public/private game view projection supplied to rendering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameView {
@@ -140,6 +149,10 @@ pub struct GameView {
     pub board_size: u8,
     pub start: Coordinate,
     pub rack: Vec<(u16, char, u8)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_tile_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_tile_faces: Option<Vec<RemainingTileFaceView>>,
     pub players: Vec<PlayerView>,
     pub active_player: PlayerId,
     pub status: GameStatus,
@@ -149,9 +162,13 @@ pub struct GameView {
     pub revision: u64,
 }
 
-/// Projects canonical state for one seated viewer without exposing bag or another rack.
+/// Projects canonical state for one seated viewer without exposing another rack or draw order.
 #[must_use]
-pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
+pub fn game_view(
+    state: &GameState,
+    viewer: PlayerId,
+    visibility: GameVisibilitySettings,
+) -> Option<GameView> {
     if !state.players.contains(&viewer) {
         return None;
     }
@@ -187,6 +204,25 @@ pub fn game_view(state: &GameState, viewer: PlayerId) -> Option<GameView> {
                 (tile.id.get(), letter, tile.points)
             })
             .collect(),
+        remaining_tile_count: visibility
+            .show_remaining_tile_count
+            .then_some(state.bag.len()),
+        remaining_tile_faces: visibility.show_remaining_tile_faces.then(|| {
+            let mut counts = std::collections::BTreeMap::new();
+            for tile in &state.bag {
+                *counts.entry(tile.face).or_insert(0) += 1;
+            }
+            counts
+                .into_iter()
+                .map(|(face, count)| RemainingTileFaceView {
+                    letter: match face {
+                        wwmtf_game_domain::TileFace::Letter(letter) => Some(letter),
+                        wwmtf_game_domain::TileFace::Blank => None,
+                    },
+                    count,
+                })
+                .collect()
+        }),
         players: state
             .players
             .iter()
@@ -692,6 +728,74 @@ mod tests {
     }
 
     #[test]
+    fn bag_projection_obeys_visibility_without_exposing_order_or_tile_ids() {
+        let players = [PlayerId::new(), PlayerId::new()];
+        let metadata = GameMetadata::new(
+            GameId::new(),
+            RuleProfileRef::new("classic-en", 1).expect("rules reference"),
+            DictionaryRef::new("enable1-en", 1, "sha256:test").expect("dictionary reference"),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        let started = initialize_game(
+            metadata,
+            players.to_vec(),
+            players[0],
+            &initial_rule_profile(),
+            4,
+        )
+        .expect("game starts");
+        let state = replay([&started]).expect("game replays");
+
+        let hidden = game_view(
+            &state,
+            players[0],
+            GameVisibilitySettings {
+                show_remaining_tile_count: false,
+                show_remaining_tile_faces: false,
+            },
+        )
+        .expect("member projects");
+        assert_eq!(hidden.remaining_tile_count, None);
+        assert_eq!(hidden.remaining_tile_faces, None);
+
+        let count_only = game_view(
+            &state,
+            players[0],
+            GameVisibilitySettings {
+                show_remaining_tile_count: true,
+                show_remaining_tile_faces: false,
+            },
+        )
+        .expect("member projects");
+        assert_eq!(count_only.remaining_tile_count, Some(state.bag.len()));
+        assert_eq!(count_only.remaining_tile_faces, None);
+
+        let faces_only = game_view(
+            &state,
+            players[0],
+            GameVisibilitySettings {
+                show_remaining_tile_count: false,
+                show_remaining_tile_faces: true,
+            },
+        )
+        .expect("member projects");
+        assert_eq!(faces_only.remaining_tile_count, None);
+        assert!(faces_only.remaining_tile_faces.is_some());
+
+        let visible = game_view(&state, players[0], GameVisibilitySettings::default())
+            .expect("member projects");
+        assert_eq!(visible.remaining_tile_count, Some(state.bag.len()));
+        let faces = visible.remaining_tile_faces.expect("faces are visible");
+        assert_eq!(
+            faces.iter().map(|face| face.count).sum::<usize>(),
+            state.bag.len()
+        );
+        let payload = serde_json::to_string(&faces).expect("faces serialize");
+        assert!(!payload.contains("id"));
+        assert!(!payload.contains("points"));
+    }
+
+    #[test]
     fn viewer_projection_contains_only_their_private_rack_for_large_membership() {
         let players = (0..12).map(|_| PlayerId::new()).collect::<Vec<_>>();
         let metadata = GameMetadata::new(
@@ -709,8 +813,10 @@ mod tests {
         )
         .expect("game starts");
         let state = replay([&started]).expect("game replays");
-        let first = game_view(&state, players[0]).expect("member projects");
-        let second = game_view(&state, players[1]).expect("member projects");
+        let first = game_view(&state, players[0], GameVisibilitySettings::default())
+            .expect("member projects");
+        let second = game_view(&state, players[1], GameVisibilitySettings::default())
+            .expect("member projects");
 
         assert_eq!(first.rack.len(), 7);
         assert_eq!(second.rack.len(), 7);
@@ -727,7 +833,7 @@ mod tests {
         assert!(first.players[0].current_turn);
         assert!(!first.players[0].leader);
         assert_ne!(first.rack, second.rack);
-        assert!(game_view(&state, PlayerId::new()).is_none());
+        assert!(game_view(&state, PlayerId::new(), GameVisibilitySettings::default()).is_none());
         let rendered = rack_component(&first)
             .display_to_string(false, false)
             .expect("rack renders");

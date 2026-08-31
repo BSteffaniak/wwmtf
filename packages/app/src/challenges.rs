@@ -241,6 +241,7 @@ pub async fn create_game_for_users_in_transaction(
         now,
         shuffle_seed,
         idempotency_key,
+        crate::GameVisibilitySettings::default(),
     )
     .await
 }
@@ -259,6 +260,7 @@ pub async fn create_game_for_users_with_rules_in_transaction(
     now: OffsetDateTime,
     shuffle_seed: u64,
     idempotency_key: &str,
+    visibility: crate::GameVisibilitySettings,
 ) -> Result<GameId, ChallengeError> {
     if user_ids.len() < 2
         || user_ids
@@ -305,6 +307,14 @@ pub async fn create_game_for_users_with_rules_in_transaction(
         )
         .value("canonical_revision", 1_i64)
         .value("status", "ACTIVE")
+        .value(
+            "show_remaining_tile_count",
+            i64::from(visibility.show_remaining_tile_count),
+        )
+        .value(
+            "show_remaining_tile_faces",
+            i64::from(visibility.show_remaining_tile_faces),
+        )
         .value("created_at_ms", now_ms)
         .value("updated_at_ms", now_ms)
         .execute(tx)

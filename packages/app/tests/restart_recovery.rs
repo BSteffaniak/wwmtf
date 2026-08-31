@@ -11,11 +11,11 @@ use switchy_database::query::FilterableQuery as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use wwmtf_app::{
-    FirstPlayerPolicy, GameCreationPolicy, GameSharedStateDispatcher, LobbySettings,
-    accept_challenge, create_challenge, create_lobby, create_session, dashboard_channel,
-    dashboard_projection, game_channel, join_lobby, load_events, load_lobby, migrate_app,
-    rebuild_game_projections, recover_game, register, resolve_session, start_lobby, store_snapshot,
-    submit_game_command, user_game_summaries,
+    FirstPlayerPolicy, GameCreationPolicy, GameSharedStateDispatcher, GameVisibilitySettings,
+    LobbySettings, accept_challenge, create_challenge, create_lobby, create_session,
+    dashboard_channel, dashboard_projection, game_channel, join_lobby, load_events, load_lobby,
+    migrate_app, rebuild_game_projections, recover_game, register, resolve_session, start_lobby,
+    store_snapshot, submit_game_command, user_game_summaries,
 };
 use wwmtf_game_domain::{GameCommand, GameId, GameState};
 
@@ -281,6 +281,7 @@ fn active_lobby_and_multiplayer_lifecycle_survive_file_backed_restart() {
                 board_size: 21,
                 tile_set_count: 2,
                 first_player: FirstPlayerPolicy::Creator,
+                visibility: GameVisibilitySettings::default(),
             };
             let (waiting_lobby_id, waiting_token) = create_lobby(
                 &*db,

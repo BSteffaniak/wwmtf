@@ -23,11 +23,11 @@ use wwmtf_game_domain::{
 
 use crate::{
     AuthenticatedDashboard, AuthorizedGamePage, FirstPlayerPolicy, GameCreationPolicy, GameLobby,
-    GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError, ProductWorkflowError,
-    UserScoreTotals, accept_pending_challenge, cancel_lobby, cancel_pending_challenge,
-    challenge_username, claim_oidc_attempt, cleanup_oidc_attempts, clear_move_plan,
-    complete_legacy_google_migration, consume_oidc_attempt, create_lobby, create_oidc_attempt,
-    create_shareable_invitation, decline_pending_challenge, error_component,
+    GameVisibilitySettings, GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError,
+    ProductWorkflowError, UserScoreTotals, accept_pending_challenge, cancel_lobby,
+    cancel_pending_challenge, challenge_username, claim_oidc_attempt, cleanup_oidc_attempts,
+    clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt, create_lobby,
+    create_oidc_attempt, create_shareable_invitation, decline_pending_challenge, error_component,
     find_or_create_development_user, google_login_and_create_session, join_lobby, join_lobby_by_id,
     leave_lobby, load_authenticated_dashboard, load_authorized_game_page, load_lobby,
     load_move_plan, logout_session, move_history_component, redeem_shareable_invitation,
@@ -46,6 +46,10 @@ struct LobbyActionForm {
     board_size: u8,
     #[serde(default = "default_lobby_tile_sets")]
     tile_set_count: u8,
+    #[serde(default = "default_true")]
+    show_remaining_tile_count: bool,
+    #[serde(default = "default_true")]
+    show_remaining_tile_faces: bool,
     #[serde(default)]
     first_player_policy: String,
     #[serde(default)]
@@ -60,6 +64,9 @@ const fn default_lobby_board_size() -> u8 {
 }
 const fn default_lobby_tile_sets() -> u8 {
     1
+}
+const fn default_true() -> bool {
+    true
 }
 
 fn lobby_settings(form: &LobbyActionForm, creator_user_id: &str) -> LobbySettings {
@@ -77,6 +84,10 @@ fn lobby_settings(form: &LobbyActionForm, creator_user_id: &str) -> LobbySetting
         board_size: form.board_size,
         tile_set_count: form.tile_set_count,
         first_player,
+        visibility: GameVisibilitySettings {
+            show_remaining_tile_count: form.show_remaining_tile_count,
+            show_remaining_tile_faces: form.show_remaining_tile_faces,
+        },
     }
 }
 
@@ -1668,7 +1679,7 @@ fn lobby_invitation_url(public_base_url: &str, lobby_id: &str) -> String {
     )
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::large_stack_frames)]
 fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) -> Container {
     let is_creator = lobby.creator_user_id == viewer_user_id;
     let first_player = match &lobby.settings.first_player {
@@ -1697,6 +1708,8 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                     h2 { "Game settings" }
                     span { (lobby.settings.board_size) " × " (lobby.settings.board_size) " board" }
                     span { (lobby.settings.tile_set_count) " complete tile set(s)" }
+                    span { "Remaining tile count: " (if lobby.settings.visibility.show_remaining_tile_count { "Shown" } else { "Hidden" }) }
+                    span { "Remaining tile faces: " (if lobby.settings.visibility.show_remaining_tile_faces { "Shown" } else { "Hidden" }) }
                     span { "First player: " (first_player) }
                 }
                 @if let Some(invitation_url) = invitation_url.as_deref() {
@@ -1736,6 +1749,31 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                             div flex=1 min-width="180px" gap="4px" {
                                 span font-weight=bold { "Tile sets" }
                                 input type=text name="tile_set_count" value=(lobby.settings.tile_set_count) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
+                            }
+                        }
+                        div gap="4px" {
+                            span font-weight=bold { "Remaining tile count" }
+                            select name="show_remaining_tile_count" {
+                                @if lobby.settings.visibility.show_remaining_tile_count {
+                                    option value="true" { "Show" }
+                                    option value="false" { "Hide" }
+                                } @else {
+                                    option value="false" { "Hide" }
+                                    option value="true" { "Show" }
+                                }
+                            }
+                        }
+                        div gap="4px" {
+                            span font-weight=bold { "Remaining tile faces" }
+                            span color=#5d6258 font-size="12px" { "Shows an unordered inventory, never future draw order. Showing faces also reveals the total." }
+                            select name="show_remaining_tile_faces" {
+                                @if lobby.settings.visibility.show_remaining_tile_faces {
+                                    option value="true" { "Show" }
+                                    option value="false" { "Hide" }
+                                } @else {
+                                    option value="false" { "Hide" }
+                                    option value="true" { "Show" }
+                                }
                             }
                         }
                         div gap="4px" {
@@ -1821,6 +1859,21 @@ fn lobby_creation_page() -> Container {
                         }
                     }
                     div gap="4px" {
+                        span font-weight=bold { "Remaining tile count" }
+                        select name="show_remaining_tile_count" {
+                            option value="true" { "Show" }
+                            option value="false" { "Hide" }
+                        }
+                    }
+                    div gap="4px" {
+                        span font-weight=bold { "Remaining tile faces" }
+                        span color=#5d6258 font-size="12px" { "Shows an unordered inventory, never future draw order. Showing faces also reveals the total." }
+                        select name="show_remaining_tile_faces" {
+                            option value="true" { "Show" }
+                            option value="false" { "Hide" }
+                        }
+                    }
+                    div gap="4px" {
                         span font-weight=bold { "Who takes the first turn?" }
                         span color=#5d6258 font-size="12px" { "Choose yourself or select a random joined member when the game starts." }
                         select name="first_player_policy" {
@@ -1876,6 +1929,8 @@ async fn lobby_create_route(
             max_players: 4,
             board_size: 15,
             tile_set_count: 1,
+            show_remaining_tile_count: true,
+            show_remaining_tile_faces: true,
             first_player_policy: "CREATOR".to_string(),
             chosen_first_user_id: String::new(),
         });
@@ -3786,6 +3841,30 @@ fn live_status_action(visible_id: &str) -> ActionType {
     ])
 }
 
+fn remaining_tiles_component(game: &AuthorizedGamePage) -> Container {
+    let faces = game.view.remaining_tile_faces.as_deref();
+    container! {
+        section id="remaining-tiles" gap="8px" {
+            h3 { "Tiles remaining" }
+            @if let Some(count) = game.view.remaining_tile_count {
+                span { (count) " tile" (if count == 1 { "" } else { "s" }) " in the bag" }
+            }
+            @if let Some(faces) = faces {
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
+                    @for face in faces {
+                        span background=#f2d79b color=#26382d border=(("#c3a86d", 1))
+                            border-radius="7px" padding-y="5px" padding-x="8px" {
+                            (face.letter.map_or_else(|| "Blank".to_string(), |letter| letter.to_string()))
+                            " × " (face.count)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    .into()
+}
+
 #[allow(clippy::too_many_lines)]
 fn visual_game_page(
     game: &AuthorizedGamePage,
@@ -3897,6 +3976,9 @@ fn visual_game_page(
                         span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
                         span font-weight=bold { (latest.as_str()) }
                     }
+                }
+                @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
+                    (remaining_tiles_component(game))
                 }
                 section id="recent-activity" gap="8px" {
                     h3 { "Move history" }
@@ -4067,6 +4149,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -4241,6 +4324,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -5147,7 +5231,8 @@ mod tests {
             assert!(page.contains("dock-message"));
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));
-            assert!(!page.contains("bag"));
+            assert!(page.contains("remaining-tiles"));
+            assert!(page.contains("tiles in the bag"));
         });
     }
 

@@ -11,9 +11,9 @@ use wwmtf_game_domain::{
 };
 
 use crate::{
-    DashboardProjection, GameView, MoveHistoryView, UserScoreTotals, dashboard_projection,
-    final_score_adjustments, game_view, load_events, move_history_view, player_for_user,
-    recover_game, resolve_session, user_score_totals,
+    DashboardProjection, GameView, GameVisibilitySettings, MoveHistoryView, UserScoreTotals,
+    dashboard_projection, final_score_adjustments, game_view, load_events, move_history_view,
+    player_for_user, recover_game, resolve_session, user_score_totals,
 };
 
 /// Cookie name used by renderer-neutral routes and the HTML transport security adapter.
@@ -270,10 +270,11 @@ pub async fn load_authorized_game_page(
             _ => PresentationError::Game(error),
         })?;
     let state = recover_game(db, game_id).await?;
+    let visibility = game_visibility_settings(db, game_id).await?;
     let rules = state.rules.clone();
     let dictionary =
         dictionary(state.metadata.dictionary()).ok_or(PresentationError::UnsupportedDictionary)?;
-    let view = game_view(&state, player).ok_or(PresentationError::Forbidden)?;
+    let view = game_view(&state, player, visibility).ok_or(PresentationError::Forbidden)?;
     let events = load_events(db, game_id, 0)
         .await?
         .into_iter()
@@ -336,6 +337,33 @@ pub async fn load_authorized_game_page(
         state,
         dictionary,
         completed,
+    })
+}
+
+/// Loads the immutable presentation policy for a started game.
+///
+/// # Errors
+///
+/// Returns unknown-game, malformed-row, or database failures.
+pub async fn game_visibility_settings(
+    db: &dyn Database,
+    game_id: GameId,
+) -> Result<GameVisibilitySettings, PresentationError> {
+    let rows = db
+        .select("games")
+        .where_eq("game_id", game_id.to_string())
+        .execute(db)
+        .await?;
+    let row = rows.first().ok_or(PresentationError::UnknownGame)?;
+    let enabled = |name| {
+        row.get(name)
+            .and_then(|value| value.as_i64())
+            .map(|value| value != 0)
+            .ok_or(PresentationError::Malformed)
+    };
+    Ok(GameVisibilitySettings {
+        show_remaining_tile_count: enabled("show_remaining_tile_count")?,
+        show_remaining_tile_faces: enabled("show_remaining_tile_faces")?,
     })
 }
 

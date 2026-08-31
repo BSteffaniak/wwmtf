@@ -24,7 +24,8 @@ use wwmtf_game_domain::{GameCommand, GameId, PlayerId};
 
 use crate::{
     DashboardProjection, GameView, UserScoreTotals, dashboard_projection, game_view,
-    player_for_user, recover_game, submit_game_command, user_score_totals,
+    game_visibility_settings, player_for_user, recover_game, submit_game_command,
+    user_score_totals,
 };
 
 const GAME_CHANNEL_PREFIX: &str = "game:";
@@ -166,6 +167,7 @@ impl GameSharedStateDispatcher {
             .where_eq("game_id", game_id.to_string())
             .execute(&*self.database)
             .await?;
+        let visibility = game_visibility_settings(&*self.database, game_id).await?;
         let mut views_by_user = BTreeMap::new();
         for row in rows {
             let user_id = row
@@ -178,7 +180,8 @@ impl GameSharedStateDispatcher {
                 .ok_or("game membership player is malformed")?;
             let player = PlayerId::from_str(&player_id)
                 .map_err(|_| "game membership player is malformed")?;
-            let view = game_view(state, player).ok_or("game membership player is not seated")?;
+            let view = game_view(state, player, visibility)
+                .ok_or("game membership player is not seated")?;
             views_by_user.insert(user_id, view);
         }
         if views_by_user.len() != state.players.len() {
@@ -373,8 +376,9 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 }
                 let (game_id, player_id) = self.authorize(context, &subscribe.channel_id).await?;
                 let state = recover_game(&*self.database, game_id).await?;
-                let view =
-                    game_view(&state, player_id).ok_or("authorized game view is unavailable")?;
+                let visibility = game_visibility_settings(&*self.database, game_id).await?;
+                let view = game_view(&state, player_id, visibility)
+                    .ok_or("authorized game view is unavailable")?;
                 Ok(vec![TransportInbound::Snapshot(SnapshotEnvelope {
                     channel_id: subscribe.channel_id,
                     revision: Revision::new(state.revision),
@@ -447,7 +451,9 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         // Register before loading so a command racing subscription is duplicated at worst, never
         // lost. Revision-aware clients converge on the newest update.
         let state = recover_game(&*self.database, game_id).await?;
-        let view = game_view(&state, player).ok_or("authorized game view is unavailable")?;
+        let visibility = game_visibility_settings(&*self.database, game_id).await?;
+        let view =
+            game_view(&state, player, visibility).ok_or("authorized game view is unavailable")?;
         sender.send(Self::projected_event(
             game_id,
             &view,
@@ -556,8 +562,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        FirstPlayerPolicy, GameCreationPolicy, LobbySettings, accept_challenge, create_challenge,
-        create_lobby, join_lobby, migrate_app, register, start_lobby,
+        FirstPlayerPolicy, GameCreationPolicy, GameVisibilitySettings, LobbySettings,
+        accept_challenge, create_challenge, create_lobby, join_lobby, migrate_app, register,
+        start_lobby,
     };
 
     async fn fixture() -> (Arc<dyn Database>, GameId, String, String, String) {
@@ -621,6 +628,7 @@ mod tests {
                 board_size: 15,
                 tile_set_count: 1,
                 first_player: FirstPlayerPolicy::Creator,
+                visibility: GameVisibilitySettings::default(),
             },
             policy,
             now,

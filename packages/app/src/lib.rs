@@ -40,9 +40,10 @@ pub use challenges::{
 };
 pub use components::{
     GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,
-    PlayerView, PremiumView, board_component, error_component, final_score_adjustments, game_view,
-    move_history_component, move_history_view, pending_move_component, premium_square_component,
-    rack_component, status_component, tile_component, viewer_turn_component,
+    PlayerView, PremiumView, RemainingTileFaceView, board_component, error_component,
+    final_score_adjustments, game_view, move_history_component, move_history_view,
+    pending_move_component, premium_square_component, rack_component, status_component,
+    tile_component, viewer_turn_component,
 };
 pub use definitions::{
     DEFAULT_DEFINITION_PROVIDER_BASE_URL, DefinitionError, DefinitionLookup, DefinitionMeaning,
@@ -68,9 +69,9 @@ pub use journal::{
     persisted_payload_compatibility, recover_game, store_snapshot,
 };
 pub use lobbies::{
-    FirstPlayerPolicy, GameCreationPolicy, GameLobby, LobbyError, LobbyInvitationToken,
-    LobbyMember, LobbySettings, cancel_lobby, create_lobby, join_lobby, join_lobby_by_id,
-    leave_lobby, load_lobby, start_lobby, update_lobby_settings,
+    FirstPlayerPolicy, GameCreationPolicy, GameLobby, GameVisibilitySettings, LobbyError,
+    LobbyInvitationToken, LobbyMember, LobbySettings, cancel_lobby, create_lobby, join_lobby,
+    join_lobby_by_id, leave_lobby, load_lobby, start_lobby, update_lobby_settings,
 };
 pub use migrations::{app_migrations, migrate_app};
 pub use move_plans::{MovePlanError, clear_move_plan, load_move_plan, save_move_plan};
@@ -84,7 +85,8 @@ pub use oidc_attempts::{
 pub use presentation::{
     AuthenticatedDashboard, AuthorizedGamePage, AuthorizedGameParticipant, CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME, OIDC_BINDING_COOKIE_NAME, PresentationError, SESSION_COOKIE_NAME,
-    authenticated_user, load_authenticated_dashboard, load_authorized_game_page,
+    authenticated_user, game_visibility_settings, load_authenticated_dashboard,
+    load_authorized_game_page,
 };
 pub use profiles::{
     AvatarSource, ProfileError, ProfileFieldSource, ProfileImage, UserProfile,

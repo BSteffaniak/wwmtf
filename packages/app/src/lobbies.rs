@@ -77,6 +77,22 @@ impl FirstPlayerPolicy {
     }
 }
 
+/// Presentation policy fixed when a game starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameVisibilitySettings {
+    pub show_remaining_tile_count: bool,
+    pub show_remaining_tile_faces: bool,
+}
+
+impl Default for GameVisibilitySettings {
+    fn default() -> Self {
+        Self {
+            show_remaining_tile_count: true,
+            show_remaining_tile_faces: true,
+        }
+    }
+}
+
 /// Settings visible to every lobby member before start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LobbySettings {
@@ -84,6 +100,7 @@ pub struct LobbySettings {
     pub board_size: u8,
     pub tile_set_count: u8,
     pub first_player: FirstPlayerPolicy,
+    pub visibility: GameVisibilitySettings,
 }
 
 /// Raw secret returned once to the creator for link transport.
@@ -168,6 +185,14 @@ pub async fn create_lobby(
             .value("max_players", usize_i64(settings.max_players)?)
             .value("board_size", i64::from(settings.board_size))
             .value("tile_set_count", i64::from(settings.tile_set_count))
+            .value(
+                "show_remaining_tile_count",
+                i64::from(settings.visibility.show_remaining_tile_count),
+            )
+            .value(
+                "show_remaining_tile_faces",
+                i64::from(settings.visibility.show_remaining_tile_faces),
+            )
             .value("first_player_policy", settings.first_player.as_str())
             .value(
                 "chosen_first_user_id",
@@ -369,6 +394,14 @@ pub async fn update_lobby_settings(
         .value("max_players", usize_i64(settings.max_players)?)
         .value("board_size", i64::from(settings.board_size))
         .value("tile_set_count", i64::from(settings.tile_set_count))
+        .value(
+            "show_remaining_tile_count",
+            i64::from(settings.visibility.show_remaining_tile_count),
+        )
+        .value(
+            "show_remaining_tile_faces",
+            i64::from(settings.visibility.show_remaining_tile_faces),
+        )
         .value("first_player_policy", settings.first_player.as_str())
         .value(
             "chosen_first_user_id",
@@ -569,6 +602,7 @@ pub async fn start_lobby(
         now,
         shuffle_seed,
         &format!("start-lobby:{lobby_id}"),
+        settings.visibility,
     )
     .await?;
     let revision = signed(row, "revision")?;
@@ -642,6 +676,10 @@ fn settings(row: &switchy_database::Row) -> Result<LobbySettings, LobbyError> {
         tile_set_count: u8::try_from(unsigned(row, "tile_set_count")?)
             .map_err(|_| LobbyError::Invalid)?,
         first_player,
+        visibility: GameVisibilitySettings {
+            show_remaining_tile_count: unsigned(row, "show_remaining_tile_count")? != 0,
+            show_remaining_tile_faces: unsigned(row, "show_remaining_tile_faces")? != 0,
+        },
     })
 }
 
@@ -745,6 +783,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -791,6 +830,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -821,6 +861,72 @@ mod tests {
     }
 
     #[test]
+    fn lobby_visibility_settings_persist_and_copy_to_started_game() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(
+                &*db,
+                "visibility-alice",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("alice");
+            let bob = register(&*db, "visibility-bob", "another correct horse battery", now)
+                .await
+                .expect("bob");
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let visibility = GameVisibilitySettings {
+                show_remaining_tile_count: true,
+                show_remaining_tile_faces: false,
+            };
+            let (lobby_id, token) = create_lobby(
+                &*db,
+                &alice,
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                    visibility,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby creates");
+            assert_eq!(
+                load_lobby(&*db, &lobby_id, &alice)
+                    .await
+                    .expect("lobby loads")
+                    .settings
+                    .visibility,
+                visibility
+            );
+            join_lobby(&*db, token.expose(), &bob, policy, now)
+                .await
+                .expect("Bob joins");
+            let game_id = start_lobby(&*db, &lobby_id, &alice, policy, now, 4)
+                .await
+                .expect("game starts");
+            assert_eq!(
+                crate::game_visibility_settings(&*db, game_id)
+                    .await
+                    .expect("visibility loads"),
+                visibility
+            );
+        });
+    }
+
+    #[test]
     fn three_members_join_and_creator_starts_exactly_once() {
         block_on(async {
             let db = switchy_database_connection::builder()
@@ -846,6 +952,7 @@ mod tests {
                 board_size: 21,
                 tile_set_count: 2,
                 first_player: FirstPlayerPolicy::Creator,
+                visibility: GameVisibilitySettings::default(),
             };
             let (lobby_id, token) =
                 create_lobby(&*db, &alice, settings, policy, now, Duration::days(1))
@@ -927,6 +1034,7 @@ mod tests {
                         board_size: 21,
                         tile_set_count: 2,
                         first_player: initial_policy,
+                        visibility: GameVisibilitySettings::default(),
                     },
                     policy,
                     now,
@@ -949,6 +1057,7 @@ mod tests {
                             board_size: 21,
                             tile_set_count: 2,
                             first_player: first_player.clone(),
+                            visibility: GameVisibilitySettings::default(),
                         },
                         policy,
                         now,
@@ -987,6 +1096,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -1019,6 +1129,7 @@ mod tests {
                     board_size: 15,
                     tile_set_count: 1,
                     first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
                 },
                 policy,
                 now,
@@ -1056,6 +1167,7 @@ mod tests {
                 board_size: 15,
                 tile_set_count: 1,
                 first_player: FirstPlayerPolicy::Random,
+                visibility: GameVisibilitySettings::default(),
             };
             assert!(matches!(
                 create_lobby(&*db, &alice, settings, policy, now, Duration::days(1)).await,

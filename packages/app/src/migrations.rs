@@ -1,8 +1,8 @@
 //! Application-owned schema migrations built exclusively with `switchy` builders.
 
 use switchy_database::{
-    Database,
-    schema::{Column, DataType, create_index, create_table, drop_index, drop_table},
+    Database, DatabaseValue,
+    schema::{Column, DataType, alter_table, create_index, create_table, drop_index, drop_table},
 };
 use switchy_schema::{
     discovery::code::{CodeMigration, CodeMigrationSource},
@@ -523,6 +523,30 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         vec!["game_id", "seat"],
         true,
     ));
+    source.add_migration(add_bigint_column_migration(
+        "051_game_lobbies_remaining_tile_count",
+        "game_lobbies",
+        "show_remaining_tile_count",
+        0,
+    ));
+    source.add_migration(add_bigint_column_migration(
+        "052_game_lobbies_remaining_tile_faces",
+        "game_lobbies",
+        "show_remaining_tile_faces",
+        0,
+    ));
+    source.add_migration(add_bigint_column_migration(
+        "053_games_remaining_tile_count",
+        "games",
+        "show_remaining_tile_count",
+        0,
+    ));
+    source.add_migration(add_bigint_column_migration(
+        "054_games_remaining_tile_faces",
+        "games",
+        "show_remaining_tile_faces",
+        0,
+    ));
     source
 }
 
@@ -555,6 +579,24 @@ fn table_migration(
         id.to_string(),
         Box::new(statement.primary_key(primary_key)),
         Some(Box::new(drop_table(table).if_exists(true))),
+    )
+}
+
+fn add_bigint_column_migration(
+    id: &str,
+    table: &'static str,
+    name: &'static str,
+    default: i64,
+) -> CodeMigration<'static> {
+    CodeMigration::new(
+        id.to_string(),
+        Box::new(alter_table(table).add_column(
+            name.to_string(),
+            DataType::BigInt,
+            false,
+            Some(DatabaseValue::Int64(default)),
+        )),
+        Some(Box::new(alter_table(table).drop_column(name.to_string()))),
     )
 }
 
@@ -616,12 +658,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 47);
+        assert_eq!(migrations.len(), 51);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(
-            migrations[46].id(),
-            "050_game_participant_summaries_game_seat_unique"
-        );
+        assert_eq!(migrations[50].id(), "054_games_remaining_tile_faces");
     }
 
     #[test]
