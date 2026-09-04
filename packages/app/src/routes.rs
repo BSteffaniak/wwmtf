@@ -3904,7 +3904,18 @@ fn visual_game_page(
                         border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
                 }
                 (scoreboard)
-                div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" {
+                div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" gap="6px" {
+                    @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
+                        button id="remaining-tiles-button" type=button
+                            fx-click=(ActionType::toggle_display_by_id("remaining-tiles-panel"))
+                            background=#173326 color=#f4f0df border=(("#436854", 1))
+                            border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer {
+                            "Bag"
+                            @if let Some(count) = game.view.remaining_tile_count {
+                                " · " (count)
+                            }
+                        }
+                    }
                     button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
                         background=#173326 color=#f4f0df border=(("#436854", 1))
                         border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer { "Menu ···" }
@@ -3958,6 +3969,20 @@ fn visual_game_page(
                     }
                 }
             }
+            @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
+                aside id="remaining-tiles-panel" hidden position="fixed" top=62 right=6
+                    width="340px" max-width="92vw" max-height="72vh" overflow-y="auto"
+                    background=#f6f0df color=#26382d border=(("#8e7651", 3)) border-radius="18px"
+                    padding-y="16px" padding-x="16px" gap="12px" {
+                    div direction="row" justify-content="space-between" align-items="start" gap="8px" {
+                        h2 { "Bag" }
+                        button type=button fx-click=(ActionType::no_display_by_id("remaining-tiles-panel"))
+                            background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
+                            padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
+                    }
+                    (remaining_tiles_component(game))
+                }
+            }
             aside id="activity-rail" hidden position="fixed" top=62 right=6 width="340px" max-width="92vw"
                 max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
                 border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
@@ -3976,9 +4001,6 @@ fn visual_game_page(
                         span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
                         span font-weight=bold { (latest.as_str()) }
                     }
-                }
-                @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
-                    (remaining_tiles_component(game))
                 }
                 section id="recent-activity" gap="8px" {
                     h3 { "Move history" }
@@ -5231,7 +5253,8 @@ mod tests {
             assert!(page.contains("dock-message"));
             assert!(!page.contains("provide matching board coordinates"));
             assert!(!page.contains("pending-editor-0"));
-            assert!(page.contains("remaining-tiles"));
+            assert!(page.contains("remaining-tiles-button"));
+            assert!(page.contains("remaining-tiles-panel"));
             assert!(page.contains("tiles in the bag"));
         });
     }
