@@ -1127,7 +1127,17 @@ def assert_live_lobby(alice: Browser, bob: Browser) -> None:
         raise AcceptanceError("lobby update reloaded the browser document")
     if not alice.evaluate("window.lobbyRoot === document.querySelector('#app-page')"):
         raise AcceptanceError("lobby update replaced rather than morphed the page root")
+    alice.submit('form:has(input[value="UPDATE"])', {"board_size": "15"})
+    bob.wait("document.body.innerText.includes('15 × 15 board')")
     alice.submit('form:has(input[value="START"])')
+    alice.wait("Boolean(document.querySelector('#game-board'))")
+    bob.wait("Boolean(document.querySelector('#game-board'))")
+    # Exercise the full-page compose response while waiting for the opponent.
+    tile = bob.evaluate("document.querySelector('#player-rack [data-tile-id]').getAttribute('data-tile-id')")
+    bob.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{tile}"])')
+    bob.wait(f'document.querySelector(\'[data-tile-id="{tile}"]\').classList.contains("rack-tile-selected")')
+    alice.navigate(alice.evaluate('location.pathname'))
+    bob.navigate(bob.evaluate('location.pathname'))
     alice.wait("Boolean(document.querySelector('#game-board'))")
     bob.wait("Boolean(document.querySelector('#game-board'))")
     for actor, observer in [(alice, bob), (bob, alice), (alice, bob)]:

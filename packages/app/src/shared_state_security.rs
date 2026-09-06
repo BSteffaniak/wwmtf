@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use hyperchad::{
     shared_state_models::{
         ChannelId, EventEnvelope, EventId, PayloadBlob, Revision, SnapshotEnvelope,
@@ -19,6 +20,7 @@ use hyperchad::{
     },
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use switchy_database::{Database, query::FilterableQuery as _};
 use wwmtf_game_domain::{GameCommand, GameId, PlayerId};
 
@@ -62,6 +64,7 @@ pub struct GameSharedStateDispatcher {
     database: Arc<dyn Database>,
     subscribers: Mutex<BTreeMap<ChannelId, Vec<GameSubscriber>>>,
     dashboard_revision: AtomicU64,
+    diagnostic_salt: uuid::Uuid,
 }
 
 impl GameSharedStateDispatcher {
@@ -72,7 +75,47 @@ impl GameSharedStateDispatcher {
             database,
             subscribers: Mutex::new(BTreeMap::new()),
             dashboard_revision: AtomicU64::new(0),
+            diagnostic_salt: uuid::Uuid::new_v4(),
         }
+    }
+
+    // Process-local keyed tags allow correlation without logging channel/user identities or
+    // authentication bindings. No secrets or payloads are included in these diagnostics.
+    fn diagnostic_tag(&self, value: &str) -> String {
+        let mut hash = Sha256::new();
+        hash.update(self.diagnostic_salt.as_bytes());
+        hash.update(value.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&hash.finalize()[..12])
+    }
+
+    fn trace_event(&self, stage: &str, channel: &ChannelId, user: &str, revision: u64) {
+        log::info!(
+            target: "wwmtf::live_updates",
+            "stage={stage} channel={} viewer={} revision={revision}",
+            self.diagnostic_tag(channel.as_str()), self.diagnostic_tag(user),
+        );
+    }
+
+    fn queue_event(
+        &self,
+        sender: &flume::Sender<EventEnvelope>,
+        event: EventEnvelope,
+        user: &str,
+    ) -> bool {
+        let channel = event.channel_id.clone();
+        let revision = event.revision.value();
+        let queued = sender.send(event).is_ok();
+        self.trace_event(
+            if queued {
+                "event_queued"
+            } else {
+                "receiver_closed"
+            },
+            &channel,
+            user,
+            revision,
+        );
+        queued
     }
 
     pub(crate) async fn refresh_dashboard_subscribers(
@@ -112,7 +155,9 @@ impl GameSharedStateDispatcher {
                 .map_err(|_| "dashboard subscriber registry is unavailable")?
                 .get_mut(&dashboard_channel(&user_id))
             {
-                subscribers.retain(|subscriber| subscriber.sender.send(event.clone()).is_ok());
+                subscribers.retain(|subscriber| {
+                    self.queue_event(&subscriber.sender, event.clone(), &subscriber.user_id)
+                });
             }
         }
         Ok(())
@@ -272,6 +317,9 @@ impl GameSharedStateDispatcher {
             .subscribers
             .lock()
             .map_err(|_| "game subscriber registry is unavailable")?;
+        log::info!(target: "wwmtf::live_updates", "stage=publish channel={} registered={} revision={}",
+            self.diagnostic_tag(channel_id.as_str()), subscribers.get(&channel_id).map_or(0, Vec::len),
+            update.views_by_user.values().next().map_or(0, |view| view.revision));
         if let Some(channel_subscribers) = subscribers.get_mut(&channel_id) {
             channel_subscribers.retain(|subscriber| {
                 let Some(view) = update.views_by_user.get(&subscriber.user_id) else {
@@ -284,7 +332,7 @@ impl GameSharedStateDispatcher {
                     command_id,
                     created_at_ms,
                 )
-                .is_ok_and(|event| subscriber.sender.send(event).is_ok())
+                .is_ok_and(|event| self.queue_event(&subscriber.sender, event, &subscriber.user_id))
             });
         }
         let revision = update
@@ -297,7 +345,9 @@ impl GameSharedStateDispatcher {
                 channel_subscribers.retain(|subscriber| {
                     subscriber.user_id == *user_id
                         && Self::dashboard_event(user_id, view, revision, command_id, created_at_ms)
-                            .is_ok_and(|event| subscriber.sender.send(event).is_ok())
+                            .is_ok_and(|event| {
+                                self.queue_event(&subscriber.sender, event, &subscriber.user_id)
+                            })
                 });
             }
         }
@@ -313,6 +363,7 @@ impl GameSharedStateDispatcher {
 
 #[async_trait]
 impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
+    #[allow(clippy::too_many_lines)]
     async fn ingest_outbound(
         &self,
         context: &AuthenticatedTransportContext,
@@ -363,7 +414,24 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                     }
                 };
                 let resulting_revision = Revision::new(state.revision);
-                let update = self.server_update(game_id, &state).await?;
+                self.trace_event(
+                    "command_committed",
+                    &command.channel_id,
+                    context.participant_id.as_str(),
+                    state.revision,
+                );
+                let update = match self.server_update(game_id, &state).await {
+                    Ok(update) => update,
+                    Err(error) => {
+                        self.trace_event(
+                            "publish_preparation_failed",
+                            &command.channel_id,
+                            context.participant_id.as_str(),
+                            state.revision,
+                        );
+                        return Err(error);
+                    }
+                };
                 self.publish(
                     game_id,
                     &update,
@@ -377,6 +445,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
             }
             TransportOutbound::Subscribe(subscribe) => {
                 if dashboard_user(&subscribe.channel_id) == Some(context.participant_id.as_str()) {
+                    self.trace_event(
+                        "snapshot_requested",
+                        &subscribe.channel_id,
+                        context.participant_id.as_str(),
+                        0,
+                    );
                     let view = self.dashboard_view(context.participant_id.as_str()).await?;
                     let revision = self.next_dashboard_revision(&view);
                     return Ok(vec![TransportInbound::Snapshot(SnapshotEnvelope {
@@ -391,6 +465,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 let visibility = game_visibility_settings(&*self.database, game_id).await?;
                 let view = game_view(&state, player_id, visibility)
                     .ok_or("authorized game view is unavailable")?;
+                self.trace_event(
+                    "snapshot_ready",
+                    &subscribe.channel_id,
+                    context.participant_id.as_str(),
+                    state.revision,
+                );
                 Ok(vec![TransportInbound::Snapshot(SnapshotEnvelope {
                     channel_id: subscribe.channel_id,
                     revision: Revision::new(state.revision),
@@ -399,6 +479,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 })])
             }
             TransportOutbound::Unsubscribe(unsubscribe) => {
+                self.trace_event(
+                    "unsubscribe_requested",
+                    &unsubscribe.channel_id,
+                    context.participant_id.as_str(),
+                    0,
+                );
                 if dashboard_user(&unsubscribe.channel_id) == Some(context.participant_id.as_str())
                 {
                     return Ok(Vec::new());
@@ -435,6 +521,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
                 None,
                 0,
             )?)?;
+            self.trace_event(
+                "initial_event_queued",
+                channel_id,
+                context.participant_id.as_str(),
+                revision.value(),
+            );
             return Ok(receiver);
         }
         let (game_id, player) = self.authorize(context, channel_id).await?;
@@ -460,6 +552,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
             crate::observability::set_live_subscribers(live_subscribers);
         }
 
+        self.trace_event(
+            "subscriber_registered",
+            channel_id,
+            context.participant_id.as_str(),
+            0,
+        );
         // Register before loading so a command racing subscription is duplicated at worst, never
         // lost. Revision-aware clients converge on the newest update.
         let state = recover_game(&*self.database, game_id).await?;
@@ -473,6 +571,12 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
             None,
             0,
         )?)?;
+        self.trace_event(
+            "initial_event_queued",
+            channel_id,
+            context.participant_id.as_str(),
+            state.revision,
+        );
         Ok(receiver)
     }
 
@@ -481,38 +585,75 @@ impl SharedStateTransportDispatcher for GameSharedStateDispatcher {
         context: &AuthenticatedTransportContext,
         event: &EventEnvelope,
     ) -> Option<EventEnvelope> {
+        self.trace_event(
+            "projection_received",
+            &event.channel_id,
+            context.participant_id.as_str(),
+            event.revision.value(),
+        );
+        let projected = Self::project_private_event(context, event);
+        self.trace_event(
+            if projected.is_ok() {
+                "projection_ready"
+            } else {
+                "projection_dropped"
+            },
+            &event.channel_id,
+            context.participant_id.as_str(),
+            event.revision.value(),
+        );
+        if let Err(reason) = &projected {
+            log::warn!(target: "wwmtf::live_updates", "stage=projection_failed channel={} revision={} reason={reason}",
+                self.diagnostic_tag(event.channel_id.as_str()), event.revision.value());
+        }
+        projected.ok()
+    }
+}
+
+impl GameSharedStateDispatcher {
+    fn project_private_event(
+        context: &AuthenticatedTransportContext,
+        event: &EventEnvelope,
+    ) -> Result<EventEnvelope, &'static str> {
         if event
             .metadata
             .get(PRIVATE_PARTICIPANT_METADATA)
             .map(String::as_str)
             != Some(context.participant_id.as_str())
         {
-            return None;
+            return Err("participant_mismatch");
         }
         if event.event_name == DASHBOARD_EVENT {
-            let view: DashboardLiveView = event.payload.deserialize().ok()?;
-            return Some(EventEnvelope {
+            let view: DashboardLiveView = event
+                .payload
+                .deserialize()
+                .map_err(|_| "payload_decode_failed")?;
+            return Ok(EventEnvelope {
                 event_id: event.event_id.clone(),
                 channel_id: event.channel_id.clone(),
                 revision: event.revision,
                 command_id: event.command_id.clone(),
                 event_name: DASHBOARD_EVENT.to_string(),
-                payload: PayloadBlob::from_serializable(&view).ok()?,
+                payload: PayloadBlob::from_serializable(&view)
+                    .map_err(|_| "payload_encode_failed")?,
                 metadata: BTreeMap::new(),
                 created_at_ms: event.created_at_ms,
             });
         }
         if event.event_name != GAME_VIEW_EVENT {
-            return None;
+            return Err("unknown_event");
         }
-        let view: GameView = event.payload.deserialize().ok()?;
-        Some(EventEnvelope {
+        let view: GameView = event
+            .payload
+            .deserialize()
+            .map_err(|_| "payload_decode_failed")?;
+        Ok(EventEnvelope {
             event_id: event.event_id.clone(),
             channel_id: event.channel_id.clone(),
             revision: event.revision,
             command_id: event.command_id.clone(),
             event_name: GAME_VIEW_EVENT.to_string(),
-            payload: PayloadBlob::from_serializable(&view).ok()?,
+            payload: PayloadBlob::from_serializable(&view).map_err(|_| "payload_encode_failed")?,
             metadata: BTreeMap::new(),
             created_at_ms: event.created_at_ms,
         })
@@ -578,6 +719,25 @@ mod tests {
         accept_challenge, create_challenge, create_lobby, join_lobby, migrate_app, register,
         start_lobby,
     };
+
+    #[test]
+    fn diagnostic_tags_are_opaque_stable_and_process_local() {
+        block_on(async {
+            let (database, _, alice, bob, _) = fixture().await;
+            let first = GameSharedStateDispatcher::new(database.clone());
+            let second = GameSharedStateDispatcher::new(database);
+            let tag = first.diagnostic_tag(&alice);
+            assert_eq!(tag, first.diagnostic_tag(&alice));
+            assert_ne!(tag, first.diagnostic_tag(&bob));
+            assert_ne!(tag, second.diagnostic_tag(&alice));
+            assert_eq!(tag.len(), 16);
+            assert!(!tag.contains(&alice));
+            assert!(
+                tag.bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            );
+        });
+    }
 
     async fn fixture() -> (Arc<dyn Database>, GameId, String, String, String) {
         let database: Arc<dyn Database> = Arc::from(
