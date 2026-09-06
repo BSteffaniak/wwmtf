@@ -136,6 +136,8 @@ pub struct GameLobby {
     pub revision: u64,
     pub settings: LobbySettings,
     pub members: Vec<LobbyMember>,
+    pub usernames: std::collections::BTreeMap<String, String>,
+    pub invited_usernames: Vec<String>,
     pub started_game_id: Option<GameId>,
 }
 
@@ -282,11 +284,23 @@ pub async fn join_lobby_by_id(
     now: OffsetDateTime,
 ) -> Result<String, LobbyError> {
     let tx = db.begin_transaction().await?;
+    join_lobby_in_transaction(&*tx, lobby_id, user_id, policy, now).await?;
+    tx.commit().await?;
+    Ok(lobby_id.to_string())
+}
+
+async fn join_lobby_in_transaction(
+    tx: &dyn Database,
+    lobby_id: &str,
+    user_id: &str,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> Result<(), LobbyError> {
     let rows = tx
         .select("game_lobbies")
         .where_eq("lobby_id", lobby_id)
         .where_eq("status", "OPEN")
-        .execute(&*tx)
+        .execute(tx)
         .await?;
     let row = rows.first().ok_or(LobbyError::Unavailable)?;
     let settings = settings(row)?;
@@ -294,13 +308,13 @@ pub async fn join_lobby_by_id(
     if signed(row, "invitation_expires_at_ms")? <= timestamp_ms(now)? {
         return Err(LobbyError::Unavailable);
     }
-    let members = member_rows(&*tx, lobby_id).await?;
+    let members = member_rows(tx, lobby_id).await?;
     if members.len() >= settings.max_players
         || members.iter().any(|member| member.user_id == user_id)
     {
         return Err(LobbyError::Unavailable);
     }
-    insert_member(&*tx, lobby_id, user_id, members.len(), timestamp_ms(now)?).await?;
+    insert_member(tx, lobby_id, user_id, members.len(), timestamp_ms(now)?).await?;
     let revision = signed(row, "revision")?;
     let updated = tx
         .update("game_lobbies")
@@ -312,13 +326,117 @@ pub async fn join_lobby_by_id(
         .where_eq("lobby_id", lobby_id)
         .where_eq("status", "OPEN")
         .where_eq("revision", revision)
+        .execute(tx)
+        .await?;
+    if updated.len() != 1 {
+        return Err(LobbyError::Conflict);
+    }
+    Ok(())
+}
+
+/// Invites an exact username to an open lobby as its creator.
+///
+/// # Errors
+///
+/// Returns authorization, availability, username, or persistence errors.
+pub async fn invite_lobby_username(
+    db: &dyn Database,
+    lobby_id: &str,
+    creator_user_id: &str,
+    username: &str,
+    now: OffsetDateTime,
+) -> Result<(), LobbyError> {
+    let normalized = crate::normalize_username(username.trim().trim_start_matches('@'))
+        .map_err(|_| LobbyError::UnknownUsername)?;
+    let (user_id, _) = crate::find_user_by_username(db, &normalized)
+        .await?
+        .ok_or(LobbyError::UnknownUsername)?;
+    let tx = db.begin_transaction().await?;
+    let lobby = load_lobby(&*tx, lobby_id, creator_user_id).await?;
+    if lobby.creator_user_id != creator_user_id {
+        return Err(LobbyError::Unauthorized);
+    }
+    let rows = tx
+        .select("game_lobbies")
+        .where_eq("lobby_id", lobby_id)
+        .execute(&*tx)
+        .await?;
+    let row = rows.first().ok_or(LobbyError::Unavailable)?;
+    if lobby.status != "OPEN"
+        || signed(row, "invitation_expires_at_ms")? <= timestamp_ms(now)?
+        || lobby.members.len() >= lobby.settings.max_players
+        || lobby.members.iter().any(|member| member.user_id == user_id)
+    {
+        return Err(LobbyError::Unavailable);
+    }
+    let updated = tx
+        .update("game_lobbies")
+        .value(
+            "revision",
+            signed(row, "revision")?
+                .checked_add(1)
+                .ok_or(LobbyError::Invalid)?,
+        )
+        .value("updated_at_ms", timestamp_ms(now)?)
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("status", "OPEN")
+        .where_eq("revision", signed(row, "revision")?)
         .execute(&*tx)
         .await?;
     if updated.len() != 1 {
         return Err(LobbyError::Conflict);
     }
+    let id = format!("{lobby_id}:{user_id}");
+    let existing = tx
+        .select("lobby_invitations")
+        .where_eq("invitation_id", id.clone())
+        .execute(&*tx)
+        .await?;
+    if !existing.is_empty() {
+        return Err(LobbyError::AlreadyInvited);
+    }
+    tx.insert("lobby_invitations")
+        .value("invitation_id", id)
+        .value("lobby_id", lobby_id)
+        .value("user_id", user_id)
+        .value("status", "PENDING")
+        .value("created_at_ms", timestamp_ms(now)?)
+        .execute(&*tx)
+        .await?;
     tx.commit().await?;
-    Ok(lobby_id.to_string())
+    Ok(())
+}
+
+/// Accepts or declines a private lobby invitation as its recipient.
+///
+/// # Errors
+///
+/// Returns availability, policy, or persistence errors.
+pub async fn respond_lobby_invitation(
+    db: &dyn Database,
+    lobby_id: &str,
+    user_id: &str,
+    accept: bool,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> Result<(), LobbyError> {
+    let tx = db.begin_transaction().await?;
+    let updated = tx
+        .update("lobby_invitations")
+        .value("status", if accept { "ACCEPTED" } else { "DECLINED" })
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(&*tx)
+        .await?;
+    if updated.len() != 1 {
+        return Err(LobbyError::Unavailable);
+    }
+    if accept {
+        join_lobby_in_transaction(&*tx, lobby_id, user_id, policy, now).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Loads a lobby for one current member.
@@ -341,7 +459,29 @@ pub async fn load_lobby(
         .execute(db)
         .await?;
     let row = rows.first().ok_or(LobbyError::Unavailable)?;
+    let mut usernames = std::collections::BTreeMap::new();
+    for member in &members {
+        usernames.insert(
+            member.user_id.clone(),
+            lobby_username(db, &member.user_id).await?,
+        );
+    }
+    let mut invited_usernames = Vec::new();
+    if string(row, "creator_user_id")? == user_id {
+        for invite in db
+            .select("lobby_invitations")
+            .where_eq("lobby_id", lobby_id)
+            .where_eq("status", "PENDING")
+            .execute(db)
+            .await?
+        {
+            invited_usernames.push(lobby_username(db, &string(&invite, "user_id")?).await?);
+        }
+        invited_usernames.sort();
+    }
     Ok(GameLobby {
+        usernames,
+        invited_usernames,
         lobby_id: lobby_id.to_string(),
         creator_user_id: string(row, "creator_user_id")?,
         status: string(row, "status")?,
@@ -353,6 +493,15 @@ pub async fn load_lobby(
             .transpose()
             .map_err(|_| LobbyError::Invalid)?,
     })
+}
+
+async fn lobby_username(db: &dyn Database, user_id: &str) -> Result<String, LobbyError> {
+    let rows = db
+        .select("users")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?;
+    string(rows.first().ok_or(LobbyError::Invalid)?, "username_display")
 }
 
 /// Updates settings for an open lobby as its creator.
@@ -642,6 +791,13 @@ async fn insert_member(
         .value("joined_at_ms", joined_at_ms)
         .execute(db)
         .await?;
+    db.update("lobby_invitations")
+        .value("status", "ACCEPTED")
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -732,6 +888,10 @@ pub enum LobbyError {
     Unauthorized,
     #[error("at least two valid members are required to start")]
     NotReady,
+    #[error("username was not found")]
+    UnknownUsername,
+    #[error("this player has already been invited")]
+    AlreadyInvited,
     #[error("lobby changed concurrently")]
     Conflict,
     #[error("lobby data is malformed")]
@@ -753,6 +913,138 @@ mod tests {
     use super::*;
     use crate::{migrate_app, recover_game, register};
     use futures_lite::future::block_on;
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn username_invites_are_private_and_join_the_configured_lobby() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let mut users = Vec::new();
+            for name in ["alice", "bob", "carol", "dave"] {
+                users.push(
+                    register(&*db, name, "correct horse battery staple", now)
+                        .await
+                        .expect("user"),
+                );
+            }
+            let [alice, bob, carol, dave] = users.as_slice() else {
+                panic!("four users")
+            };
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let settings = LobbySettings {
+                max_players: 3,
+                board_size: 17,
+                tile_set_count: 2,
+                first_player: FirstPlayerPolicy::Creator,
+                visibility: GameVisibilitySettings::default(),
+            };
+            let (id, _) = create_lobby(
+                &*db,
+                alice,
+                settings.clone(),
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby");
+            assert!(
+                invite_lobby_username(&*db, &id, bob, "carol", now)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                invite_lobby_username(&*db, &id, alice, "alice", now)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                invite_lobby_username(&*db, &id, alice, "missing", now)
+                    .await
+                    .is_err()
+            );
+            invite_lobby_username(&*db, &id, alice, " @BOB ", now)
+                .await
+                .expect("invite bob");
+            assert!(matches!(
+                invite_lobby_username(&*db, &id, alice, "bob", now).await,
+                Err(LobbyError::AlreadyInvited)
+            ));
+            invite_lobby_username(&*db, &id, alice, "carol", now)
+                .await
+                .expect("invite carol");
+            invite_lobby_username(&*db, &id, alice, "dave", now)
+                .await
+                .expect("invite dave");
+            assert!(load_lobby(&*db, &id, bob).await.is_err());
+            let pending = crate::dashboard_projection(&*db, bob)
+                .await
+                .expect("dashboard")
+                .pending;
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].kind, "LOBBY_INVITATION");
+            assert_eq!(
+                load_lobby(&*db, &id, alice)
+                    .await
+                    .expect("creator view")
+                    .invited_usernames,
+                ["bob", "carol", "dave"]
+            );
+            respond_lobby_invitation(&*db, &id, bob, true, policy, now)
+                .await
+                .expect("accept");
+            assert!(
+                respond_lobby_invitation(&*db, &id, bob, true, policy, now)
+                    .await
+                    .is_err()
+            );
+            let lobby = load_lobby(&*db, &id, bob).await.expect("member view");
+            assert_eq!(lobby.settings, settings);
+            assert!(lobby.invited_usernames.is_empty());
+            assert_eq!(lobby.usernames[bob], "bob");
+            respond_lobby_invitation(&*db, &id, carol, true, policy, now)
+                .await
+                .expect("third player");
+            assert!(
+                respond_lobby_invitation(&*db, &id, dave, true, policy, now)
+                    .await
+                    .is_err()
+            );
+            respond_lobby_invitation(&*db, &id, dave, false, policy, now)
+                .await
+                .expect("decline after failed acceptance rolls back");
+            assert!(
+                crate::dashboard_projection(&*db, dave)
+                    .await
+                    .expect("dashboard")
+                    .pending
+                    .is_empty()
+            );
+            let game = start_lobby(&*db, &id, alice, policy, now, 17)
+                .await
+                .expect("start configured game");
+            assert_eq!(
+                recover_game(&*db, game)
+                    .await
+                    .expect("recover")
+                    .players
+                    .len(),
+                3
+            );
+            assert!(
+                invite_lobby_username(&*db, &id, alice, "dave", now)
+                    .await
+                    .is_err()
+            );
+        });
+    }
 
     #[test]
     fn durable_lobby_identity_joins_only_while_open() {

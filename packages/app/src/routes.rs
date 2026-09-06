@@ -25,12 +25,12 @@ use crate::{
     AuthenticatedDashboard, AuthorizedGamePage, FirstPlayerPolicy, GameCreationPolicy, GameLobby,
     GameVisibilitySettings, GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError,
     ProductWorkflowError, UserScoreTotals, accept_pending_challenge, cancel_lobby,
-    cancel_pending_challenge, challenge_username, claim_oidc_attempt, cleanup_oidc_attempts,
-    clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt, create_lobby,
-    create_oidc_attempt, create_shareable_invitation, decline_pending_challenge, error_component,
-    find_or_create_development_user, google_login_and_create_session, join_lobby, join_lobby_by_id,
-    leave_lobby, load_authenticated_dashboard, load_authorized_game_page, load_lobby,
-    load_move_plan, logout_session, move_history_component, redeem_shareable_invitation,
+    cancel_pending_challenge, claim_oidc_attempt, cleanup_oidc_attempts, clear_move_plan,
+    complete_legacy_google_migration, consume_oidc_attempt, create_lobby, create_oidc_attempt,
+    decline_pending_challenge, error_component, find_or_create_development_user,
+    google_login_and_create_session, join_lobby, join_lobby_by_id, leave_lobby,
+    load_authenticated_dashboard, load_authorized_game_page, load_lobby, load_move_plan,
+    logout_session, move_history_component, redeem_shareable_invitation,
     redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan, start_lobby,
     update_lobby_settings,
 };
@@ -40,6 +40,8 @@ struct LobbyActionForm {
     action: String,
     #[serde(default)]
     invitation_token: String,
+    #[serde(default)]
+    username: String,
     #[serde(default = "default_lobby_max_players")]
     max_players: usize,
     #[serde(default = "default_lobby_board_size")]
@@ -95,8 +97,6 @@ fn lobby_settings(form: &LobbyActionForm, creator_user_id: &str) -> LobbySetting
 struct DashboardActionForm {
     action: String,
     #[serde(default)]
-    username: String,
-    #[serde(default)]
     challenge_id: String,
     #[serde(default)]
     invitation_id: String,
@@ -104,15 +104,6 @@ struct DashboardActionForm {
     invitation_token: String,
     #[serde(default)]
     display_name: String,
-}
-
-#[derive(Debug)]
-enum DashboardActionSuccess {
-    Updated,
-    InvitationCreated {
-        invitation_id: String,
-        token: String,
-    },
 }
 
 const fn product_error_message(error: &ProductWorkflowError) -> &'static str {
@@ -177,7 +168,7 @@ async fn custom_avatar_route(
 async fn dashboard_action_route(
     database: &dyn Database,
     dispatcher: &crate::GameSharedStateDispatcher,
-    public_base_url: &str,
+    _public_base_url: &str,
     request: &RouteRequest,
     now: OffsetDateTime,
 ) -> Container {
@@ -188,40 +179,23 @@ async fn dashboard_action_route(
         Ok(form) => form,
         Err(_) => return error_component("The dashboard action was incomplete."),
     };
-    let result: Result<DashboardActionSuccess, ProductWorkflowError> = match form.action.as_str() {
-        "CHALLENGE" => challenge_username(database, &user_id, &form.username, now)
-            .await
-            .map(|_| DashboardActionSuccess::Updated),
+    let result: Result<(), ProductWorkflowError> = match form.action.as_str() {
         "ACCEPT_CHALLENGE" => accept_pending_challenge(database, &form.challenge_id, &user_id, now)
             .await
-            .map(|_| DashboardActionSuccess::Updated),
+            .map(|_| ()),
         "DECLINE_CHALLENGE" => {
-            decline_pending_challenge(database, &form.challenge_id, &user_id, now)
-                .await
-                .map(|()| DashboardActionSuccess::Updated)
+            decline_pending_challenge(database, &form.challenge_id, &user_id, now).await
         }
-        "CANCEL_CHALLENGE" => cancel_pending_challenge(database, &form.challenge_id, &user_id, now)
-            .await
-            .map(|()| DashboardActionSuccess::Updated),
-        "CREATE_INVITATION" => {
-            create_shareable_invitation(database, &user_id, now, Duration::days(30))
-                .await
-                .map(
-                    |(invitation_id, token)| DashboardActionSuccess::InvitationCreated {
-                        invitation_id,
-                        token: token.expose().to_string(),
-                    },
-                )
+        "CANCEL_CHALLENGE" => {
+            cancel_pending_challenge(database, &form.challenge_id, &user_id, now).await
         }
         "REDEEM_INVITATION" => {
             redeem_shareable_invitation(database, &form.invitation_token, &user_id, now)
                 .await
-                .map(|_| DashboardActionSuccess::Updated)
+                .map(|_| ())
         }
         "REVOKE_INVITATION" => {
-            revoke_shareable_invitation(database, &form.invitation_id, &user_id, now)
-                .await
-                .map(|()| DashboardActionSuccess::Updated)
+            revoke_shareable_invitation(database, &form.invitation_id, &user_id, now).await
         }
         "SET_DISPLAY_NAME" => {
             return match crate::set_custom_display_name(database, &user_id, &form.display_name, now)
@@ -251,35 +225,20 @@ async fn dashboard_action_route(
         }
         _ => return error_component("The dashboard action is unknown."),
     };
-    let success = match result {
-        Ok(success) => success,
-        Err(error) => return error_component(product_error_message(&error)),
-    };
-    let publish_dashboard_refresh = matches!(success, DashboardActionSuccess::Updated);
+    if let Err(error) = result {
+        return error_component(product_error_message(&error));
+    }
     let dashboard = load_authenticated_dashboard(database, &request.cookies, now).await;
-    // A newly generated invitation secret exists only in this response. Broadcasting an immediate
-    // generic dashboard refresh to the creating tab could replace it before the user can share it.
-    if publish_dashboard_refresh
-        && dispatcher
-            .refresh_dashboard_subscribers(
-                now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX),
-            )
-            .await
-            .is_err()
+    if dispatcher
+        .refresh_dashboard_subscribers(now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX))
+        .await
+        .is_err()
     {
         #[cfg(feature = "metrics")]
         crate::observability::record_database_failure("refresh_dashboard_subscribers");
     }
     match dashboard {
-        Ok(dashboard) => match success {
-            DashboardActionSuccess::Updated => dashboard_page(&dashboard),
-            DashboardActionSuccess::InvitationCreated {
-                invitation_id,
-                token,
-            } => {
-                dashboard_page_with_invitation(&dashboard, &invitation_id, &token, public_base_url)
-            }
-        },
+        Ok(dashboard) => dashboard_page(&dashboard),
         Err(PresentationError::Unauthenticated) => {
             error_component("Your session expired. Sign in and review your dashboard.")
         }
@@ -1702,7 +1661,7 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                     span hidden fx-immediate=(ActionType::Navigate { url: format!("/games/{game_id}") }) { }
                 }
                 anchor href="/" color=#526243 { "← Dashboard" }
-                h1 { "Multiplayer lobby" }
+                h1 { "Game lobby" }
                 span color=#5d6258 { (lobby.members.len()) " of " (lobby.settings.max_players) " seats joined" }
                 section id="lobby-settings" gap="5px" {
                     h2 { "Game settings" }
@@ -1716,7 +1675,23 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                     section id="lobby-invitation" background=#e8f1e3 padding=14 border-radius="10px" gap="5px" {
                         span font-weight=bold { "Private invitation" }
                         anchor href=(invitation_url) overflow-wrap="anywhere" color="#36512e" { (invitation_url) }
-                        span color=#5d6258 { "This secret link is shown only after lobby creation. Members may join while the lobby is open." }
+                        span color=#5d6258 { "Share this private link, or invite players by username. Players can join while the lobby is open." }
+                    }
+                }
+                @if is_creator && lobby.status == "OPEN" {
+                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" gap="8px" {
+                        input type=hidden name="action" value="INVITE";
+                        h2 { "Invite by username" }
+                        input type=text name="username" placeholder="Exact @username" required=true padding="12px" border=(("#cfc8b8", 1)) border-radius="8px";
+                        button type=submit background=#2f8a57 color=#ffffff padding="12px" border-radius="8px" { "Send invite" }
+                    }
+                }
+                @if !lobby.invited_usernames.is_empty() {
+                    section gap="6px" {
+                        h2 { "Invites sent" }
+                        @for username in &lobby.invited_usernames {
+                            span { "@" (username) " — awaiting response" }
+                        }
                     }
                 }
                 section id="lobby-members" gap="6px" {
@@ -1724,7 +1699,7 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
                     @for member in &lobby.members {
                         div direction="row" gap="8px" border-bottom=(("#ded8c9", 1)) padding-y="6px" {
                             span font-weight=bold { "Seat " (member.seat + 1) }
-                            span { (member.user_id.as_str()) }
+                            span { "@" (lobby.usernames.get(&member.user_id).map_or(member.user_id.as_str(), String::as_str)) }
                             @if member.user_id == lobby.creator_user_id { span color=#526243 { "Creator" } }
                         }
                     }
@@ -1837,7 +1812,7 @@ fn lobby_creation_page() -> Container {
             main width="100%" max-width="760px" background=#ffffff border=(("#ded8c9", 1))
                 border-radius="18px" padding="28px" gap="18px" {
                 anchor href="/" color=#526243 { "← Dashboard" }
-                h1 { "Create a multiplayer lobby" }
+                h1 { "Create game" }
                 span color=#5d6258 { "Choose the initial settings. You can change them again before starting the game." }
                 form hx-post="/lobbies/create" hx-target="#app-page" gap="14px" {
                     input type=hidden name="action" value="CREATE";
@@ -1882,7 +1857,7 @@ fn lobby_creation_page() -> Container {
                         }
                     }
                     button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
-                        border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Create lobby" }
+                        border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Create game" }
                 }
             }
         }
@@ -1925,6 +1900,7 @@ async fn lobby_create_route(
         .parse_form::<LobbyActionForm>()
         .unwrap_or_else(|_| LobbyActionForm {
             action: "CREATE".to_string(),
+            username: String::new(),
             invitation_token: String::new(),
             max_players: 4,
             board_size: 15,
@@ -2066,6 +2042,21 @@ async fn lobby_action_route(
     };
     let action = form.action.as_str();
     let result = match action {
+        "INVITE" => {
+            crate::lobbies::invite_lobby_username(database, lobby_id, &user_id, &form.username, now)
+                .await
+                .map(|()| None)
+        }
+        "ACCEPT_INVITE" | "DECLINE_INVITE" => crate::lobbies::respond_lobby_invitation(
+            database,
+            lobby_id,
+            &user_id,
+            action == "ACCEPT_INVITE",
+            policy,
+            now,
+        )
+        .await
+        .map(|()| None),
         "UPDATE" => update_lobby_settings(
             database,
             lobby_id,
@@ -2104,7 +2095,7 @@ async fn lobby_action_route(
             refresh_lobby_dashboards(dispatcher, now).await;
             view_with_internal_navigation(format!("/games/{game_id}"))
         }
-        Ok(None) if matches!(action, "CANCEL" | "LEAVE") => {
+        Ok(None) if matches!(action, "CANCEL" | "LEAVE" | "DECLINE_INVITE") => {
             refresh_lobby_dashboards(dispatcher, now).await;
             view_with_internal_navigation("/".to_string())
         }
@@ -2869,101 +2860,29 @@ pub fn signed_out_page() -> Container {
 /// Renders the complete signed-in dashboard projection.
 #[must_use]
 pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
-    dashboard_page_content(dashboard, None)
-}
-
-fn dashboard_page_with_invitation(
-    dashboard: &AuthenticatedDashboard,
-    invitation_id: &str,
-    token: &str,
-    public_base_url: &str,
-) -> Container {
-    dashboard_page_content(dashboard, Some((invitation_id, token, public_base_url)))
-}
-
-fn dashboard_request_before() -> ActionType {
-    ActionType::Multi(vec![
-        ActionType::display_by_id("dashboard-action-progress"),
-        ActionType::no_display_by_id("dashboard-action-error"),
-    ])
-}
-
-fn dashboard_request_after() -> ActionType {
-    ActionType::no_display_by_id("dashboard-action-progress")
-}
-
-fn dashboard_request_error() -> ActionType {
-    ActionType::display_by_id("dashboard-action-error")
+    dashboard_page_content(dashboard)
 }
 
 fn start_game_component() -> Container {
     container! {
         section id="new-game-actions" width="100%" gap="14px" {
-            div gap="5px" {
-                h2 { "Start a game" }
-                span color=#5d6258 { "Challenge another player using their exact stable @handle, shown on their profile and game views, or make a one-time private invite." }
-            }
-            div id="dashboard-action-status" min-height="48px" {
-                div id="dashboard-action-progress" hidden background=#e8f1e3 border=(("#a9bf9c", 1))
-                    border-radius="10px" padding="12px" { span { "Working…" } }
-                div id="dashboard-action-error" hidden background=#fff3e8 border=(("#e2b98f", 1))
-                    border-radius="10px" padding="12px" { span { "The request did not complete. Check your connection and try again." } }
-            }
-            section background=#e8f1e3 padding=14 border-radius="10px" gap="8px" {
-                h3 { "Create multiplayer lobby" }
-                span color=#5d6258 { "Configure a private lobby, share its invitation, and start when at least two members have joined." }
-                anchor href="/lobbies/new" background=#2f8a57 color=#ffffff padding-y=12 padding-x=16
-                    border=(("#246d45", 1)) border-radius="10px" { "Create multiplayer lobby" }
-            }
-            form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
-                fx-http-before-request=(dashboard_request_before())
-                fx-http-after_request=(dashboard_request_after())
-                fx-http-error=(dashboard_request_error()) {
-                input type=hidden name="action" value="CHALLENGE";
-                input type=text name="username" placeholder="Exact @handle" padding-y=13 padding-x=14
-                    border=(("#cfc8b8", 1)) border-radius="10px";
-                button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
-                    border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Send challenge" }
-            }
-            form hx-post="/dashboard/action" hx-target="#app-page" gap="8px"
-                fx-http-before-request=(dashboard_request_before())
-                fx-http-after-request=(dashboard_request_after())
-                fx-http-error=(dashboard_request_error()) {
-                input type=hidden name="action" value="CREATE_INVITATION";
-                button type=submit padding-y=12 padding-x=16 background=#f4ead7 color=#664f2e
-                    border=(("#cfb98e", 1)) border-radius="10px" cursor=pointer { "Create private invite link" }
-            }
-            form hx-post="/dashboard/action" hx-target="#app-page" gap="10px"
-                fx-http-before-request=(dashboard_request_before())
-                fx-http-after-request=(dashboard_request_after())
-                fx-http-error=(dashboard_request_error()) {
-                input type=hidden name="action" value="REDEEM_INVITATION";
-                input type=text name="invitation_token" placeholder="Paste an invite token" padding-y=13 padding-x=14
-                    border=(("#cfc8b8", 1)) border-radius="10px";
-                button type=submit padding-y=12 padding-x=16 background=#ffffff color=#526243
-                    border=(("#839276", 1)) border-radius="10px" cursor=pointer { "Join game" }
-            }
+            h2 { "Start a game" }
+            span color=#5d6258 { "Choose your settings, invite players by username or link, and start from the lobby. For two players or more." }
+            anchor href="/lobbies/new" background=#2f8a57 color=#ffffff padding-y=12 padding-x=16
+                border=(("#246d45", 1)) border-radius="10px" { "Create game" }
         }
     }
     .into()
 }
 
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::large_stack_frames)]
-fn dashboard_page_content(
-    dashboard: &AuthenticatedDashboard,
-    created_invitation: Option<(&str, &str, &str)>,
-) -> Container {
+#[allow(clippy::too_many_lines, clippy::large_stack_frames)]
+fn dashboard_page_content(dashboard: &AuthenticatedDashboard) -> Container {
     let user_id = dashboard.user_id.as_str();
     let username = dashboard.username.as_str();
     let display_name = dashboard.display_name.as_str();
     let avatar_url = dashboard.avatar_url.as_deref();
     let totals = score_totals_label(dashboard.score_totals.as_ref());
     let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
-    let created_invitation_id = created_invitation.map(|(id, _, _)| id).unwrap_or_default();
-    let created_invitation_path = created_invitation
-        .map(|(_, token, base_url)| format!("{base_url}/join?invite={token}"))
-        .unwrap_or_default();
     let refresh_dashboard = ActionType::Navigate {
         url: "/".to_string(),
     };
@@ -2990,19 +2909,6 @@ fn dashboard_page_content(
                         }
                     }
                     anchor href="/logout" color=#526243 { "Sign out" }
-                }
-                @if let Some((_, token, _)) = created_invitation {
-                    section id="created-invitation" background=#e8f1e3 border=(("#a9bf9c", 1))
-                        border-radius="16px" padding="22px" gap="10px" {
-                        span color=#3f5735 font-weight=bold { "Invitation ready" }
-                        h2 { "Send this private link to your opponent" }
-                        span color=#4f594a { "This is the only time the secret link can be shown. It expires in 30 days and can be used once." }
-                        anchor href=(created_invitation_path.as_str()) color="#36512e" overflow-wrap="anywhere" {
-                            (created_invitation_path.as_str())
-                        }
-                        span color=#6b7267 { "Invite token (for manual entry):" }
-                        span overflow-wrap="anywhere" font-weight=bold { (token) }
-                    }
                 }
                 section id="active-games" data-dashboard-order="1" background=#ffffff border=(("#ded8c9", 1))
                     border-radius="16px" padding="24px" gap="4px" {
@@ -3064,12 +2970,15 @@ fn dashboard_page_content(
                         @let counterparty = item.counterparty_display_name.as_deref()
                             .or(item.counterparty_username.as_deref())
                             .unwrap_or("Private invite");
-                        @let heading = if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
+                        @let heading = if item.kind == "LOBBY" {
+                            "Game lobby".to_string()
+                        } else if item.kind == "LOBBY_INVITATION" {
+                            format!("Lobby invite from {counterparty}")
+                        } else if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
                             format!("Challenge from {counterparty}")
                         } else if item.kind == "CHALLENGE" {
                             format!("Challenge sent to {counterparty}")
-                        } else if item.id == created_invitation_id {
-                            "New private invitation".to_string()
+
                         } else {
                             "Active private invitation".to_string()
                         };
@@ -3088,13 +2997,24 @@ fn dashboard_page_content(
                                     ) && display_name != handle {
                                         span color=#777b73 { "@" (handle) }
                                     }
-                                    @if item.kind == "INVITATION" && item.id != created_invitation_id {
+                                    @if item.kind == "INVITATION" {
                                         span color=#777b73 { "Link hidden after creation for security." }
                                     }
                                 }
                             }
                             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
-                                @if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
+                                @if item.kind == "LOBBY" {
+                                    anchor href=(format!("/lobbies/{}", item.id)) { "Open lobby" }
+                                } @else if item.kind == "LOBBY_INVITATION" {
+                                    form hx-post=(format!("/lobbies/{}/action", item.id)) hx-target="#app-page" {
+                                        input type=hidden name="action" value="ACCEPT_INVITE";
+                                        button type=submit padding="10px" background=#526243 color=#ffffff border-radius="8px" { "Accept invite" }
+                                    }
+                                    form hx-post=(format!("/lobbies/{}/action", item.id)) hx-target="#app-page" {
+                                        input type=hidden name="action" value="DECLINE_INVITE";
+                                        button type=submit padding="10px" { "Decline" }
+                                    }
+                                } @else if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
                                     form hx-post="/dashboard/action" hx-target="#app-page" {
                                         input type=hidden name="action" value="ACCEPT_CHALLENGE";
                                         input type=hidden name="challenge_id" value=(item.id.as_str());
@@ -4275,7 +4195,7 @@ mod tests {
                     .expect("creation page")
                     .display_to_string(false, false)
                     .expect("renders")
-                    .contains("Create a multiplayer lobby")
+                    .contains("Create game")
             );
 
             let mut post = get;
@@ -4561,10 +4481,12 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_explains_exact_stable_handle_challenges() {
+    fn dashboard_has_one_game_creation_path() {
         let page = start_game_component().to_string();
-        assert!(page.contains("exact stable @handle"));
-        assert!(page.contains("Exact @handle"));
+        assert!(page.contains("/lobbies/new"));
+        assert!(page.contains("invite players by username"));
+        assert!(!page.contains("CHALLENGE"));
+        assert!(!page.contains("CREATE_INVITATION"));
     }
 
     #[test]
@@ -4641,7 +4563,7 @@ mod tests {
     }
 
     #[test]
-    fn invitation_creation_returns_the_only_shareable_link_and_uses_display_name() {
+    fn legacy_invitation_creation_is_not_available() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
                 switchy_database_connection::builder()
@@ -4683,10 +4605,14 @@ mod tests {
             .display_to_string(false, false)
             .expect("dashboard renders");
 
-            assert!(rendered.contains("Invitation ready"));
-            assert!(rendered.contains("https://games.example.test/join?invite="));
-            assert!(rendered.contains("Signed in as alice"));
-            assert!(!rendered.contains(&format!("Signed in as {alice}")));
+            assert!(rendered.contains("The dashboard action is unknown"));
+            assert!(
+                crate::dashboard_projection(&*database, &alice)
+                    .await
+                    .expect("projection")
+                    .pending
+                    .is_empty()
+            );
         });
     }
 
@@ -5030,6 +4956,10 @@ mod tests {
                 SESSION_COOKIE_NAME.to_string(),
                 alice_session.expose().to_string(),
             );
+            // Existing challenges remain actionable, but cannot be created through the dashboard.
+            crate::challenge_username(&*database, &alice, "bob", now)
+                .await
+                .expect("legacy challenge");
             challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
             let rendered = dashboard_action_route(
                 &*database,
@@ -5041,7 +4971,8 @@ mod tests {
             .await
             .display_to_string(false, false)
             .expect("dashboard renders");
-            assert!(rendered.contains("OUTGOING"));
+            assert!(rendered.contains("The dashboard action is unknown"));
+            refresh_lobby_dashboards(&dispatcher, now).await;
 
             let refresh = bob_events.recv_async().await.expect("Bob refresh arrives");
             assert!(refresh.revision.value() > initial.revision.value());
@@ -5155,12 +5086,12 @@ mod tests {
             assert!(dashboard.contains("You 0 – 0 bob"));
             assert!(dashboard.contains("Signed in as"));
             assert!(dashboard.contains("new-game-actions"));
-            assert!(dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
-            assert!(dashboard.contains("name=\"action\" value=\"CREATE_INVITATION\""));
-            assert!(dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
-            assert!(dashboard.contains("dashboard-action-progress"));
-            assert!(dashboard.contains("dashboard-action-error"));
-            assert!(dashboard.contains("dashboard-action-status"));
+            assert!(!dashboard.contains("name=\"action\" value=\"CHALLENGE\""));
+            assert!(!dashboard.contains("name=\"action\" value=\"CREATE_INVITATION\""));
+            assert!(!dashboard.contains("name=\"action\" value=\"REDEEM_INVITATION\""));
+            assert!(!dashboard.contains("dashboard-action-progress"));
+            assert!(!dashboard.contains("dashboard-action-error"));
+            assert!(!dashboard.contains("dashboard-action-status"));
             let active_position = dashboard
                 .find("id=\"active-games\"")
                 .expect("games section");
@@ -5737,6 +5668,10 @@ mod tests {
                 SESSION_COOKIE_NAME.to_string(),
                 alice_session.expose().to_string(),
             );
+            // Existing challenges remain actionable, but cannot be created through the dashboard.
+            crate::challenge_username(&*database, &alice, "bob", now)
+                .await
+                .expect("legacy challenge");
             challenge.body = Some(std::sync::Arc::new("action=CHALLENGE&username=bob".into()));
             let alice_dashboard = dashboard_action_route(
                 &*database,
@@ -5748,7 +5683,7 @@ mod tests {
             .await
             .display_to_string(false, false)
             .expect("dashboard renders");
-            assert!(alice_dashboard.contains("OUTGOING"));
+            assert!(alice_dashboard.contains("The dashboard action is unknown"));
 
             let bob_dashboard = load_authenticated_dashboard(
                 &*database,
@@ -6122,7 +6057,7 @@ mod tests {
                 .expect("creation page is primary")
                 .display_to_string(false, false)
                 .expect("creation page renders");
-            assert!(page.contains("Create a multiplayer lobby"));
+            assert!(page.contains("Create game"));
             assert!(!page.contains("Lobby unavailable"));
         });
     }

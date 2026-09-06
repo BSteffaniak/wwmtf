@@ -547,6 +547,18 @@ pub fn app_migrations() -> CodeMigrationSource<'static> {
         "show_remaining_tile_faces",
         0,
     ));
+    source.add_migration(table_migration(
+        "055_lobby_invitations",
+        "lobby_invitations",
+        vec![
+            text("invitation_id"),
+            text("lobby_id"),
+            text("user_id"),
+            text("status"),
+            bigint("created_at_ms"),
+        ],
+        "invitation_id",
+    ));
     source
 }
 
@@ -658,9 +670,9 @@ mod tests {
     fn application_schema_has_stable_migration_count() {
         let source = app_migrations();
         let migrations = block_on(source.migrations()).expect("migrations are discoverable");
-        assert_eq!(migrations.len(), 51);
+        assert_eq!(migrations.len(), 52);
         assert_eq!(migrations[0].id(), "001_users");
-        assert_eq!(migrations[50].id(), "054_games_remaining_tile_faces");
+        assert_eq!(migrations[51].id(), "055_lobby_invitations");
     }
 
     #[test]

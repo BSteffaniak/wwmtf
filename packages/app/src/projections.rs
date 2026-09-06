@@ -483,6 +483,7 @@ pub async fn dashboard_projection(
             created_at_ms: signed_column(&row, "created_at_ms")?,
         });
     }
+    pending.extend(lobby_pending_items(db, user_id).await?);
     pending.sort_by(|left, right| {
         right
             .created_at_ms
@@ -493,6 +494,69 @@ pub async fn dashboard_projection(
         pending,
         games: user_game_summaries(db, user_id).await?,
     })
+}
+
+async fn lobby_pending_items(
+    db: &dyn Database,
+    user_id: &str,
+) -> Result<Vec<PendingItem>, ProjectionError> {
+    let mut pending = Vec::new();
+    for row in db
+        .select("lobby_invitations")
+        .where_eq("user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(db)
+        .await?
+    {
+        let lobby_id = string_column(&row, "lobby_id")?;
+        let lobbies = db
+            .select("game_lobbies")
+            .where_eq("lobby_id", lobby_id.clone())
+            .where_eq("status", "OPEN")
+            .execute(db)
+            .await?;
+        if let Some(lobby) = lobbies.first() {
+            let creator = string_column(lobby, "creator_user_id")?;
+            let username = username_for_user(db, &creator).await?;
+            pending.push(PendingItem {
+                id: lobby_id,
+                kind: "LOBBY_INVITATION".to_string(),
+                direction: "INCOMING".to_string(),
+                counterparty_user_id: Some(creator),
+                counterparty_display_name: username.clone(),
+                counterparty_username: username,
+                counterparty_avatar_url: None,
+                created_at_ms: signed_column(&row, "created_at_ms")?,
+            });
+        }
+    }
+    for row in db
+        .select("game_lobby_members")
+        .where_eq("user_id", user_id)
+        .execute(db)
+        .await?
+    {
+        let lobby_id = string_column(&row, "lobby_id")?;
+        let lobbies = db
+            .select("game_lobbies")
+            .where_eq("lobby_id", lobby_id.clone())
+            .where_eq("status", "OPEN")
+            .execute(db)
+            .await?;
+        if let Some(lobby) = lobbies.first() {
+            pending.push(PendingItem {
+                id: lobby_id,
+                kind: "LOBBY".to_string(),
+                direction: "MEMBER".to_string(),
+                counterparty_user_id: None,
+                counterparty_username: None,
+                counterparty_display_name: None,
+                counterparty_avatar_url: None,
+                created_at_ms: signed_column(lobby, "created_at_ms")?,
+            });
+        }
+    }
+    Ok(pending)
 }
 
 /// One ordered public participant in a dashboard game summary.
