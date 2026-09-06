@@ -1130,7 +1130,11 @@ def assert_live_lobby(alice: Browser, bob: Browser) -> None:
     alice.submit('form:has(input[value="START"])')
     alice.wait("Boolean(document.querySelector('#game-board'))")
     bob.wait("Boolean(document.querySelector('#game-board'))")
-    print("two-browser live lobby acceptance passed")
+    for actor, observer in [(alice, bob), (bob, alice), (alice, bob)]:
+        revision = observer.evaluate("document.querySelector('#game-board').getAttribute('data-revision')")
+        pass_turn(actor)
+        observer.wait("Number(document.querySelector('#game-board').getAttribute('data-revision')) > " + str(revision))
+    print("two-browser live lobby and game acceptance passed")
 
 
 def run() -> None:
