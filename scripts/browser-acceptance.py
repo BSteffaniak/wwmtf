@@ -1127,7 +1127,11 @@ def assert_live_lobby(alice: Browser, bob: Browser) -> None:
         raise AcceptanceError("lobby update reloaded the browser document")
     if not alice.evaluate("window.lobbyRoot === document.querySelector('#app-page')"):
         raise AcceptanceError("lobby update replaced rather than morphed the page root")
-    alice.submit('form:has(input[value="UPDATE"])', {"board_size": "15"})
+    alice.submit('form:has(input[value="UPDATE"])', {
+        "board_size": "15",
+        "show_remaining_tile_count": "false",
+        "show_remaining_tile_faces": "false",
+    })
     bob.wait("document.body.innerText.includes('15 × 15 board')")
     alice.submit('form:has(input[value="START"])')
     alice.wait("Boolean(document.querySelector('#game-board'))")

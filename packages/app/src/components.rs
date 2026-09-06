@@ -149,9 +149,10 @@ pub struct GameView {
     pub board_size: u8,
     pub start: Coordinate,
     pub rack: Vec<(u16, char, u8)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Transport uses a positional binary codec: absent values must still encode their None tag.
+    #[serde(default)]
     pub remaining_tile_count: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub remaining_tile_faces: Option<Vec<RemainingTileFaceView>>,
     pub players: Vec<PlayerView>,
     pub active_player: PlayerId,
@@ -784,6 +785,14 @@ mod tests {
 
         let visible = game_view(&state, players[0], GameVisibilitySettings::default())
             .expect("member projects");
+        for view in [&hidden, &count_only, &faces_only, &visible] {
+            let payload = hyperchad::shared_state_models::PayloadBlob::from_serializable(view)
+                .expect("game view encodes with transport codec");
+            let decoded: GameView = payload
+                .deserialize()
+                .expect("game view decodes with transport codec");
+            assert_eq!(&decoded, view);
+        }
         assert_eq!(visible.remaining_tile_count, Some(state.bag.len()));
         let faces = visible.remaining_tile_faces.expect("faces are visible");
         assert_eq!(
