@@ -79,6 +79,15 @@ impl GameSharedStateDispatcher {
         &self,
         created_at_ms: i64,
     ) -> SharedStateTransportDispatchResult<()> {
+        self.refresh_dashboard_subscribers_except(created_at_ms, None)
+            .await
+    }
+
+    pub(crate) async fn refresh_dashboard_subscribers_except(
+        &self,
+        created_at_ms: i64,
+        excluded_user: Option<&str>,
+    ) -> SharedStateTransportDispatchResult<()> {
         let subscribed_users = self
             .subscribers
             .lock()
@@ -91,6 +100,9 @@ impl GameSharedStateDispatcher {
             .collect::<BTreeSet<_>>();
 
         for user_id in subscribed_users {
+            if excluded_user == Some(user_id.as_str()) {
+                continue;
+            }
             let view = self.dashboard_view(&user_id).await?;
             let revision = self.next_dashboard_revision(&view);
             let event = Self::dashboard_event(&user_id, &view, revision, None, created_at_ms)?;

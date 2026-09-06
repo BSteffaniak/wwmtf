@@ -1093,6 +1093,46 @@ def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange:
         browser.wait('Boolean(document.querySelector(\'#turn-actions input[value="CONFIRM_PASS"]\'))')
 
 
+def assert_live_lobby(alice: Browser, bob: Browser) -> None:
+    google_login(alice)
+    google_login(bob)
+    channel = bob.evaluate("document.querySelector('[data-shared-state-channel]').getAttribute('data-shared-state-channel')")
+    # The stable handle is rendered in the signed-in dashboard header.
+    username = bob.evaluate("document.querySelector('#dashboard-header').innerText.match(/@([A-Za-z0-9_-]+)/)?.[1]")
+    if not username:
+        raise AcceptanceError(f"missing recipient username for {channel}")
+    alice.evaluate("document.querySelector('a[href=\"/lobbies/new\"]').click()")
+    alice.wait("Boolean(document.querySelector('form:has(input[value=\"CREATE\"])'))")
+    alice.submit('form:has(input[value="CREATE"])')
+    alice.wait("Boolean(document.querySelector('#lobby-members'))")
+    alice.evaluate("window.lobbyDocumentMarker = 'preserved'; window.lobbyRoot = document.querySelector('#app-page')")
+    alice.submit('form:has(input[value="INVITE"])', {"username": username})
+    bob.wait("Boolean(document.querySelector('form:has(input[value=\"ACCEPT_INVITE\"])'))")
+    bob.submit('form:has(input[value="ACCEPT_INVITE"])')
+    alice.wait("document.querySelector('#lobby-members').innerText.includes('@' + " + json.dumps(username) + ")")
+    bob.wait("Boolean(document.querySelector('#lobby-members'))")
+    alice.submit('form:has(input[value="UPDATE"])', {"board_size": "17"})
+    bob.wait("document.body.innerText.includes('17 × 17 board')")
+    bob.submit('form:has(input[value="LEAVE"])')
+    alice.wait("document.body.innerText.includes('1 of 4 seats joined')")
+    bob.wait("location.pathname === '/'")
+    # Rejoin through the existing private link; the host must update again.
+    path = alice.evaluate("document.querySelector('a[href*=\"/lobbies/join/\"]').getAttribute('href')")
+    bob.navigate(urllib.parse.urlparse(path).path)
+    bob.wait("Boolean(document.querySelector('form[hx-post*=\"/lobbies/join/\"]'))")
+    bob.submit('form[hx-post*="/lobbies/join/"]')
+    bob.wait("Boolean(document.querySelector('#lobby-members'))")
+    alice.wait("document.body.innerText.includes('2 of 4 seats joined')")
+    if alice.evaluate("window.lobbyDocumentMarker") != "preserved":
+        raise AcceptanceError("lobby update reloaded the browser document")
+    if not alice.evaluate("window.lobbyRoot === document.querySelector('#app-page')"):
+        raise AcceptanceError("lobby update replaced rather than morphed the page root")
+    alice.submit('form:has(input[value="START"])')
+    alice.wait("Boolean(document.querySelector('#game-board'))")
+    bob.wait("Boolean(document.querySelector('#game-board'))")
+    print("two-browser live lobby acceptance passed")
+
+
 def run() -> None:
     chrome = chrome_binary()
     with tempfile.TemporaryDirectory(prefix="wwmtf-browser-") as temporary:
@@ -1147,6 +1187,9 @@ def run() -> None:
             wait_for_server(server)
             alice = Browser.launch(chrome, 19221, temp / "alice-profile")
             bob = Browser.launch(chrome, 19222, temp / "bob-profile")
+            if "--lobby-only" in sys.argv:
+                assert_live_lobby(alice, bob)
+                return
             assert_responsive_shell(alice, "/login", "main", 390)
             set_viewport(alice, 1440)
             install_readiness_probe(alice)

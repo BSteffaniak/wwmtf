@@ -1650,11 +1650,13 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
         (lobby.status == "OPEN").then(|| lobby_invitation_url(public_base_url, &lobby.lobby_id));
     let dashboard_channel = format!("dashboard:{viewer_user_id}");
     let lobby_path = format!("/lobbies/{}", lobby.lobby_id);
+    // Page-specific handler elements must disappear on navigation. Idiomorph preserves #app-page,
+    // and removing its event attribute alone does not unregister HyperChad's window listener.
     let refresh_lobby = ActionType::Navigate { url: lobby_path };
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            fx-global-shared-state-event=(refresh_lobby)
             min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
+            span id="lobby-live-refresh" hidden fx-global-shared-state-event=(refresh_lobby) { }
             main id="multiplayer-lobby" width="100%" max-width="760px" background=#ffffff
                 border=(("#ded8c9", 1)) border-radius="18px" padding="28px" gap="18px" {
                 @if let Some(game_id) = lobby.started_game_id {
@@ -1788,11 +1790,14 @@ fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) ->
     .into()
 }
 
-fn view_with_internal_navigation(path: String) -> View {
+fn view_with_internal_navigation(path: String, user_id: &str) -> View {
+    // Keep the subscription alive through the navigation response; a channel-less intermediate
+    // page otherwise races an unsubscribe against the destination's subscribe.
+    let channel = format!("dashboard:{user_id}");
     let navigate = ActionType::Navigate { url: path.clone() };
     View::builder()
         .with_primary(container! {
-            div id="app-page" fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
+            div id="app-page" data-shared-state-channel=(channel) fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
                 span { "Loading…" }
             }
         })
@@ -1806,9 +1811,10 @@ fn view_with_internal_navigation(path: String) -> View {
         .build()
 }
 
-fn lobby_creation_page() -> Container {
+fn lobby_creation_page(user_id: &str) -> Container {
+    let channel = format!("dashboard:{user_id}");
     container! {
-        div id="app-page" min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
+        div id="app-page" data-shared-state-channel=(channel) min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
             main width="100%" max-width="760px" background=#ffffff border=(("#ded8c9", 1))
                 border-radius="18px" padding="28px" gap="18px" {
                 anchor href="/" color=#526243 { "← Dashboard" }
@@ -1868,9 +1874,15 @@ fn lobby_creation_page() -> Container {
 async fn refresh_lobby_dashboards(
     dispatcher: &crate::GameSharedStateDispatcher,
     now: OffsetDateTime,
+    actor: Option<&str>,
 ) {
+    // The actor receives the new page in the HTTP response. A simultaneous event for their old
+    // page can race that navigation (for example, accepting an invite from the dashboard).
     if dispatcher
-        .refresh_dashboard_subscribers(now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX))
+        .refresh_dashboard_subscribers_except(
+            now.unix_timestamp_nanos().try_into().unwrap_or(i64::MAX),
+            actor,
+        )
         .await
         .is_err()
     {
@@ -1894,7 +1906,7 @@ async fn lobby_create_route(
         ));
     };
     if request.method.as_ref() != "POST" {
-        return View::from(lobby_creation_page());
+        return View::from(lobby_creation_page(&user_id));
     }
     let form = request
         .parse_form::<LobbyActionForm>()
@@ -1922,8 +1934,8 @@ async fn lobby_create_route(
     {
         Ok((lobby_id, _token)) => match load_lobby(database, &lobby_id, &user_id).await {
             Ok(_lobby) => {
-                refresh_lobby_dashboards(dispatcher, now).await;
-                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+                refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"), &user_id)
             }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
@@ -1965,7 +1977,7 @@ async fn lobby_join_route(
             |lobby_id| format!("/lobbies/join/{lobby_id}"),
         );
         return View::from(container! {
-            div id="app-page" padding=24 {
+            div id="app-page" data-shared-state-channel=(format!("dashboard:{user_id}")) padding=24 {
                 form hx-post=(action) hx-target="#app-page" gap="10px" {
                     span { "Join this private multiplayer lobby?" }
                     @if let Some(token) = legacy_token.as_deref() {
@@ -1986,8 +1998,8 @@ async fn lobby_join_route(
     match result {
         Ok(lobby_id) => match load_lobby(database, &lobby_id, &user_id).await {
             Ok(_lobby) => {
-                refresh_lobby_dashboards(dispatcher, now).await;
-                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+                refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"), &user_id)
             }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
@@ -2092,17 +2104,17 @@ async fn lobby_action_route(
     };
     match result {
         Ok(Some(game_id)) => {
-            refresh_lobby_dashboards(dispatcher, now).await;
-            view_with_internal_navigation(format!("/games/{game_id}"))
+            refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+            view_with_internal_navigation(format!("/games/{game_id}"), &user_id)
         }
         Ok(None) if matches!(action, "CANCEL" | "LEAVE" | "DECLINE_INVITE") => {
-            refresh_lobby_dashboards(dispatcher, now).await;
-            view_with_internal_navigation("/".to_string())
+            refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+            view_with_internal_navigation("/".to_string(), &user_id)
         }
         Ok(None) => match load_lobby(database, lobby_id, &user_id).await {
             Ok(_lobby) => {
-                refresh_lobby_dashboards(dispatcher, now).await;
-                view_with_internal_navigation(format!("/lobbies/{lobby_id}"))
+                refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+                view_with_internal_navigation(format!("/lobbies/{lobby_id}"), &user_id)
             }
             Err(error) => View::from(product_error_page("Lobby unavailable", &error.to_string())),
         },
@@ -2888,10 +2900,10 @@ fn dashboard_page_content(dashboard: &AuthenticatedDashboard) -> Container {
     };
     container! {
         div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            fx-global-shared-state-event=(refresh_dashboard)
             direction="column" align-items="center"
             min-height="100vh" background=#e9efe8 color=#24352c
             padding-y=24 padding-x=16 {
+            span id="dashboard-live-refresh" hidden fx-global-shared-state-event=(refresh_dashboard) { }
             div id="dashboard-shell" width="100%" max-width="1080px" gap="28px" {
                 header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
                     background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
@@ -3812,11 +3824,11 @@ fn visual_game_page(
     let turn_feedback_view = turn_feedback(error);
     container! {
         div id="app-page" class="game-scene" data-shared-state-channel=(game_channel.as_str())
-            fx-global-shared-state-event=(refresh_game)
             direction="column" width=vw100 height=dvh100 min-height=dvh100
             position="fixed" top=0 right=0 bottom=0 left=0
             overflow-x="hidden" overflow-y="hidden"
             background=#123b2a color=#f4f0df gap="6px" {
+            span id="game-live-refresh" hidden fx-global-shared-state-event=(refresh_game) { }
             header id="scene-controls" width="100%" min-width=0 direction="row"
                 align-items="center" gap="6px" padding-y="8px" padding-x="6px" {
                 div class="header-action-slot header-action-left" min-width=0 flex=1 direction="row" justify-content="start" {
@@ -4118,7 +4130,18 @@ mod tests {
                 now,
             )
             .await;
-            events.recv_async().await.expect("join refresh publishes");
+            events.try_recv().expect("join refresh publishes");
+            let joiner_events = dispatcher
+                .subscribe_channel(
+                    &AuthenticatedTransportContext {
+                        participant_id: ParticipantId::new(&joiner),
+                        identity_binding: "joiner-browser".to_string(),
+                    },
+                    &crate::dashboard_channel(&joiner),
+                )
+                .await
+                .expect("joiner subscribes");
+            joiner_events.try_recv().expect("initial joiner dashboard");
 
             let mut start = RouteRequest::from_path(
                 &format!("/lobbies/{lobby_id}/action"),
@@ -4143,7 +4166,13 @@ mod tests {
                 now,
             )
             .await;
-            events.recv_async().await.expect("start refresh publishes");
+            joiner_events
+                .try_recv()
+                .expect("start refresh publishes to waiting member");
+            assert!(
+                events.try_recv().is_err(),
+                "actor navigation must not race an event refresh"
+            );
             assert!(
                 started
                     .response
@@ -4972,7 +5001,7 @@ mod tests {
             .display_to_string(false, false)
             .expect("dashboard renders");
             assert!(rendered.contains("The dashboard action is unknown"));
-            refresh_lobby_dashboards(&dispatcher, now).await;
+            refresh_lobby_dashboards(&dispatcher, now, None).await;
 
             let refresh = bob_events.recv_async().await.expect("Bob refresh arrives");
             assert!(refresh.revision.value() > initial.revision.value());
