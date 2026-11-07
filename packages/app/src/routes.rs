@@ -140,7 +140,7 @@ async fn refreshed_dashboard(
         .await
         .map_or_else(
             |_| error_component("The profile changed, but the dashboard could not be refreshed."),
-            |dashboard| dashboard_page(&dashboard),
+            |dashboard| dashboard_page(&dashboard, now),
         )
 }
 
@@ -247,7 +247,7 @@ async fn dashboard_action_route(
         crate::observability::record_database_failure("refresh_dashboard_subscribers");
     }
     match dashboard {
-        Ok(dashboard) => dashboard_page(&dashboard),
+        Ok(dashboard) => dashboard_page(&dashboard, now),
         Err(PresentationError::Unauthenticated) => {
             error_component("Your session expired. Sign in and review your dashboard.")
         }
@@ -922,7 +922,7 @@ async fn dashboard_refresh_page(
                     "Your account is signed in, but the dashboard could not be loaded. Reload the page.",
                 )
             },
-            |dashboard| dashboard_page(&dashboard),
+            |dashboard| dashboard_page(&dashboard, now),
         )
 }
 
@@ -2324,7 +2324,7 @@ pub async fn dashboard_route(
     now: OffsetDateTime,
 ) -> Container {
     match load_authenticated_dashboard(database, &request.cookies, now).await {
-        Ok(dashboard) => dashboard_page(&dashboard),
+        Ok(dashboard) => dashboard_page(&dashboard, now),
         Err(PresentationError::Unauthenticated) => signed_out_page(),
         Err(error) => product_error_page("Dashboard unavailable", &error.to_string()),
     }
