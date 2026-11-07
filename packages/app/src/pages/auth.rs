@@ -55,29 +55,29 @@ fn auth_page(card: &AuthCard<'_>, body: &[Container]) -> Container {
     let glyph = ui::tile_face_colored(card.glyph, None, 64, card.glyph_colors);
     let kicker = ui::eyebrow(card.kicker, card.kicker_color);
     let footer = tile_footer();
-    let page = ui::menu_page(container! {
-        anchor href="/" text-decoration="none" padding-top=(theme::SPACE_2) { (logo) }
-        main id="auth-card" width="100%" max-width=(theme::PAGE_NARROW)
-            background=(theme::SURFACE) color=(theme::INK)
-            border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
-            border-radius=(theme::RADIUS_XL)
-            padding-x=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_5).or_else(theme::SPACE_8))
-            padding-y=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_6).or_else(theme::SPACE_8))
-            gap=(theme::SPACE_5) {
-            header align-items="center" text-align="center" gap=(theme::SPACE_2) {
-                (glyph)
-                (kicker)
-                h1 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY)
-                    font-size=(theme::TEXT_XXL) font-weight=bold { (card.title) }
-                span color=(theme::INK_MUTED) font-size=(theme::TEXT_MD) { (card.lead) }
+    ui::menu_page(
+        container! {
+            anchor href="/" text-decoration="none" padding-top=(theme::SPACE_2) { (logo) }
+            main id="auth-card" width="100%" max-width=(theme::PAGE_NARROW)
+                background=(theme::SURFACE) color=(theme::INK)
+                border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
+                border-radius=(theme::RADIUS_XL)
+                padding-x=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_5).or_else(theme::SPACE_8))
+                padding-y=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_6).or_else(theme::SPACE_8))
+                gap=(theme::SPACE_5) {
+                header align-items="center" text-align="center" gap=(theme::SPACE_2) {
+                    (glyph)
+                    (kicker)
+                    h1 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY)
+                        font-size=(theme::TEXT_XXL) font-weight=bold { (card.title) }
+                    span color=(theme::INK_MUTED) font-size=(theme::TEXT_MD) { (card.lead) }
+                }
+                (body.to_vec())
             }
-            (body.to_vec())
-        }
-        (footer)
-    });
-    // Views unwrap their root container, so keep `#app-page` one level down (as the
-    // `container! {..}.into()` pages do) or the renderer would strip its id and styling.
-    Container::from(vec![page])
+            (footer)
+        },
+        None,
+    )
 }
 
 /// A playful row of seat-colored tiles under the card.
@@ -418,29 +418,53 @@ pub fn logout_page() -> Container {
 /// Renders signed-out navigation and account entry points without exposing state.
 #[must_use]
 pub fn signed_out_page() -> Container {
+    signed_out_page_for(
+        "HOLD UP",
+        "A valid secure session is required to view games. Sign in to pick up where you left off.",
+        None,
+    )
+}
+
+/// Renders the signed-out page with context-specific copy, for example after opening an invite
+/// link or tapping Rematch without a session. `hint` adds a friendly next-step note.
+#[must_use]
+pub fn signed_out_page_for(kicker: &str, lead: &str, hint: Option<&str>) -> Container {
     let sign_in = ui::link_button(
         "/login",
-        "Continue with Google",
+        "Sign in",
         ButtonVariant::Primary,
         ButtonSize::Large,
     );
+    let hint = hint.map(|hint| ui::notice(hint, Tone::Accent));
     auth_page(
         &AuthCard {
             glyph: "?",
             glyph_colors: GLYPH_GRAPE,
-            kicker: "HOLD UP",
+            kicker,
             kicker_color: theme::ACCENT,
             title: "Sign in required",
-            lead: "A valid secure session is required to view games. Sign in to pick up where you left off.",
+            lead,
         },
         &container! {
             (sign_in)
+            @if let Some(hint) = hint {
+                (hint)
+            }
         },
     )
 }
 
+/// Capitalizes the first letter so lowercase domain error strings read as sentences.
+fn sentence_case(message: &str) -> String {
+    let mut characters = message.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
+}
+
 pub fn product_error_page(title: &str, message: &str) -> Container {
-    let error = crate::error_component(message);
+    let message = sentence_case(message);
+    let error = crate::error_component(&message);
     let back = ui::link_button(
         "/",
         "← Back to games",

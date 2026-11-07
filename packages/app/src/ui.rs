@@ -20,8 +20,10 @@ use hyperchad::{actions::ActionType, router::Container, template::container};
 
 use crate::theme::{self, SeatColor};
 
-/// Unwraps a single-element `container!` result so helpers do not add wrapper `div`s.
-fn single(mut items: Vec<Container>) -> Container {
+/// Unwraps a single-element `container!` result so helpers and page modules can splice it into
+/// flex layouts without an extra wrapper `div`.
+#[must_use]
+pub fn one(mut items: Vec<Container>) -> Container {
     if items.len() == 1 {
         items.remove(0)
     } else {
@@ -167,7 +169,7 @@ pub fn submit_button(label: &str, variant: ButtonVariant, size: ButtonSize) -> C
     let style = button_style(variant);
     let (padding_y, padding_x, font_size, radius) = button_metrics(size);
     let (edge, depth) = chunky_edges(variant, size);
-    single(container! {
+    one(container! {
         button type=submit
             padding-y=(padding_y) padding-x=(padding_x)
             background=(style.background) color=(style.ink)
@@ -193,7 +195,7 @@ pub fn action_button(
     let style = button_style(variant);
     let (padding_y, padding_x, font_size, radius) = button_metrics(size);
     let (edge, depth) = chunky_edges(variant, size);
-    single(container! {
+    one(container! {
         button type=button fx-click=(action)
             padding-y=(padding_y) padding-x=(padding_x)
             background=(style.background) color=(style.ink)
@@ -213,7 +215,7 @@ pub fn link_button(href: &str, label: &str, variant: ButtonVariant, size: Button
     let style = button_style(variant);
     let (padding_y, padding_x, font_size, radius) = button_metrics(size);
     let (edge, depth) = chunky_edges(variant, size);
-    single(container! {
+    one(container! {
         anchor href=(href)
             padding-y=(padding_y) padding-x=(padding_x)
             background=(style.background) color=(style.ink)
@@ -230,7 +232,7 @@ pub fn link_button(href: &str, label: &str, variant: ButtonVariant, size: Button
 /// A plain text link on light surfaces (for example "← Dashboard").
 #[must_use]
 pub fn text_link(href: &str, label: &str) -> Container {
-    single(container! {
+    one(container! {
         anchor href=(href) color=(theme::LINK) font-weight=bold text-decoration="none" { (label) }
     })
 }
@@ -248,27 +250,36 @@ const fn chunky_edges(variant: ButtonVariant, size: ButtonSize) -> (i32, i32) {
 // Surfaces
 // ---------------------------------------------------------------------------
 
-/// Page root for menu pages: `#app-page` on the warm cream ground with the UI font stack and a
-/// centered column. Pass the page body (usually one or more cards).
+/// Page root for menu pages: `#app-page` on the warm cream ground in a centered column.
 ///
-/// Prefer this over hand-writing the root so every menu page keeps the same id, font, and ground.
+/// Pass the page body (usually one or more cards) and, for live pages, the shared-state channel
+/// the page subscribes to.
+///
+/// Renderers treat a route's top-level container as the document root and emit only its
+/// children, so the returned container wraps `#app-page` in an anonymous root; without that the
+/// element's id, ground, and font would be dropped. Keep every menu page on this helper so the
+/// workaround lives in one place.
 #[must_use]
-pub fn menu_page(children: impl Into<Vec<Container>>) -> Container {
+pub fn menu_page(children: impl Into<Vec<Container>>, channel: Option<&str>) -> Container {
     let children: Vec<Container> = children.into();
-    single(container! {
+    let mut page = one(container! {
         div id="app-page" direction="column" align-items="center" min-height="100vh"
             background=(theme::MENU_BG) color=(theme::INK) font-family=(theme::FONT_UI)
             padding-y=(theme::SPACE_8) padding-x=(theme::SPACE_4) gap=(theme::SPACE_6) {
             (children)
         }
-    })
+    });
+    if let Some(channel) = channel {
+        page = with_data(page, "shared-state-channel", channel);
+    }
+    Container::from(vec![page])
 }
 
 /// A white chunky card for menu pages. `max_width` is in pixels (`theme::PAGE_*`).
 #[must_use]
 pub fn card(max_width: i32, children: impl Into<Vec<Container>>) -> Container {
     let children: Vec<Container> = children.into();
-    single(container! {
+    one(container! {
         section width="100%" max-width=(max_width)
             background=(theme::SURFACE) color=(theme::INK)
             border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
@@ -282,7 +293,7 @@ pub fn card(max_width: i32, children: impl Into<Vec<Container>>) -> Container {
 #[must_use]
 pub fn night_card(children: impl Into<Vec<Container>>) -> Container {
     let children: Vec<Container> = children.into();
-    single(container! {
+    one(container! {
         section background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK)
             border=((theme::NIGHT_BORDER, theme::EDGE_THIN)) border-bottom=((theme::NIGHT_BORDER, theme::EDGE_DEPTH))
             border-radius=(theme::RADIUS_LG) padding=(theme::SPACE_3) gap=(theme::SPACE_2) {
@@ -326,7 +337,7 @@ pub const fn tone_colors(tone: Tone) -> (&'static str, &'static str, &'static st
 #[must_use]
 pub fn notice(message: &str, tone: Tone) -> Container {
     let (background, border, ink) = tone_colors(tone);
-    single(container! {
+    one(container! {
         section background=(background) color=(ink)
             border=((border, theme::EDGE_THIN)) border-radius=(theme::RADIUS_MD)
             padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4) font-weight=bold {
@@ -338,7 +349,7 @@ pub fn notice(message: &str, tone: Tone) -> Container {
 /// A small pill with arbitrary fill/ink (for example seat-colored score chips).
 #[must_use]
 pub fn pill(label: &str, fill: &str, ink: &str) -> Container {
-    single(container! {
+    one(container! {
         span background=(fill) color=(ink) border-radius=(theme::RADIUS_PILL)
             padding-y=3 padding-x=10 font-size=(theme::TEXT_SM) font-weight=bold
             white-space="preserve" align-items="center" justify-content="center" {
@@ -351,7 +362,7 @@ pub fn pill(label: &str, fill: &str, ink: &str) -> Container {
 #[must_use]
 pub fn badge(label: &str, tone: Tone) -> Container {
     let (background, border, ink) = tone_colors(tone);
-    single(container! {
+    one(container! {
         span background=(background) color=(ink) border=((border, theme::EDGE_THIN))
             border-radius=(theme::RADIUS_PILL) padding-y=2 padding-x=10
             font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve" {
@@ -377,7 +388,7 @@ pub fn avatar(
         .to_string();
     let alt = format!("{display_name} profile avatar");
     let font_size = (size * 9) / 20;
-    single(container! {
+    one(container! {
         @if let Some(avatar_url) = avatar_url {
             image src=(avatar_url) alt=(alt) width=(size) height=(size)
                 border-radius=(theme::RADIUS_PILL) border=((seat.edge, theme::EDGE_THIN));
@@ -395,7 +406,7 @@ pub fn avatar(
 /// A small uppercase kicker label above headings (write the text in uppercase yourself).
 #[must_use]
 pub fn eyebrow(text: &str, color: &str) -> Container {
-    single(container! {
+    one(container! {
         span color=(color) font-size=(theme::TEXT_XS) font-weight=bold { (text) }
     })
 }
@@ -403,7 +414,7 @@ pub fn eyebrow(text: &str, color: &str) -> Container {
 /// A section heading with an optional supporting line, for light surfaces.
 #[must_use]
 pub fn section_header(title: &str, subtitle: Option<&str>) -> Container {
-    single(container! {
+    one(container! {
         div gap=(theme::SPACE_1) {
             h2 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold { (title) }
             @if let Some(subtitle) = subtitle {
@@ -416,7 +427,7 @@ pub fn section_header(title: &str, subtitle: Option<&str>) -> Container {
 /// A compact stat block (big value over a small label), on a soft tinted well.
 #[must_use]
 pub fn stat_tile(label: &str, value: &str, fill: &str, ink: &str) -> Container {
-    single(container! {
+    one(container! {
         div flex=1 min-width=96 align-items="center" gap=2
             background=(fill) color=(ink) border-radius=(theme::RADIUS_LG)
             padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_3) {
@@ -430,7 +441,7 @@ pub fn stat_tile(label: &str, value: &str, fill: &str, ink: &str) -> Container {
 #[must_use]
 pub fn empty_state(glyph: &str, title: &str, body: &str) -> Container {
     let glyph_tile = tile_face(glyph, None, 52);
-    single(container! {
+    one(container! {
         div align-items="center" gap=(theme::SPACE_2) padding=(theme::SPACE_6)
             background=(theme::SURFACE_ALT) border=((theme::BORDER, theme::EDGE_THIN))
             border-radius=(theme::RADIUS_LG) text-align="center" {
@@ -493,7 +504,7 @@ pub fn tile_face_colored(
     let points_size = ((size * 22) / 100).max(8);
     let depth = (size / 10).clamp(2, theme::EDGE_DEPTH);
     let radius = (size / 5).clamp(4, theme::RADIUS_MD);
-    single(container! {
+    one(container! {
         span width=(size) height=(size) min-width=(size) position="relative"
             background=(colors.face) color=(colors.ink)
             border=((colors.edge, 1)) border-bottom=((colors.edge, depth))
@@ -532,13 +543,87 @@ pub fn brand_logo(tile_size: i32, on_night: bool) -> Container {
     } else {
         theme::ACCENT
     };
-    single(container! {
+    one(container! {
         div class="brand-logo" align-items="center" gap=(theme::SPACE_2) {
             div direction="row" gap=(tile_size / 8) align-items="start" { (tiles) }
             span color=(tagline_color) font-family=(theme::FONT_DISPLAY)
                 font-size=((tile_size * 2) / 5) font-weight=bold white-space="preserve" {
                 "with more than friends"
             }
+        }
+    })
+}
+
+/// Spells a word in sunny tiles with classic letter points and a playful alternating bob.
+#[must_use]
+pub fn tile_word(word: &str, size: i32) -> Container {
+    let tiles = word
+        .chars()
+        .enumerate()
+        .map(|(index, letter)| {
+            let mut tile = tile_face(&letter.to_string(), Some(letter_points(letter)), size);
+            if index % 2 == 1 {
+                tile.translate_y = Some(hyperchad::transformer::Number::Integer(i64::from(
+                    size / 10,
+                )));
+            }
+            tile
+        })
+        .collect::<Vec<_>>();
+    one(container! {
+        div direction="row" gap=(size / 8) align-items="start" { (tiles) }
+    })
+}
+
+/// Classic English letter values for decorative tiles only (never used for scoring).
+const fn letter_points(letter: char) -> u8 {
+    match letter.to_ascii_uppercase() {
+        'D' | 'G' => 2,
+        'B' | 'C' | 'M' | 'P' => 3,
+        'F' | 'H' | 'V' | 'W' | 'Y' => 4,
+        'K' => 5,
+        'J' | 'X' => 8,
+        'Q' | 'Z' => 10,
+        _ => 1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Form controls
+// ---------------------------------------------------------------------------
+
+/// A chunky select bound to a handler field name, with `selected` preselecting the current value.
+/// `options` are `(value, label)` pairs.
+#[must_use]
+pub fn select(name: &str, selected: &str, options: &[(String, String)]) -> Container {
+    one(container! {
+        select name=(name) selected=(selected)
+            width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_3)
+            background=(theme::WHITE) color=(theme::INK)
+            border=((theme::INPUT_BORDER, theme::EDGE_THIN)) border-bottom=((theme::INPUT_BORDER, 4))
+            border-radius=(theme::RADIUS_MD) font-family=(theme::FONT_UI)
+            font-size=(theme::TEXT_MD) font-weight=bold cursor=pointer {
+            @for (value, label) in options {
+                option value=(value) { (label) }
+            }
+        }
+    })
+}
+
+/// A white submit button with coral ink for serious-but-recoverable exits (cancel, leave).
+#[must_use]
+pub fn danger_outline_button(label: &str) -> Container {
+    let (padding_y, padding_x, font_size, radius) = button_metrics(ButtonSize::Medium);
+    one(container! {
+        button type=submit
+            padding-y=(padding_y) padding-x=(padding_x)
+            background=(theme::SECONDARY) color=(theme::DANGER_INK)
+            border=((theme::DANGER, theme::EDGE_THIN)) border-bottom=((theme::DANGER_EDGE, theme::EDGE_DEPTH))
+            border-radius=(radius) font-size=(font_size) font-weight=bold
+            font-family=(theme::FONT_UI) cursor=pointer
+            align-items="center" justify-content="center" text-align="center"
+            fx-hover=(ActionType::set_background_self(theme::DANGER_SOFT)) {
+            (label)
         }
     })
 }
@@ -630,7 +715,7 @@ mod tests {
             badge("Your turn", Tone::Warning),
             pill("12", theme::seat_color(1).fill, theme::seat_color(1).ink),
             section_header("Games", Some("Your active matches")),
-            menu_page(Vec::new()),
+            menu_page(Vec::new(), None),
         ] {
             let html = render(&container);
             assert!(!html.contains("<style"));
@@ -649,36 +734,38 @@ mod showcase {
     #[test]
     #[ignore = "writes a visual reference page to SHOWCASE_OUT"]
     fn ui_showcase() {
-        let page = menu_page(container! {
-            (brand_logo(44, false))
-            (card(theme::PAGE_NARROW, container! {
-                (section_header("Your games", Some("Pick up where you left off")))
-                div direction="row" gap=8 {
-                    (submit_button("Play", ButtonVariant::Primary, ButtonSize::Medium))
-                    (submit_button("Shuffle", ButtonVariant::Secondary, ButtonSize::Medium))
-                    (submit_button("Resign", ButtonVariant::Danger, ButtonSize::Medium))
-                }
-                div direction="row" gap=8 align-items="center" {
-                    (link_button("/", "Create game", ButtonVariant::Accent, ButtonSize::Large))
-                    (submit_button("Close", ButtonVariant::Night, ButtonSize::Small))
-                    (badge("Your turn", Tone::Warning))
-                    (pill("42", theme::seat_color(1).fill, theme::seat_color(1).ink))
-                }
-                div direction="row" gap=8 align-items="center" {
-                    (avatar("alice", None, theme::seat_color(0), 40))
-                    (avatar("bob", None, theme::seat_color(1), 40))
-                    (tile_face("Q", Some(10), 44))
-                    (tile_face_colored("Z", Some(10), 44, TILE_PENDING))
-                }
-                div direction="row" gap=8 {
-                    (stat_tile("WINS", "3", theme::PRIMARY_SOFT, theme::PRIMARY_INK))
-                    (stat_tile("POINTS", "812", theme::SUNNY_SOFT, theme::ON_SUNNY))
-                }
-                (notice("That word is not in the dictionary.", Tone::Danger))
-                (empty_state("?", "No games yet", "Start one and invite a friend."))
-            }))
-        });
-        let root = Container::from(vec![page]);
+        let root = menu_page(
+            container! {
+                (brand_logo(44, false))
+                (card(theme::PAGE_NARROW, container! {
+                    (section_header("Your games", Some("Pick up where you left off")))
+                    div direction="row" gap=8 {
+                        (submit_button("Play", ButtonVariant::Primary, ButtonSize::Medium))
+                        (submit_button("Shuffle", ButtonVariant::Secondary, ButtonSize::Medium))
+                        (submit_button("Resign", ButtonVariant::Danger, ButtonSize::Medium))
+                    }
+                    div direction="row" gap=8 align-items="center" {
+                        (link_button("/", "Create game", ButtonVariant::Accent, ButtonSize::Large))
+                        (submit_button("Close", ButtonVariant::Night, ButtonSize::Small))
+                        (badge("Your turn", Tone::Warning))
+                        (pill("42", theme::seat_color(1).fill, theme::seat_color(1).ink))
+                    }
+                    div direction="row" gap=8 align-items="center" {
+                        (avatar("alice", None, theme::seat_color(0), 40))
+                        (avatar("bob", None, theme::seat_color(1), 40))
+                        (tile_face("Q", Some(10), 44))
+                        (tile_face_colored("Z", Some(10), 44, TILE_PENDING))
+                    }
+                    div direction="row" gap=8 {
+                        (stat_tile("WINS", "3", theme::PRIMARY_SOFT, theme::PRIMARY_INK))
+                        (stat_tile("POINTS", "812", theme::SUNNY_SOFT, theme::ON_SUNNY))
+                    }
+                    (notice("That word is not in the dictionary.", Tone::Danger))
+                    (empty_state("?", "No games yet", "Start one and invite a friend."))
+                }))
+            },
+            None,
+        );
         let html = hyperchad::renderer_html::html::container_element_to_html_response(
             &std::collections::BTreeMap::new(),
             &root,

@@ -526,6 +526,90 @@ pub async fn load_lobby(
     })
 }
 
+/// Public summary shown on an invite link before the viewer joins.
+///
+/// Holds only what an invite holder may see: the host's display name, the lobby settings, and
+/// the seat count. Other members and pending invitees stay private.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LobbyInvitePreview {
+    pub host_username: String,
+    pub settings: LobbySettings,
+    pub joined: usize,
+    pub already_joined: bool,
+}
+
+/// Loads the public invite summary of an open, unexpired lobby.
+///
+/// # Errors
+///
+/// Returns [`LobbyError::Unavailable`] for unknown, closed, or expired lobbies.
+pub async fn preview_lobby_invite(
+    db: &dyn Database,
+    lobby_id: &str,
+    user_id: &str,
+    now: OffsetDateTime,
+) -> Result<LobbyInvitePreview, LobbyError> {
+    let rows = db
+        .select("game_lobbies")
+        .where_eq("lobby_id", lobby_id)
+        .where_eq("status", "OPEN")
+        .execute(db)
+        .await?;
+    let row = rows.first().ok_or(LobbyError::Unavailable)?;
+    if signed(row, "invitation_expires_at_ms")? <= timestamp_ms(now)? {
+        return Err(LobbyError::Unavailable);
+    }
+    let members = member_rows(db, lobby_id).await?;
+    Ok(LobbyInvitePreview {
+        host_username: lobby_username(db, &string(row, "creator_user_id")?).await?,
+        settings: settings(row)?,
+        joined: members.len(),
+        already_joined: members.iter().any(|member| member.user_id == user_id),
+    })
+}
+
+/// Finds the newest open lobby that one of `inviter_user_ids` created and invited `user_id` to.
+///
+/// Used as a heuristic "rematch offered" hint on a completed game: lobbies carry no link back to
+/// a source game, so this matches on the inviter only. Returns `(lobby_id, inviter_user_id)`.
+///
+/// # Errors
+///
+/// Returns malformed-row or database failures.
+pub async fn pending_lobby_invite_from(
+    db: &dyn Database,
+    user_id: &str,
+    inviter_user_ids: &std::collections::BTreeSet<String>,
+) -> Result<Option<(String, String)>, LobbyError> {
+    let mut newest: Option<(i64, String, String)> = None;
+    for invite in db
+        .select("lobby_invitations")
+        .where_eq("user_id", user_id)
+        .where_eq("status", "PENDING")
+        .execute(db)
+        .await?
+    {
+        let lobby_id = string(&invite, "lobby_id")?;
+        let created = signed(&invite, "created_at_ms")?;
+        let lobbies = db
+            .select("game_lobbies")
+            .where_eq("lobby_id", lobby_id.clone())
+            .where_eq("status", "OPEN")
+            .execute(db)
+            .await?;
+        let Some(lobby) = lobbies.first() else {
+            continue;
+        };
+        let creator = string(lobby, "creator_user_id")?;
+        if inviter_user_ids.contains(&creator)
+            && newest.as_ref().is_none_or(|(at, _, _)| created > *at)
+        {
+            newest = Some((created, lobby_id, creator));
+        }
+    }
+    Ok(newest.map(|(_, lobby_id, creator)| (lobby_id, creator)))
+}
+
 async fn lobby_username(db: &dyn Database, user_id: &str) -> Result<String, LobbyError> {
     let rows = db
         .select("users")
@@ -1017,31 +1101,33 @@ fn token_hash(token: &str) -> String {
 
 #[derive(Debug, Error)]
 pub enum LobbyError {
-    #[error("game creation policy cannot admit a valid game")]
+    #[error("The game creation policy cannot admit a valid game.")]
     InvalidPolicy,
-    #[error("lobby settings violate game creation policy")]
+    #[error("Those lobby settings are outside what this server allows.")]
     InvalidSettings,
-    #[error("lobby is unavailable, expired, closed, full, or already joined")]
+    #[error(
+        "This lobby is no longer available. It may be full, closed, expired, or you already joined."
+    )]
     Unavailable,
-    #[error("only the lobby creator may perform this action")]
+    #[error("Only the lobby host can do that.")]
     Unauthorized,
-    #[error("at least two valid members are required to start")]
+    #[error("You need at least two players to start.")]
     NotReady,
-    #[error("username was not found")]
+    #[error("We couldn’t find a player with that username.")]
     UnknownUsername,
-    #[error("this player has already been invited")]
+    #[error("That player has already been invited.")]
     AlreadyInvited,
-    #[error("only players in this game may request a rematch")]
+    #[error("Only players in this game can request a rematch.")]
     NotGameParticipant,
-    #[error("a rematch is available after the game ends")]
+    #[error("A rematch is available after the game ends.")]
     GameNotCompleted,
-    #[error("lobby changed concurrently")]
+    #[error("The lobby changed while you were looking. Try again.")]
     Conflict,
-    #[error("lobby data is malformed")]
+    #[error("The lobby data could not be read.")]
     Invalid,
-    #[error("could not generate a collision-free lobby token")]
+    #[error("A lobby link could not be generated. Try again.")]
     Collision,
-    #[error("timestamp is outside the supported range")]
+    #[error("The time is outside the supported range.")]
     Timestamp,
     #[error(transparent)]
     Rules(#[from] wwmtf_game_domain::RuleProfileError),

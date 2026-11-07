@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use hyperchad::{
     actions::ActionType,
     router::Container,
-    template::{LayoutOverflow, container},
+    template::{LayoutOverflow, container, if_responsive},
 };
 use time::OffsetDateTime;
 
@@ -44,8 +44,8 @@ pub fn start_game_component() -> Container {
         ButtonVariant::Primary,
         ButtonSize::Large,
     );
-    let tiles = tile_word("GO", 34);
-    one(container! {
+    let tiles = ui::tile_word("GO", 34);
+    ui::one(container! {
         section id="new-game-actions" width="100%" direction="row"
             overflow-x=(LayoutOverflow::Wrap { grid: false }) align-items="center" justify-content="space-between"
             background=(theme::ACCENT) color=(theme::ON_ACCENT)
@@ -59,7 +59,10 @@ pub fn start_game_component() -> Container {
                 }
             }
             div align-items="center" gap=(theme::SPACE_4) {
-                (tiles)
+                div id="new-game-go-tiles"
+                    hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) {
+                    (tiles)
+                }
                 (new_game)
             }
         }
@@ -166,7 +169,7 @@ pub fn dashboard_page_content(dashboard: &AuthenticatedDashboard, now_ms: i64) -
                         overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
                         (section_heading(
                             "Challenges & invitations",
-                            Some("Invitations are private and single-use. Old invite secrets cannot be displayed again."),
+                            Some("Games and lobbies friends have invited you to."),
                         ))
                     }
                     @if pending_cards.is_empty() {
@@ -208,7 +211,7 @@ fn dashboard_header(dashboard: &AuthenticatedDashboard) -> Container {
         ButtonVariant::Secondary,
         ButtonSize::Small,
     );
-    one(container! {
+    ui::one(container! {
         header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false })
             justify-content="space-between" align-items="center"
             background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
@@ -237,7 +240,7 @@ fn profile_avatar(display_name: &str, avatar_url: Option<&str>, seat: SeatColor)
     avatar_url.map_or_else(
         || ui::avatar(display_name, None, seat, size),
         |avatar_url| {
-            one(container! {
+            ui::one(container! {
                 image src=(avatar_url) alt="Profile avatar" width=(size) height=(size) min-width=(size)
                     border-radius=(theme::RADIUS_PILL) border=((seat.edge, 3));
             })
@@ -355,7 +358,7 @@ fn avatar_stack(game: &GameSummary, size: i32) -> Container {
             avatar
         })
         .collect::<Vec<_>>();
-    one(container! {
+    ui::one(container! {
         div direction="row" align-items="center" min-width=(size) { (avatars) }
     })
 }
@@ -365,7 +368,7 @@ fn your_turn_card(game: &GameSummary, now_ms: i64) -> Container {
     let href = format!("/games/{}", game.game_id);
     let id = format!("game-summary-{}", game.game_id);
     let when = relative_time(game.updated_at_ms, now_ms);
-    one(container! {
+    ui::one(container! {
         anchor id=(id) class="game-summary" href=(href) flex=1 min-width=(GAME_CARD_MIN_WIDTH)
             direction="column" gap=(theme::SPACE_3) text-decoration="none" color=(theme::INK)
             background=(theme::SUNNY_SOFT) border=((theme::TILE_EDGE, theme::EDGE_THIN)) border-bottom=((theme::TILE_EDGE, theme::EDGE_DEPTH + 1))
@@ -404,7 +407,7 @@ fn compact_game_card(game: &GameSummary, user_id: &str, now_ms: i64) -> Containe
         GameState::Finished(_) => (theme::BORDER, theme::SURFACE_ALT),
         _ => (theme::SECONDARY_EDGE, theme::SECONDARY_HI),
     };
-    one(container! {
+    ui::one(container! {
         anchor id=(id) class="game-summary" href=(href) flex=1 min-width=(GAME_CARD_MIN_WIDTH)
             direction="column" gap=(theme::SPACE_2) text-decoration="none" color=(theme::INK)
             background=(theme::SURFACE) border=((edge, theme::EDGE_THIN)) border-bottom=((edge, theme::EDGE_DEPTH))
@@ -430,7 +433,7 @@ fn compact_game_card(game: &GameSummary, user_id: &str, now_ms: i64) -> Containe
 }
 
 fn group_header(title: &str, count: usize, fill: &str, ink: &str) -> Container {
-    one(container! {
+    ui::one(container! {
         div direction="row" align-items="center" gap=(theme::SPACE_2) {
             h2 margin=0 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold { (title) }
             (ui::pill(&count.to_string(), fill, ink))
@@ -441,7 +444,7 @@ fn group_header(title: &str, count: usize, fill: &str, ink: &str) -> Container {
 /// Section title with a supporting line; like `ui::section_header` but without the browser's
 /// default heading margins so the subtitle sits snugly underneath.
 fn section_heading(title: &str, subtitle: Option<&str>) -> Container {
-    one(container! {
+    ui::one(container! {
         div gap=(theme::SPACE_1) {
             h2 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold { (title) }
             @if let Some(subtitle) = subtitle {
@@ -452,22 +455,15 @@ fn section_heading(title: &str, subtitle: Option<&str>) -> Container {
 }
 
 fn first_game_empty_state() -> Container {
-    let new_game = ui::link_button(
-        "/lobbies/new",
-        "Create your first game",
-        ButtonVariant::Primary,
-        ButtonSize::Medium,
-    );
-    one(container! {
+    ui::one(container! {
         div align-items="center" gap=(theme::SPACE_3) text-align="center"
             background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
             border-radius=(theme::RADIUS_XL) padding-y=(theme::SPACE_8) padding-x=(theme::SPACE_5) {
-            (tile_word("PLAY", 48))
+            (ui::tile_word("PLAY", 48))
             h3 margin=0 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold { "Your first game starts here" }
             span color=(theme::INK_MUTED) max-width=420 {
-                "Create a game, invite friends by username or private link, and it will show up right here."
+                "Tap “+ New game” above, invite friends by username or private link, and your game will show up right here."
             }
-            (new_game)
         }
     })
 }
@@ -511,7 +507,7 @@ fn pending_card(item: &PendingItem, now_ms: i64) -> Container {
         item.counterparty_avatar_url.as_deref(),
         item.counterparty_display_name.as_deref(),
     ) {
-        (Some(avatar_url), _) => one(container! {
+        (Some(avatar_url), _) => ui::one(container! {
             image src=(avatar_url) alt="Challenge profile avatar"
                 width=(COMPACT_AVATAR_SIZE) height=(COMPACT_AVATAR_SIZE) min-width=(COMPACT_AVATAR_SIZE)
                 border-radius=(theme::RADIUS_PILL) border=((seat.edge, theme::EDGE_THIN));
@@ -522,7 +518,7 @@ fn pending_card(item: &PendingItem, now_ms: i64) -> Container {
     let when = relative_time(item.created_at_ms, now_ms);
     let lobby_href = format!("/lobbies/{}", item.id);
     let lobby_action = format!("/lobbies/{}/action", item.id);
-    one(container! {
+    ui::one(container! {
         div id=(format!("pending-item-{}", item.id)) class="pending-item" data-direction=(item.direction.as_str())
             flex=1 min-width=(GAME_CARD_MIN_WIDTH) gap=(theme::SPACE_3)
             background=(theme::SURFACE) border=((edge, theme::EDGE_THIN)) border-bottom=((edge, theme::EDGE_DEPTH))
@@ -598,7 +594,7 @@ fn stats_panel(totals: Option<&UserScoreTotals>) -> Container {
         )
     });
     let subtitle = score_totals_label(totals);
-    one(container! {
+    ui::one(container! {
         section id="score-totals" flex=1 min-width=(GAME_CARD_MIN_WIDTH) gap=(theme::SPACE_4)
             background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
             border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_5) {
@@ -620,7 +616,7 @@ fn stats_panel(totals: Option<&UserScoreTotals>) -> Container {
 
 fn profile_panel(dashboard: &AuthenticatedDashboard) -> Container {
     let display_name = dashboard.display_name.as_str();
-    one(container! {
+    ui::one(container! {
         details id="profile-settings" flex=1 min-width=(GAME_CARD_MIN_WIDTH)
             background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
             border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_5) {
@@ -696,48 +692,6 @@ const LAVENDER_TILE: ui::TileColors = ui::TileColors {
     edge: theme::SECONDARY_EDGE,
     ink: theme::ACCENT_EDGE,
 };
-
-/// Unwraps a single-element `container!` result so helpers do not add wrapper `div`s.
-fn one(mut items: Vec<Container>) -> Container {
-    if items.len() == 1 {
-        items.remove(0)
-    } else {
-        Container::from(items)
-    }
-}
-
-/// Spells a word in sunny tiles with standard letter points and a playful bob.
-fn tile_word(word: &str, size: i32) -> Container {
-    let tiles = word
-        .chars()
-        .enumerate()
-        .map(|(index, letter)| {
-            let mut tile = ui::tile_face(&letter.to_string(), Some(letter_points(letter)), size);
-            if index % 2 == 1 {
-                tile.translate_y = Some(hyperchad::transformer::Number::Integer(i64::from(
-                    size / 10,
-                )));
-            }
-            tile
-        })
-        .collect::<Vec<_>>();
-    one(container! {
-        div direction="row" gap=(size / 8) align-items="start" { (tiles) }
-    })
-}
-
-/// Classic English letter values for decorative tiles only (never used for scoring).
-const fn letter_points(letter: char) -> u8 {
-    match letter.to_ascii_uppercase() {
-        'D' | 'G' => 2,
-        'B' | 'C' | 'M' | 'P' => 3,
-        'F' | 'H' | 'V' | 'W' | 'Y' => 4,
-        'K' => 5,
-        'J' | 'X' => 8,
-        'Q' | 'Z' => 10,
-        _ => 1,
-    }
-}
 
 fn unix_ms(now: OffsetDateTime) -> i64 {
     i64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX)

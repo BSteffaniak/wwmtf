@@ -7,7 +7,7 @@
 use hyperchad::{
     actions::ActionType,
     router::Container,
-    template::{LayoutDirection, LayoutOverflow, container, if_responsive},
+    template::{JustifyContent, LayoutDirection, LayoutOverflow, container, if_responsive},
     transformer::{Calculation, Number},
 };
 use wwmtf_game_domain::{Coordinate, PremiumSquare};
@@ -190,6 +190,21 @@ fn active_player_name(game: &AuthorizedGamePage) -> &str {
         .map_or("Player", |participant| participant.display_name.as_str())
 }
 
+/// "You vs bob" (or "You vs bob, cleo & dan") from the viewer's point of view.
+fn match_title(game: &AuthorizedGamePage) -> String {
+    let opponents = game
+        .participants
+        .iter()
+        .filter(|participant| participant.player_id != game.viewer_player)
+        .map(|participant| participant.display_name.as_str())
+        .collect::<Vec<_>>();
+    match opponents.split_last() {
+        None => "Your match".to_string(),
+        Some((last, [])) => format!("You vs {last}"),
+        Some((last, rest)) => format!("You vs {} & {last}", rest.join(", ")),
+    }
+}
+
 fn participant_seat(
     game: &AuthorizedGamePage,
     player: wwmtf_game_domain::PlayerId,
@@ -303,14 +318,14 @@ pub fn draft_feedback_component(
         }
         TurnMode::Play => (theme::NIGHT_DEEP, theme::NIGHT_LINE, theme::NIGHT_INK, "✦"),
     };
-    one(container! {
+    ui::one(container! {
         section id="draft-preview" class="dock-message" width="100%" direction="row"
             align-items="center" justify-content="center" gap=(theme::SPACE_2)
             padding-y=6 padding-x=(theme::SPACE_3)
             background=(background) color=(ink) border=((edge, theme::EDGE_THIN))
-            border-radius=(theme::RADIUS_PILL) overflow-x="hidden" {
+            border-radius=(theme::RADIUS_LG) overflow-x="hidden" {
             span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold { (glyph) }
-            span font-size=(theme::TEXT_SM) font-weight=bold text-overflow="ellipsis" white-space="preserve" {
+            span min-width=0 font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" text-align="center" {
                 (message)
             }
         }
@@ -324,7 +339,7 @@ pub fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &
 /// Renders the turn feedback slot. Without a message it is an empty placeholder so a
 /// rejected turn's `#turn-feedback` fragment has an element to replace.
 pub fn turn_feedback(message: Option<&str>) -> Container {
-    one(container! {
+    ui::one(container! {
         @if let Some(message) = message {
             section id="turn-feedback" width="100%" {
                 (ui::with_id(ui::notice(message, Tone::Danger), "game-error"))
@@ -345,7 +360,7 @@ pub fn definition_content(word: &str, lookup: &crate::DefinitionLookup) -> Conta
         .take(12)
         .map(|letter| ui::tile_face(&letter.to_uppercase().to_string(), None, 30))
         .collect::<Vec<_>>();
-    one(container! {
+    ui::one(container! {
         div direction="row" gap=(theme::SPACE_1) overflow-x=(LayoutOverflow::Wrap { grid: false }) { (letters) }
         h1 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) color=(theme::INK) { (word) }
         @match lookup {
@@ -383,17 +398,18 @@ pub fn definition_page(
 ) -> Container {
     let game_href = format!("/games/{game_id}");
     let content = definition_content(word, lookup);
-    // Top-level views keep a wrapper element: the router renders the returned container's
-    // children, so the `#app-page` root must be a child rather than the returned element.
-    Container::from(vec![ui::menu_page(container! {
-        main id="word-definition" width="100%" max-width=(theme::PAGE_MEDIUM)
-            background=(theme::SURFACE) color=(theme::INK)
-            border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
-            border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_6) gap=(theme::SPACE_3) {
-            (ui::text_link(&game_href, "← Back to game"))
-            (content)
-        }
-    })])
+    ui::menu_page(
+        container! {
+            main id="word-definition" width="100%" max-width=(theme::PAGE_MEDIUM)
+                background=(theme::SURFACE) color=(theme::INK)
+                border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
+                border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_6) gap=(theme::SPACE_3) {
+                (ui::text_link(&game_href, "← Back to game"))
+                (content)
+            }
+        },
+        None,
+    )
 }
 
 /// Shared chrome for the floating definition panel.
@@ -447,7 +463,7 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
     let action = format!("/games/{}/turn", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
-    one(container! {
+    ui::one(container! {
         section id="turn-composer" gap=(theme::SPACE_3) {
             h2 font-family=(theme::FONT_DISPLAY) { "Turn controls" }
             span color=(theme::INK_MUTED) { "Tap a rack tile, then tap an open board square. Use these controls for non-placement turns." }
@@ -477,7 +493,7 @@ pub fn compose_form_fields(
     action: &str,
 ) -> Container {
     let encoded = draft_token(draft);
-    one(container! {
+    ui::one(container! {
         input type=hidden name="action" value=(action);
         input type=hidden name="expected_revision" value=(game.view.revision);
         input type=hidden name="draft" value=(encoded);
@@ -498,7 +514,7 @@ fn zoom_button(
 ) -> Container {
     let compose_action = format!("/games/{}/compose", game.game_id);
     let style = ui::button_style(ButtonVariant::Night);
-    one(container! {
+    ui::one(container! {
         form hx-post=(compose_action.as_str()) hx-target="#app-page" {
             (compose_form_fields(game, draft, action))
             button type=submit width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
@@ -573,13 +589,15 @@ pub fn visual_board(
     let zoom_in = zoom_button(game, draft, "ZOOM_IN", "+", theme::TEXT_LG);
     let zoom_reset = zoom_button(game, draft, "ZOOM_RESET", "Fit", theme::TEXT_XS);
     let zoom_out = zoom_button(game, draft, "ZOOM_OUT", "−", theme::TEXT_LG);
-    one(container! {
+    ui::one(container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
             position="absolute" top=0 right=0 bottom=0 left=0 direction="column" {
             div class="board-viewport" width="100%" min-height=0 flex=1
                 overflow-x="auto" overflow-y="auto" {
-                div class="board-scroll-content" width="100%" height="100%" min-width=(frame.clone())
-                    min-height=(frame.clone()) align-items="center" justify-content="center" {
+                div id="board-scroll-content" class="board-scroll-content" width="100%" height="100%" min-width=(frame.clone())
+                    min-height=(frame.clone()) align-items="center"
+                    justify-content=(if_responsive(theme::MOBILE).then::<JustifyContent>(JustifyContent::Start).or_else(JustifyContent::Center))
+                    padding-top=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_1).or_else(0)) {
                     div class="board-frame" data-board-size=(game.rules.board_size)
                         data-board-fit-percent=(draft.board_zoom.fit_percent())
                         width=(frame.clone()) height=(frame.clone()) min-width=(frame.clone()) position="relative"
@@ -669,7 +687,7 @@ pub fn visual_board(
                             border=((theme::WHITE, 2)) border-bottom=((if invalid_score { theme::DANGER_EDGE } else { theme::SUNNY_EDGE }, 4))
                             border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
                             font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_SM) font-weight=bold user-select="none" {
-                            (score)
+                            @if invalid_score { "✕" } @else { (score) }
                         }
                     }
                 }
@@ -708,7 +726,7 @@ pub fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let tile_size = calc_number(tile.clone());
     let face_font = calc_number(calc_times(tile.clone(), 0.4));
     let points_font = calc_number(calc_times(tile, 0.19));
-    one(container! {
+    ui::one(container! {
         section id="player-rack" width="100%" max-width="100%" position="relative" {
             div class="rack-tray" width="100%" max-width="100%" direction="row" overflow-x="hidden" overflow-y="hidden"
                 justify-content="center" align-items="end" gap=5
@@ -777,7 +795,7 @@ pub fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -
     let action = format!("/games/{}/compose", game.game_id);
     let selected_blank_needs_letter = blank_letter_picker_open(draft, &game.view.rack);
     let blank_tile = ui::tile_face("?", None, 36);
-    one(container! {
+    ui::one(container! {
         @if selected_blank_needs_letter {
             section class="blank-letter-layer" position="fixed" top=0 right=0 bottom=0 left=0
                 width="100vw" height="100dvh" align-items="center" justify-content="end"
@@ -837,7 +855,7 @@ fn dock_submit_button(label: &str) -> Container {
 fn hero_submit_button(label: &str, variant: ButtonVariant) -> Container {
     let style = ui::button_style(variant);
     let label = label.to_string();
-    one(container! {
+    ui::one(container! {
         button type=submit class="primary-turn-action" width="100%"
             padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
             background=(style.background) color=(style.ink)
@@ -872,7 +890,7 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
     let play_label =
         play_score.map_or_else(|| "Play".to_string(), |score| format!("Play · {score}"));
     let more_style = ui::button_style(ButtonVariant::Night);
-    one(container! {
+    ui::one(container! {
         section id="turn-actions" class="turn-composer action-hud" width="100%" max-width="100%" position="relative" {
             @if draft.mode == TurnMode::Exchange {
                 div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
@@ -1003,7 +1021,7 @@ pub fn confirmed_command_forms(
     } else {
         ButtonVariant::Sunny
     };
-    one(container! {
+    ui::one(container! {
         div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
             form hx-post=(turn_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                 input type=hidden name="command" value=(command);
@@ -1062,12 +1080,25 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
             } else {
                 participant.display_name.clone()
             };
+            // On phones the viewer's own pill shows just avatar and score to leave room for
+            // opponents' short names.
+            let short_name = if is_viewer {
+                String::new()
+            } else {
+                let mut letters = participant.display_name.chars();
+                let short = letters.by_ref().take(6).collect::<String>();
+                if letters.next().is_some() {
+                    format!("{short}…")
+                } else {
+                    short
+                }
+            };
             let (fill, ink, edge) = if playing {
                 (seat.fill, seat.ink, seat.edge)
             } else {
                 (theme::NIGHT_RAISED, theme::NIGHT_INK, theme::NIGHT_BORDER)
             };
-            one(container! {
+            ui::one(container! {
                 div id=(format!("player-scoreboard-{uuid}"))
                     direction="row" align-items="center" gap=6
                     background=(fill) color=(ink)
@@ -1076,6 +1107,13 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
                     border-radius=(theme::RADIUS_PILL) padding-y=2 padding-left=2 padding-right=10
                     opacity=(if active || game.completed { 1.0 } else { 0.5 }) {
                     (avatar)
+                    @if !short_name.is_empty() {
+                        span id=(format!("player-scoreboard-short-{uuid}"))
+                            font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
+                            hidden=(if_responsive(theme::MOBILE).then::<bool>(false).or_else(true)) {
+                            (short_name)
+                        }
+                    }
                     span id=(format!("player-scoreboard-name-{uuid}"))
                         font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
                         text-overflow="ellipsis" overflow-x="hidden" max-width=110
@@ -1090,10 +1128,11 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
             })
         })
         .collect::<Vec<_>>();
-    one(container! {
+    ui::one(container! {
         section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
             align-items="center" gap=3 overflow-x="hidden" overflow-y="hidden" {
-            div id="participant-scoreboard" direction="row" justify-content="center" gap=6 max-width="100%"
+            div id="participant-scoreboard" direction="row" gap=6 max-width="100%"
+                justify-content=(if_responsive(theme::MOBILE).then::<JustifyContent>(JustifyContent::Start).or_else(JustifyContent::Center))
                 min-width=0 overflow-x="auto" overflow-y="hidden" padding-bottom=1 {
                 (pills)
             }
@@ -1109,16 +1148,6 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
             }
         }
     })
-}
-
-/// Takes the single element out of a `container!` result so callers can splice it into flex
-/// layouts without an extra wrapper `div`.
-fn one(mut items: Vec<Container>) -> Container {
-    if items.len() == 1 {
-        items.remove(0)
-    } else {
-        Container::from(items)
-    }
 }
 
 fn completed_outcome(game: &AuthorizedGamePage) -> (String, bool) {
@@ -1176,6 +1205,18 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
         })
         .collect::<Vec<_>>();
     standings.sort_by_key(|standing| std::cmp::Reverse(standing.1));
+    // Competition ranking: equal scores share a rank ("1, 1, 3").
+    let ranks = standings
+        .iter()
+        .enumerate()
+        .scan((0_usize, None), |(rank, previous), (index, standing)| {
+            if *previous != Some(standing.1) {
+                *rank = index + 1;
+                *previous = Some(standing.1);
+            }
+            Some(*rank)
+        })
+        .collect::<Vec<_>>();
     let (outcome, viewer_won) = completed_outcome(game);
     let banner_word = if viewer_won { "WIN" } else { "GG" };
     let banner = banner_word
@@ -1191,7 +1232,7 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
         .collect::<Vec<_>>();
     let rematch_action = format!("/games/{}/rematch", game.game_id);
     let rematch_style = ui::button_style(ButtonVariant::Primary);
-    one(container! {
+    ui::one(container! {
         section id="completed-game-summary" position="fixed" top=0 right=0 bottom=0 left=0
             width="100vw" height="100dvh" align-items="center" justify-content="center"
             background=(theme::SCRIM) padding=(theme::SPACE_4) {
@@ -1200,18 +1241,18 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                 border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 7))
                 border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_5) gap=(theme::SPACE_4) align-items="center" {
                 div width="100%" direction="row" justify-content="end" {
-                    (ui::action_button("Close", ButtonVariant::Ghost, ButtonSize::Small, ActionType::no_display_by_id("completed-game-summary")))
+                    (ui::action_button("Close", ButtonVariant::Secondary, ButtonSize::Medium, ActionType::no_display_by_id("completed-game-summary")))
                 }
                 div direction="row" gap=6 align-items="start" { (banner) }
                 div align-items="center" gap=2 text-align="center" {
                     (ui::eyebrow("FINAL SCORES", theme::ACCENT))
                     span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XXL) font-weight=bold text-align="center" { (outcome) }
                     @if let Some(reason) = &game.completion_reason {
-                        span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { "Completed by: " (reason.as_str()) }
+                        span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { (reason.as_str()) }
                     }
                 }
                 div id="final-standings" width="100%" overflow-x="hidden" overflow-y="hidden" gap=(theme::SPACE_2) {
-                    @for (rank, (participant, score, adjustment, leader, seat)) in standings.iter().enumerate() {
+                    @for (rank, (participant, score, adjustment, leader, seat)) in ranks.iter().zip(standings.iter()) {
                         @let is_viewer = participant.player_id == game.viewer_player;
                         @let avatar = ui::avatar(&participant.display_name, participant.avatar_url.as_deref(), *seat, 36);
                         div direction="row" align-items="center" gap=(theme::SPACE_3)
@@ -1224,12 +1265,12 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                                 background=(if *leader { theme::SUNNY } else { theme::SURFACE_LAVENDER })
                                 color=(if *leader { theme::ON_SUNNY } else { theme::INK_MUTED })
                                 font-family=(theme::FONT_DISPLAY) font-weight=bold {
-                                @if *leader { "★" } @else { (rank + 1) }
+                                @if *leader { "★" } @else { (rank) }
                             }
                             (avatar)
                             div flex=1 min-width=0 gap=1 {
                                 span font-weight=bold white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
-                                    (rank + 1) ". " (participant.display_name.as_str())
+                                    (participant.display_name.as_str())
                                     @if is_viewer { " (you)" }
                                     @if *leader { " · leader" }
                                 }
@@ -1241,12 +1282,33 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                                 }
                             }
                             span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold white-space="preserve" {
-                                (score) @if *adjustment != 0 { " (" (format!("{adjustment:+}")) ")" }
+                                (score)
                             }
                         }
                     }
                 }
+                @if let Some(invite) = &game.rematch_invite {
+                    div id="rematch-offer" width="100%" align-items="center" gap=(theme::SPACE_2)
+                        background=(theme::PRIMARY_SOFT) color=(theme::PRIMARY_INK)
+                        border=((theme::PRIMARY, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG)
+                        padding=(theme::SPACE_3) text-align="center" {
+                        span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold {
+                            (invite.inviter_display_name.as_str()) " wants a rematch!"
+                        }
+                    }
+                }
                 div width="100%" direction="row" gap=(theme::SPACE_2) align-items="center" {
+                    @if let Some(invite) = &game.rematch_invite {
+                        form hx-post=(format!("/lobbies/{}/action", invite.lobby_id)) hx-target="#app-page" flex=1 min-width=0 {
+                            input type=hidden name="action" value="ACCEPT_INVITE";
+                            button type=submit width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
+                                background=(rematch_style.background) color=(rematch_style.ink)
+                                border=((rematch_style.edge, theme::EDGE_THIN)) border-bottom=((rematch_style.edge, 6))
+                                border-radius=(theme::RADIUS_LG) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG)
+                                font-weight=bold cursor=pointer align-items="center" justify-content="center"
+                                fx-hover=(ActionType::set_background_self(rematch_style.hover)) { "Join rematch" }
+                        }
+                    } @else {
                     form hx-post=(rematch_action) hx-target="#app-page" flex=1 min-width=0 {
                         button type=submit width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
                             background=(rematch_style.background) color=(rematch_style.ink)
@@ -1254,6 +1316,7 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                             border-radius=(theme::RADIUS_LG) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG)
                             font-weight=bold cursor=pointer align-items="center" justify-content="center"
                             fx-hover=(ActionType::set_background_self(rematch_style.hover)) { "Rematch" }
+                    }
                     }
                     (ui::link_button("/", "Back to games", ButtonVariant::Secondary, ButtonSize::Medium))
                 }
@@ -1271,7 +1334,7 @@ pub fn rules_component(game: &AuthorizedGamePage) -> Container {
     let rack_size = game.rules.rack_size;
     let full_rack_bonus = game.rules.full_rack_bonus;
     let scoreless_turn_limit = game.rules.scoreless_turn_limit;
-    one(container! {
+    ui::one(container! {
         details id="game-rules" width="100%" background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN))
             border-radius=(theme::RADIUS_MD) padding=(theme::SPACE_3) {
             summary cursor="pointer" font-weight=bold color=(theme::INK) { "How to play" }
@@ -1298,7 +1361,7 @@ fn legend_item(
 ) -> Container {
     let label = label.to_string();
     let meaning = meaning.to_string();
-    one(container! {
+    ui::one(container! {
         div direction="row" align-items="center" gap=(theme::SPACE_2) width="47%" min-width=130 {
             span width=28 height=28 min-width=28 border-radius=5 background=(fill) color=(ink)
                 border=((edge, 1)) border-bottom=((edge, 3))
@@ -1310,7 +1373,7 @@ fn legend_item(
 }
 
 fn board_key_component() -> Container {
-    one(container! {
+    ui::one(container! {
         section id="board-key" gap=(theme::SPACE_2) {
             h3 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { "Board key" }
             div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
@@ -1339,7 +1402,7 @@ pub fn live_status_action(visible_id: &str) -> ActionType {
 
 pub fn remaining_tiles_component(game: &AuthorizedGamePage) -> Container {
     let faces = game.view.remaining_tile_faces.as_deref();
-    one(container! {
+    ui::one(container! {
         section id="remaining-tiles" gap=(theme::SPACE_3) {
             @if let Some(count) = game.view.remaining_tile_count {
                 div direction="row" align-items="center" gap=(theme::SPACE_3)
@@ -1371,7 +1434,7 @@ fn drawer_shell(id: &str, max_height: &str, children: impl Into<Vec<Container>>)
     let children: Vec<Container> = children.into();
     let id = id.to_string();
     let max_height = max_height.to_string();
-    one(container! {
+    ui::one(container! {
         aside id=(id) hidden position="fixed" top=64 right=8 width=(DRAWER_WIDTH) max-width="92vw"
             max-height=(max_height) overflow-y="auto" background=(theme::MENU_BG) color=(theme::INK)
             border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
@@ -1397,7 +1460,7 @@ pub fn visual_game_page(
     error: Option<&str>,
 ) -> Container {
     let game_id = game.game_id.to_string();
-    let short_game_id = game_id.chars().take(8).collect::<String>().to_uppercase();
+    let match_title = match_title(game);
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(game, &feedback, draft);
@@ -1468,13 +1531,7 @@ pub fn visual_game_page(
                                 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XS) font-weight=bold {
                                 @if let Some(count) = game.view.remaining_tile_count { (count) } @else { "?" }
                             }
-                            span id="remaining-tiles-label" font-size=(theme::TEXT_SM)
-                                hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) {
-                                "Bag"
-                                @if let Some(count) = game.view.remaining_tile_count {
-                                    " · " (count)
-                                }
-                            }
+                            span id="remaining-tiles-label" font-size=(theme::TEXT_SM) { "Bag" }
                         }
                     }
                     button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
@@ -1501,6 +1558,7 @@ pub fn visual_game_page(
                     border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((theme::NIGHT_BORDER, 6))
                     border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_2) gap=(theme::SPACE_2) {
                     @if game.completed {
+                        (turn_feedback_view)
                         section class="dock-message" width="100%" direction="row" align-items="center"
                             justify-content="space-between" gap=(theme::SPACE_2)
                             background=(theme::SUNNY) color=(theme::ON_SUNNY)
@@ -1518,15 +1576,16 @@ pub fn visual_game_page(
                         (turn_feedback_view)
                         (draft_preview)
                     } @else {
+                        (turn_feedback_view)
                         section class="dock-message waiting-banner" width="100%" direction="row" align-items="center"
                             justify-content="center" gap=(theme::SPACE_2)
                             background=(active_seat.fill) color=(active_seat.ink)
-                            border=((active_seat.edge, theme::EDGE_THIN)) border-radius=(theme::RADIUS_PILL)
+                            border=((active_seat.edge, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG)
                             padding-y=4 padding-x=(theme::SPACE_3) {
                             @if let Some(active_avatar) = active_avatar { (active_avatar) }
-                            span font-size=(theme::TEXT_SM) font-weight=bold white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
+                            span min-width=0 font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" {
                                 span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { (active_name) " is playing" }
-                                " · rearrange your rack while you wait"
+                                " · plan your next word"
                             }
                         }
                     }
@@ -1566,9 +1625,9 @@ pub fn visual_game_page(
             (drawer_shell("activity-rail", "78vh", container! {
                 div direction="row" justify-content="space-between" align-items="start" gap=(theme::SPACE_2) {
                     div gap=2 min-width=0 {
-                        (ui::eyebrow(&format!("MATCH {short_game_id}"), theme::ACCENT))
+                        (ui::eyebrow("THIS MATCH", theme::ACCENT))
                         h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) {
-                            (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str())
+                            (match_title)
                         }
                     }
                     (drawer_close_button("activity-rail"))
@@ -1730,6 +1789,9 @@ mod tests {
                 .display_to_string(false, false)
                 .expect("game page renders");
             assert!(page.contains("id=\"app-page\""));
+            assert!(page.contains("id=\"player-rack\""));
+            assert!(page.contains("id=\"game-board\""));
+            assert_eq!(page.matches("data-tile-id=").count(), game.view.rack.len());
             assert!(page.contains("Your move"));
             assert!(page.contains("Menu ···"));
             assert!(page.contains("board-zoom-controls"));

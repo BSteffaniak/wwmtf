@@ -13,7 +13,8 @@ use hyperchad::{
 };
 
 use crate::{
-    FirstPlayerPolicy, GameCreationPolicy, GameLobby, LobbyMember, theme,
+    FirstPlayerPolicy, GameCreationPolicy, GameLobby, LobbyInvitePreview, LobbyMember,
+    LobbySettings, theme,
     ui::{self, ButtonSize, ButtonVariant, Tone},
 };
 
@@ -112,22 +113,6 @@ const fn bool_value(value: bool) -> &'static str {
 // Private building blocks
 // ---------------------------------------------------------------------------
 
-/// A chunky select bound to a handler field name, with `selected` preselecting the current value.
-fn select_control(name: &str, selected: &str, options: &[(String, String)]) -> Container {
-    single(container! {
-        select name=(name) selected=(selected)
-            width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_3)
-            background=(theme::WHITE) color=(theme::INK)
-            border=((theme::INPUT_BORDER, theme::EDGE_THIN)) border-bottom=((theme::INPUT_BORDER, 4))
-            border-radius=(theme::RADIUS_MD) font-family=(theme::FONT_UI)
-            font-size=(theme::TEXT_MD) font-weight=bold cursor=pointer {
-            @for (value, label) in options {
-                option value=(value) { (label) }
-            }
-        }
-    })
-}
-
 /// A labeled setting tile: glyph badge, label, one-line hint, and the control underneath.
 fn setting_field(
     glyph: &str,
@@ -137,7 +122,7 @@ fn setting_field(
     control: Container,
 ) -> Container {
     let control = vec![control];
-    single(container! {
+    ui::one(container! {
         div flex=1 min-width=200 gap=(theme::SPACE_2) padding=(theme::SPACE_4)
             background=(theme::SURFACE_ALT) border=((theme::BORDER, theme::EDGE_THIN))
             border-radius=(theme::RADIUS_LG) {
@@ -158,7 +143,7 @@ fn setting_field(
 /// A wrapping row of setting tiles.
 fn setting_row(children: impl Into<Vec<Container>>) -> Container {
     let children: Vec<Container> = children.into();
-    single(container! {
+    ui::one(container! {
         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_3) {
             (children)
         }
@@ -167,27 +152,10 @@ fn setting_row(children: impl Into<Vec<Container>>) -> Container {
 
 /// A small group heading inside a form.
 fn group_heading(glyph: &str, title: &str) -> Container {
-    single(container! {
+    ui::one(container! {
         div direction="row" align-items="center" gap=(theme::SPACE_2) {
             span color=(theme::ACCENT) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { (glyph) }
             h2 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { (title) }
-        }
-    })
-}
-
-/// A white button with coral ink for reversible-but-serious exits (cancel, leave).
-fn danger_secondary_button(label: &str) -> Container {
-    let (padding_y, padding_x, font_size, radius) = ui::button_metrics(ButtonSize::Medium);
-    single(container! {
-        button type=submit
-            padding-y=(padding_y) padding-x=(padding_x)
-            background=(theme::SECONDARY) color=(theme::DANGER_INK)
-            border=((theme::DANGER, theme::EDGE_THIN)) border-bottom=((theme::DANGER_EDGE, theme::EDGE_DEPTH))
-            border-radius=(radius) font-size=(font_size) font-weight=bold
-            font-family=(theme::FONT_UI) cursor=pointer
-            align-items="center" justify-content="center" text-align="center"
-            fx-hover=(ActionType::set_background_self(theme::DANGER_SOFT)) {
-            (label)
         }
     })
 }
@@ -214,29 +182,13 @@ fn page_title(kicker: &str, title: &str, subtitle: &str) -> Container {
             letter_tile
         })
         .collect();
-    single(container! {
+    ui::one(container! {
         div gap=(theme::SPACE_2) {
             div direction="row" gap=(theme::SPACE_1) padding-y=(theme::SPACE_1) { (tiles) }
             h1 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XXL) font-weight=bold { (title) }
             span color=(theme::INK_MUTED) font-size=(theme::TEXT_MD) { (subtitle) }
         }
     })
-}
-
-/// Unwraps a single-element `container!` result so helpers do not add wrapper `div`s.
-fn single(mut items: Vec<Container>) -> Container {
-    if items.len() == 1 {
-        items.remove(0)
-    } else {
-        Container::from(items)
-    }
-}
-
-/// Wraps the `#app-page` element in an anonymous root. Renderers treat a route's top-level
-/// container as the document root and emit only its children, so without this wrapper the
-/// `#app-page` element (id, ground, font, centering) would be dropped.
-fn page_root(app_page: Container) -> Container {
-    Container::from(vec![app_page])
 }
 
 fn display_username<'a>(lobby: &'a GameLobby, user_id: &'a str) -> &'a str {
@@ -254,7 +206,7 @@ fn seat_card(
     member: Option<&LobbyMember>,
 ) -> Container {
     let Some(member) = member else {
-        return single(container! {
+        return ui::one(container! {
             div flex=1 min-width=140 align-items="center" gap=(theme::SPACE_2)
                 padding=(theme::SPACE_4) background=(theme::MENU_BG)
                 border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG)
@@ -274,7 +226,7 @@ fn seat_card(
     let avatar = ui::avatar(username, None, colors, 52);
     let is_creator = member.user_id == lobby.creator_user_id;
     let is_viewer = member.user_id == viewer_user_id;
-    single(container! {
+    ui::one(container! {
         div flex=1 min-width=140 align-items="center" gap=(theme::SPACE_2)
             padding=(theme::SPACE_4) background=(theme::SURFACE)
             border=((colors.edge, theme::EDGE_THIN)) border-bottom=((colors.edge, theme::EDGE_DEPTH))
@@ -300,13 +252,13 @@ fn seat_pips(joined: usize, total: usize) -> Container {
             } else {
                 (theme::SURFACE_ALT, theme::BORDER_STRONG)
             };
-            single(container! {
+            ui::one(container! {
                 span width=18 height=18 min-width=18 border-radius=(theme::RADIUS_SM / 2)
                     background=(fill) border=((edge, theme::EDGE_THIN)) { }
             })
         })
         .collect();
-    single(container! {
+    ui::one(container! {
         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_1) { (pips) }
     })
 }
@@ -322,7 +274,11 @@ fn first_player_label(lobby: &GameLobby) -> String {
 }
 
 fn settings_chips(lobby: &GameLobby) -> Vec<Container> {
-    let settings = &lobby.settings;
+    settings_chips_for(&lobby.settings, &first_player_label(lobby))
+}
+
+/// Settings chips for any lobby view; `first_player` is the already-resolved display label.
+fn settings_chips_for(settings: &LobbySettings, first_player: &str) -> Vec<Container> {
     let tile_sets = if settings.tile_set_count == 1 {
         "1 complete tile set".to_string()
     } else {
@@ -357,7 +313,7 @@ fn settings_chips(lobby: &GameLobby) -> Vec<Container> {
             theme::PREMIUM_DW_INK,
         ),
         ui::pill(
-            &format!("→ First player: {}", first_player_label(lobby)),
+            &format!("→ First player: {first_player}"),
             theme::PRIMARY_SOFT,
             theme::PRIMARY_INK,
         ),
@@ -404,7 +360,7 @@ fn lobby_settings_form(
             theme::PREMIUM_DW,
             "Maximum players",
             "Total seats, including you.",
-            select_control(
+            ui::select(
                 "max_players",
                 &settings.max_players.to_string(),
                 &player_options(policy, settings.max_players),
@@ -415,7 +371,7 @@ fn lobby_settings_form(
             theme::PREMIUM_DL,
             "Board size",
             "Width and height of the square board.",
-            select_control(
+            ui::select(
                 "board_size",
                 &settings.board_size.to_string(),
                 &board_options(policy, settings.board_size),
@@ -426,7 +382,7 @@ fn lobby_settings_form(
             theme::SUNNY_SOFT,
             "Tile sets",
             "Complete 100-tile bags shuffled together.",
-            select_control(
+            ui::select(
                 "tile_set_count",
                 &settings.tile_set_count.to_string(),
                 &tile_set_options(policy, settings.tile_set_count),
@@ -439,7 +395,7 @@ fn lobby_settings_form(
             theme::SURFACE_LAVENDER,
             "Remaining tile count",
             "Show how many tiles are left in the bag.",
-            select_control(
+            ui::select(
                 "show_remaining_tile_count",
                 bool_value(settings.visibility.show_remaining_tile_count),
                 &visibility_options(),
@@ -450,7 +406,7 @@ fn lobby_settings_form(
             theme::PREMIUM_START,
             "Remaining tile faces",
             "Unordered inventory, never draw order. Showing faces also reveals the total.",
-            select_control(
+            ui::select(
                 "show_remaining_tile_faces",
                 bool_value(settings.visibility.show_remaining_tile_faces),
                 &visibility_options(),
@@ -463,17 +419,17 @@ fn lobby_settings_form(
             theme::PRIMARY_SOFT,
             "Who takes the first turn?",
             "Pick who opens the board when the game starts.",
-            select_control("first_player_policy", first_policy, &first_options),
+            ui::select("first_player_policy", first_policy, &first_options),
         ),
         setting_field(
             "✓",
             theme::INFO_SOFT,
             "Chosen member",
             "Only used when ‘Choose a joined member’ is selected.",
-            select_control("chosen_first_user_id", chosen_selected, &members),
+            ui::select("chosen_first_user_id", chosen_selected, &members),
         ),
     ]);
-    single(container! {
+    ui::one(container! {
         form hx-post=(action_url) hx-target="#app-page" gap=(theme::SPACE_4) {
             input type=hidden name="action" value="UPDATE";
             div gap=(theme::SPACE_1) {
@@ -490,13 +446,71 @@ fn lobby_settings_form(
     })
 }
 
+/// A muted, non-interactive Start placeholder shown until enough players have joined.
+fn start_cue() -> Container {
+    let (padding_y, padding_x, font_size, radius) = ui::button_metrics(ButtonSize::Large);
+    ui::one(container! {
+        span class="start-game-waiting" padding-y=(padding_y) padding-x=(padding_x)
+            background=(theme::SURFACE_ALT) color=(theme::INK_SOFT)
+            border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER, theme::EDGE_THIN))
+            border-radius=(radius) font-size=(font_size) font-weight=bold text-align="center"
+            white-space="preserve" user-select="none" {
+            "Waiting for players…"
+        }
+    })
+}
+
+/// A quiet "Cancel lobby" control at the bottom of the creator's page. Cancelling takes two
+/// taps: the first reveals a confirmation, like the resign flow in the game dock.
+fn cancel_lobby_zone(action_url: &str) -> Container {
+    let ask = ui::action_button(
+        "Cancel lobby…",
+        ButtonVariant::Ghost,
+        ButtonSize::Small,
+        ActionType::Multi(vec![
+            ActionType::display_by_id("cancel-lobby-confirm"),
+            ActionType::no_display_by_id("cancel-lobby-ask"),
+        ]),
+    );
+    let keep = ui::action_button(
+        "Keep lobby",
+        ButtonVariant::Secondary,
+        ButtonSize::Medium,
+        ActionType::Multi(vec![
+            ActionType::no_display_by_id("cancel-lobby-confirm"),
+            ActionType::display_by_id("cancel-lobby-ask"),
+        ]),
+    );
+    ui::one(container! {
+        section id="cancel-lobby" width="100%" max-width=(theme::PAGE_MEDIUM) align-items="center" gap=(theme::SPACE_2) {
+            div id="cancel-lobby-ask" direction="row" justify-content="center" {
+                (ask)
+            }
+            div id="cancel-lobby-confirm" hidden width="100%" align-items="center" gap=(theme::SPACE_3)
+                padding=(theme::SPACE_4) background=(theme::DANGER_SOFT)
+                border=((theme::DANGER, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG) {
+                span color=(theme::DANGER_INK) font-weight=bold text-align="center" {
+                    "Cancel this lobby for everyone? Joined players will be sent back to their games."
+                }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap=(theme::SPACE_2) {
+                    form hx-post=(action_url) hx-target="#app-page" {
+                        input type=hidden name="action" value="CANCEL";
+                        (ui::danger_outline_button("Yes, cancel lobby"))
+                    }
+                    (keep)
+                }
+            }
+        }
+    })
+}
+
 fn invitation_section(
     lobby: &GameLobby,
     invitation_url: &str,
     is_creator: bool,
     action_url: &str,
 ) -> Container {
-    single(container! {
+    ui::one(container! {
         section id="lobby-invitation" gap=(theme::SPACE_3) padding=(theme::SPACE_5)
             background=(theme::PRIMARY_SOFT) border=((theme::PRIMARY, theme::EDGE_THIN))
             border-bottom=((theme::PRIMARY_EDGE, theme::EDGE_DEPTH)) border-radius=(theme::RADIUS_LG) {
@@ -504,7 +518,13 @@ fn invitation_section(
                 span color=(theme::PRIMARY_INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { "✉" }
                 span color=(theme::PRIMARY_INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { "Private invitation" }
             }
-            span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { "Share this private link, or invite players by username. Players can join while the lobby is open." }
+            span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) {
+                @if is_creator {
+                    "Share this private link, or invite players by username. Players can join while the lobby is open."
+                } @else {
+                    "Know someone who'd play? Share this private link. Players can join while the lobby is open."
+                }
+            }
             input type=text value=(invitation_url)
                 width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_3)
                 background=(theme::WHITE) color=(theme::INK) font-size=(theme::TEXT_SM) font-weight=bold
@@ -523,7 +543,7 @@ fn invitation_section(
                     }
                 }
             }
-            @if !lobby.invited_usernames.is_empty() {
+            @if is_creator && !lobby.invited_usernames.is_empty() {
                 div gap=(theme::SPACE_2) {
                     span font-weight=bold color=(theme::INK) font-size=(theme::TEXT_SM) { "Invites sent" }
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
@@ -580,11 +600,17 @@ pub fn lobby_page(
     let start_hint = if ready {
         "Everyone in? Let the tiles fly!".to_string()
     } else {
-        "You need at least one more player to start.".to_string()
+        "You need at least one more player to start. Share the invite link above.".to_string()
     };
+    let seats_full = joined >= lobby.settings.max_players;
     let invitation = invitation_url
         .as_deref()
+        .filter(|_| !seats_full)
         .map(|url| invitation_section(lobby, url, is_creator && is_open, &action_url));
+    // While seats are empty, inviting is the next step, so the invite card comes first.
+    let invitation_first = !ready && invitation.is_some();
+    let start_disabled = start_cue();
+    let cancel_zone = cancel_lobby_zone(&action_url);
     let settings_form = (is_creator && lobby.status != "STARTED")
         .then(|| lobby_settings_form(lobby, policy, &action_url));
 
@@ -601,7 +627,7 @@ pub fn lobby_page(
             }
             (ui::card(theme::PAGE_MEDIUM, vec![
                 page_title("LOBBY", "Game lobby", &format!("Hosted by {creator_handle}. Gather your crew, then start the game.")),
-                single(container! {
+                ui::one(container! {
                     div gap=(theme::SPACE_2) {
                         span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold color=(theme::INK) {
                             (joined) " of " (lobby.settings.max_players) " seats joined"
@@ -609,7 +635,7 @@ pub fn lobby_page(
                         (seat_pips(joined, total))
                     }
                 }),
-                single(container! {
+                ui::one(container! {
                     section id="lobby-members" gap=(theme::SPACE_3) {
                         h2 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { "Members" }
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_3) {
@@ -617,7 +643,7 @@ pub fn lobby_page(
                         }
                     }
                 }),
-                single(container! {
+                ui::one(container! {
                     section id="lobby-settings" gap=(theme::SPACE_2) {
                         h2 margin=0 color=(theme::INK) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { "Game settings" }
                         div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
@@ -631,24 +657,29 @@ pub fn lobby_page(
                     (ui::link_button(&format!("/games/{game_id}"), "Open game →", ButtonVariant::Primary, ButtonSize::Large))
                 }
             } @else if is_creator {
-                (ui::card(theme::PAGE_MEDIUM, vec![single(container! {
+                @if invitation_first {
+                    @if let Some(invitation) = invitation.clone() {
+                        (invitation)
+                    }
+                }
+                (ui::card(theme::PAGE_MEDIUM, vec![ui::one(container! {
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) align-items="center" gap=(theme::SPACE_3) {
                         div flex=1 min-width=200 gap=(theme::SPACE_1) {
                             span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold color=(theme::INK) { "Ready to play?" }
                             span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { (start_hint) }
                         }
-                        form hx-post=(action_url) hx-target="#app-page" {
-                            input type=hidden name="action" value="START";
-                            (ui::submit_button("Start game ▶", ButtonVariant::Primary, ButtonSize::Large))
-                        }
-                        form hx-post=(action_url) hx-target="#app-page" {
-                            input type=hidden name="action" value="CANCEL";
-                            (danger_secondary_button("Cancel lobby"))
+                        @if ready {
+                            form hx-post=(action_url) hx-target="#app-page" {
+                                input type=hidden name="action" value="START";
+                                (ui::submit_button("Start game ▶", ButtonVariant::Primary, ButtonSize::Large))
+                            }
+                        } @else {
+                            (start_disabled)
                         }
                     }
                 })]))
             } @else {
-                (ui::card(theme::PAGE_MEDIUM, vec![single(container! {
+                (ui::card(theme::PAGE_MEDIUM, vec![ui::one(container! {
                     div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) align-items="center" gap=(theme::SPACE_3) {
                         div flex=1 min-width=200 gap=(theme::SPACE_1) {
                             span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold color=(theme::INK) { "You're in! ✓" }
@@ -656,24 +687,106 @@ pub fn lobby_page(
                         }
                         form hx-post=(action_url) hx-target="#app-page" {
                             input type=hidden name="action" value="LEAVE";
-                            (danger_secondary_button("Leave lobby"))
+                            (ui::danger_outline_button("Leave lobby"))
                         }
                     }
                 })]))
             }
-            @if let Some(invitation) = invitation {
-                (invitation)
+            @if !(is_creator && invitation_first) {
+                @if let Some(invitation) = invitation {
+                    (invitation)
+                }
             }
             @if let Some(settings_form) = settings_form {
                 (ui::card(theme::PAGE_MEDIUM, vec![settings_form]))
             }
+            @if is_creator && lobby.status != "STARTED" {
+                (cancel_zone)
+            }
         }
     };
-    page_root(ui::with_data(
-        ui::menu_page(body),
-        "shared-state-channel",
-        dashboard_channel,
-    ))
+    ui::menu_page(body, Some(&dashboard_channel))
+}
+
+// ---------------------------------------------------------------------------
+// Invite landing page
+// ---------------------------------------------------------------------------
+
+/// The page an invited friend lands on from a lobby invite link (`GET /lobbies/join/<id>`).
+///
+/// `preview` carries the public lobby summary when the lobby could be loaded; otherwise the page
+/// falls back to generic copy. The join form keeps its `hx-post` target and the optional hidden
+/// legacy `invitation_token` exactly as the join handler expects.
+#[must_use]
+pub fn lobby_join_page(
+    user_id: &str,
+    action: &str,
+    legacy_token: Option<&str>,
+    preview: Option<&LobbyInvitePreview>,
+) -> Container {
+    let channel = format!("dashboard:{user_id}");
+    let subtitle = preview.map_or_else(
+        || {
+            "A friend saved you a seat. Join the lobby and the game starts when the host is ready."
+                .to_string()
+        },
+        |preview| {
+            format!(
+                "@{} saved you a seat. Join the lobby and the game starts when they're ready.",
+                preview.host_username
+            )
+        },
+    );
+    let summary = preview.map(|preview| {
+        let first_player = match &preview.settings.first_player {
+            FirstPlayerPolicy::Random => "Random",
+            FirstPlayerPolicy::Creator => "Host",
+            FirstPlayerPolicy::Chosen(_) => "Chosen member",
+        };
+        let chips = settings_chips_for(&preview.settings, first_player);
+        let total = preview.settings.max_players.max(preview.joined);
+        let open = total.saturating_sub(preview.joined);
+        let seats_line = if open == 1 {
+            format!("{} of {} seats taken · 1 seat left", preview.joined, preview.settings.max_players)
+        } else {
+            format!("{} of {} seats taken · {open} seats left", preview.joined, preview.settings.max_players)
+        };
+        ui::one(container! {
+            div gap=(theme::SPACE_3) {
+                div gap=(theme::SPACE_2) {
+                    span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold color=(theme::INK) { (seats_line) }
+                    (seat_pips(preview.joined, total))
+                }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
+                    (chips)
+                }
+            }
+        })
+    });
+    let join_button = ui::submit_button("Join game ★", ButtonVariant::Primary, ButtonSize::Large);
+    let body = container! {
+        (ui::brand_logo(36, false))
+        (ui::card(theme::PAGE_NARROW + 80, vec![
+            page_title("JOIN", "You're invited!", &subtitle),
+            ui::one(container! {
+                div gap=(theme::SPACE_4) {
+                    @if let Some(summary) = summary {
+                        (summary)
+                    }
+                    form hx-post=(action) hx-target="#app-page" gap=(theme::SPACE_3) {
+                        @if let Some(token) = legacy_token {
+                            input type=hidden name="invitation_token" value=(token);
+                        }
+                        (join_button)
+                    }
+                    div direction="row" justify-content="center" {
+                        (ui::text_link("/", "Not now · back to my games"))
+                    }
+                }
+            }),
+        ]))
+    };
+    ui::menu_page(body, Some(&channel))
 }
 
 // ---------------------------------------------------------------------------
@@ -702,7 +815,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
             theme::PREMIUM_DW,
             "Maximum players",
             "Total seats, including you.",
-            select_control(
+            ui::select(
                 "max_players",
                 &default_players.to_string(),
                 &player_options(policy, default_players),
@@ -713,7 +826,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
             theme::PREMIUM_DL,
             "Board size",
             "Width and height of the square board.",
-            select_control(
+            ui::select(
                 "board_size",
                 &default_board.to_string(),
                 &board_options(policy, default_board),
@@ -724,7 +837,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
             theme::SUNNY_SOFT,
             "Tile sets",
             "Complete 100-tile bags. Add more for big groups.",
-            select_control("tile_set_count", "1", &tile_set_options(policy, 1)),
+            ui::select("tile_set_count", "1", &tile_set_options(policy, 1)),
         ),
     ]);
     let visibility = setting_row(vec![
@@ -733,14 +846,14 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
             theme::SURFACE_LAVENDER,
             "Remaining tile count",
             "Show how many tiles are left in the bag.",
-            select_control("show_remaining_tile_count", "true", &visibility_options()),
+            ui::select("show_remaining_tile_count", "true", &visibility_options()),
         ),
         setting_field(
             "◇",
             theme::PREMIUM_START,
             "Remaining tile faces",
             "Unordered inventory, never draw order. Showing faces also reveals the total.",
-            select_control("show_remaining_tile_faces", "true", &visibility_options()),
+            ui::select("show_remaining_tile_faces", "true", &visibility_options()),
         ),
     ]);
     let turn_order = setting_row(vec![setting_field(
@@ -748,7 +861,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
         theme::PRIMARY_SOFT,
         "Who takes the first turn?",
         "Go first yourself, or let fate pick a joined member when the game starts.",
-        select_control("first_player_policy", "CREATOR", &first_options),
+        ui::select("first_player_policy", "CREATOR", &first_options),
     )]);
     let body = container! {
         div width="100%" max-width=(theme::PAGE_MEDIUM) {
@@ -756,7 +869,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
         }
         (ui::card(theme::PAGE_MEDIUM, vec![
             page_title("NEW GAME", "Create game", "Pick your settings, then invite friends. You can change everything again before the game starts."),
-            single(container! {
+            ui::one(container! {
                 form hx-post="/lobbies/create" hx-target="#app-page" gap=(theme::SPACE_5) {
                     input type=hidden name="action" value="CREATE";
                     (group_heading("①", "The basics"))
@@ -770,11 +883,7 @@ pub fn lobby_creation_page(user_id: &str, policy: GameCreationPolicy) -> Contain
             }),
         ]))
     };
-    page_root(ui::with_data(
-        ui::menu_page(body),
-        "shared-state-channel",
-        channel,
-    ))
+    ui::menu_page(body, Some(&channel))
 }
 
 #[cfg(test)]
@@ -881,6 +990,75 @@ mod tests {
             );
         }
         assert!(!page.contains("value=\"LEAVE\""));
+    }
+
+    #[test]
+    fn lobby_page_orders_invites_first_until_ready_and_hides_them_when_full() {
+        let mut solo = lobby(FirstPlayerPolicy::Creator);
+        solo.members.truncate(1);
+        let page =
+            lobby_page(&solo, "creator-id", "https://games.example.test", policy()).to_string();
+        assert!(
+            !page.contains("value=\"START\""),
+            "start offered before ready"
+        );
+        assert!(page.contains("Waiting for players"));
+        let invite = page.find("lobby-invitation").expect("invite card");
+        let start = page.find("Ready to play?").expect("start card");
+        assert!(
+            invite < start,
+            "invite card should lead while seats are empty"
+        );
+        assert!(page.contains("cancel-lobby-confirm"));
+        assert!(page.contains("value=\"CANCEL\""));
+
+        let mut full = lobby(FirstPlayerPolicy::Creator);
+        full.settings.max_players = 2;
+        let page =
+            lobby_page(&full, "creator-id", "https://games.example.test", policy()).to_string();
+        assert!(
+            !page.contains("lobby-invitation"),
+            "invite card shown when full"
+        );
+        assert!(page.contains("value=\"START\""));
+
+        let guest = lobby_page(
+            &lobby(FirstPlayerPolicy::Creator),
+            "guest-id",
+            "https://games.example.test",
+            policy(),
+        )
+        .to_string();
+        assert!(!guest.contains("invite players by username"));
+        assert!(
+            !guest.contains("@cleo"),
+            "pending invitees leaked to a guest"
+        );
+    }
+
+    #[test]
+    fn invite_landing_page_uses_the_branded_card() {
+        let preview = LobbyInvitePreview {
+            host_username: "ada".to_string(),
+            settings: lobby(FirstPlayerPolicy::Creator).settings,
+            joined: 2,
+            already_joined: false,
+        };
+        let page =
+            lobby_join_page("guest-id", "/lobbies/join/lobby-1", None, Some(&preview)).to_string();
+        assert!(page.contains("id=\"app-page\""));
+        assert!(page.contains("hx-post=\"/lobbies/join/lobby-1\""));
+        assert!(page.contains("@ada saved you a seat"));
+        assert!(page.contains("2 of 4 seats taken"));
+        assert!(page.contains("17 × 17 board"));
+        assert!(page.contains("Join game"));
+        assert!(!page.contains("name=\"invitation_token\""));
+
+        let generic =
+            lobby_join_page("guest-id", "/lobbies/join", Some("legacy-token"), None).to_string();
+        assert!(generic.contains("A friend saved you a seat"));
+        assert!(generic.contains("name=\"invitation_token\""));
+        assert!(generic.contains("value=\"legacy-token\""));
     }
 
     #[test]

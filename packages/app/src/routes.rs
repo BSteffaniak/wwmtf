@@ -31,14 +31,14 @@ use crate::{
     pages::{
         auth::{
             invitation_joined_page, invitation_page, login_page, login_page_with_invitation,
-            logout_page, migration_page, product_error_page, signed_out_page,
+            logout_page, migration_page, product_error_page, signed_out_page, signed_out_page_for,
         },
         dashboard::dashboard_page,
         game::{
             definition_page, definition_panel, definition_panel_error, draft_error_page, game_page,
             turn_feedback, visual_game_page,
         },
-        lobby::{lobby_creation_page, lobby_page},
+        lobby::{lobby_creation_page, lobby_join_page, lobby_page},
     },
     redeem_shareable_invitation, redeem_shareable_invitation_by_id, revoke_shareable_invitation,
     save_move_plan, start_lobby, theme, update_lobby_settings,
@@ -1521,8 +1521,11 @@ fn view_with_internal_navigation(path: String, user_id: &str) -> View {
     let navigate = ActionType::Navigate { url: path.clone() };
     View::builder()
         .with_primary(container! {
-            div id="app-page" font-family=(theme::FONT_UI) data-shared-state-channel=(channel) fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
-                span { "Loading…" }
+            div id="app-page" font-family=(theme::FONT_UI) data-shared-state-channel=(channel) fx-immediate=(navigate)
+                min-height="100vh" align-items="center" justify-content="center" gap=(theme::SPACE_3)
+                background=(theme::MENU_BG) color=(theme::INK_MUTED) {
+                (crate::ui::tile_face("…", None, 56))
+                span font-weight=bold { "Loading…" }
             }
         })
         .with_response(ResponseMetadata {
@@ -1564,9 +1567,10 @@ async fn lobby_create_route(
     now: OffsetDateTime,
 ) -> View {
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return View::from(product_error_page(
-            "Sign in required",
-            "Sign in before creating a lobby.",
+        return View::from(signed_out_page_for(
+            "NEW GAME",
+            "Sign in to create a game and invite your friends.",
+            None,
         ));
     };
     if request.method.as_ref() != "POST" {
@@ -1630,9 +1634,10 @@ async fn lobby_join_route(
             .map(|form| form.invitation_token)
     });
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return View::from(product_error_page(
-            "Sign in required",
-            "Sign in before joining this lobby.",
+        return View::from(signed_out_page_for(
+            "YOU'RE INVITED",
+            "A friend saved you a seat at the board. Sign in to claim it.",
+            Some("After signing in, open your invite link again to join the game."),
         ));
     };
     if request.method.as_ref() != "POST" {
@@ -1640,17 +1645,23 @@ async fn lobby_join_route(
             || "/lobbies/join".to_string(),
             |lobby_id| format!("/lobbies/join/{lobby_id}"),
         );
-        return View::from(container! {
-            div id="app-page" font-family=(theme::FONT_UI) data-shared-state-channel=(format!("dashboard:{user_id}")) padding=24 {
-                form hx-post=(action) hx-target="#app-page" gap="10px" {
-                    span { "Join this private multiplayer lobby?" }
-                    @if let Some(token) = legacy_token.as_deref() {
-                        input type=hidden name="invitation_token" value=(token);
-                    }
-                    button type=submit { "Join multiplayer lobby" }
-                }
-            }
-        });
+        let preview = match lobby_id.as_deref() {
+            Some(lobby_id) => crate::preview_lobby_invite(database, lobby_id, &user_id, now)
+                .await
+                .ok(),
+            None => None,
+        };
+        if let (Some(lobby_id), Some(preview)) = (lobby_id.as_deref(), preview.as_ref())
+            && preview.already_joined
+        {
+            return view_with_internal_navigation(format!("/lobbies/{lobby_id}"), &user_id);
+        }
+        return View::from(lobby_join_page(
+            &user_id,
+            &action,
+            legacy_token.as_deref(),
+            preview.as_ref(),
+        ));
     }
     let result = if let Some(lobby_id) = lobby_id {
         join_lobby_by_id(database, &lobby_id, &user_id, policy, now).await
@@ -1684,7 +1695,7 @@ async fn lobby_route(
         .unwrap_or_default()
         .trim_end_matches("/action");
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return product_error_page("Sign in required", "Sign in to view this lobby.");
+        return signed_out_page_for("LOBBY", "Sign in to see this lobby.", None);
     };
     match load_lobby(database, lobby_id, &user_id).await {
         Ok(lobby) => lobby_page(&lobby, &user_id, public_base_url, policy),
@@ -1706,9 +1717,10 @@ async fn lobby_action_route(
         .unwrap_or_default()
         .trim_end_matches("/action");
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return View::from(product_error_page(
-            "Sign in required",
+        return View::from(signed_out_page_for(
+            "LOBBY",
             "Sign in to update this lobby.",
+            None,
         ));
     };
     let Ok(form) = request.parse_form::<LobbyActionForm>() else {
@@ -1804,9 +1816,10 @@ async fn game_rematch_route(
     now: OffsetDateTime,
 ) -> View {
     let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
-        return View::from(product_error_page(
-            "Sign in required",
-            "Sign in to start a rematch.",
+        return View::from(signed_out_page_for(
+            "REMATCH",
+            "Sign in to challenge your opponents to another round.",
+            None,
         ));
     };
     let Ok(parsed_game_id) = game_id.parse::<wwmtf_game_domain::GameId>() else {
@@ -2092,6 +2105,23 @@ pub fn create_product_router(
             }
         });
     }
+    if !google_login {
+        // Keep the migration link target recoverable when Google sign-in is not configured.
+        router.add_route_result("/account/migrate", |_request: RouteRequest| async move {
+            Ok(View::from(product_error_page(
+                "Migration unavailable",
+                "Moving an account to Google sign-in needs Google, which is not set up on this server.",
+            ))) as Result<View, Box<dyn std::error::Error>>
+        });
+    }
+    // Browsers request a favicon on every page; answer with an empty icon instead of a routing
+    // error.
+    router.add_route_result("/favicon.ico", |_request: RouteRequest| async move {
+        Ok(Content::Raw {
+            data: Vec::new().into(),
+            content_type: "image/x-icon".to_string(),
+        }) as Result<Content, Box<dyn std::error::Error>>
+    });
     let login_database = database.clone();
     let login_csrf = csrf_token;
     router.add_route_result("/login", move |request: RouteRequest| {
@@ -2610,7 +2640,12 @@ mod tests {
                     .expect("session creates");
                 users.push((user, session));
             }
-            let [(alice, alice_session), (bob, _), (_, outsider_session)] = users.as_slice() else {
+            let [
+                (alice, alice_session),
+                (bob, bob_session),
+                (_, outsider_session),
+            ] = users.as_slice()
+            else {
                 panic!("three users")
             };
             let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
@@ -2652,7 +2687,7 @@ mod tests {
             )
             .await;
             assert!(active.response.navigation.is_none());
-            assert!(text(&active).contains("a rematch is available after the game ends"));
+            assert!(text(&active).contains("A rematch is available after the game ends."));
 
             let state = crate::recover_game(&*database, game_id)
                 .await
@@ -2689,7 +2724,7 @@ mod tests {
             )
             .await;
             assert!(outsider.response.navigation.is_none());
-            assert!(text(&outsider).contains("only players in this game may request a rematch"));
+            assert!(text(&outsider).contains("Only players in this game can request a rematch."));
 
             let get = game_rematch_route(
                 &dispatcher,
@@ -2761,6 +2796,25 @@ mod tests {
                 .expect("creator loads rematch lobby");
             assert_eq!(lobby.invited_usernames, ["route-rematch-b"]);
             assert_eq!(lobby.settings.max_players, 2);
+
+            // The invitee's completed game offers to join the rematch instead of creating another.
+            let bob_cookies = std::collections::BTreeMap::from([(
+                SESSION_COOKIE_NAME.to_string(),
+                bob_session.expose().to_string(),
+            )]);
+            let bob_game = load_authorized_game_page(&*database, &bob_cookies, &id, now)
+                .await
+                .expect("bob loads the completed game");
+            let summary = crate::pages::game::completed_game_summary(&bob_game)
+                .display_to_string(false, false)
+                .expect("results render");
+            assert!(
+                summary.contains("route-rematch-a wants a rematch!"),
+                "{summary}"
+            );
+            assert!(summary.contains(&format!("hx-post=\"/lobbies/{lobby_id}/action\"")));
+            assert!(summary.contains("value=\"ACCEPT_INVITE\""));
+            assert!(!summary.contains(&format!("hx-post=\"/games/{game_id}/rematch\"")));
         });
     }
 
@@ -3298,6 +3352,167 @@ mod tests {
             assert!(rendered.contains(expected), "{rendered}");
             assert!(rendered.contains("game-error"));
         }
+    }
+
+    #[test]
+    fn invite_landing_page_previews_the_lobby_and_keeps_the_join_form() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let host = register(
+                &*database,
+                "invite-host",
+                "correct horse battery staple",
+                now,
+            )
+            .await
+            .expect("host registers");
+            let guest = register(
+                &*database,
+                "invite-guest",
+                "another correct horse battery",
+                now,
+            )
+            .await
+            .expect("guest registers");
+            let guest_session = create_session(&*database, &guest, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let (lobby_id, _) = create_lobby(
+                &*database,
+                &host,
+                LobbySettings {
+                    max_players: 3,
+                    board_size: 15,
+                    tile_set_count: 1,
+                    first_player: FirstPlayerPolicy::Creator,
+                    visibility: GameVisibilitySettings::default(),
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby creates");
+            let path = format!("/lobbies/join/{lobby_id}");
+
+            let anonymous = RouteRequest::from_path(&path, RequestInfo::default());
+            let signed_out = lobby_join_route(&*database, &dispatcher, &anonymous, policy, "", now)
+                .await
+                .primary
+                .expect("signed-out page renders")
+                .display_to_string(false, false)
+                .expect("signed-out page serializes");
+            assert!(signed_out.contains("Sign in required"), "{signed_out}");
+            assert!(signed_out.contains("href=\"/login\""));
+            assert!(!signed_out.contains("WHOOPS"));
+
+            let mut landing = RouteRequest::from_path(&path, RequestInfo::default());
+            landing.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                guest_session.expose().to_string(),
+            );
+            let page = lobby_join_route(&*database, &dispatcher, &landing, policy, "", now)
+                .await
+                .primary
+                .expect("landing renders")
+                .display_to_string(false, false)
+                .expect("landing serializes");
+            assert!(page.contains("id=\"app-page\""), "{page}");
+            assert!(page.contains(&format!("hx-post=\"{path}\"")), "{page}");
+            assert!(page.contains("hx-target=\"#app-page\""));
+            assert!(page.contains("Join game"));
+            assert!(page.contains("@invite-host"));
+            assert!(page.contains("1 of 3 seats taken"));
+            assert!(page.contains("15 × 15 board"));
+            assert!(page.contains("brand-logo"));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn off_turn_submit_replaces_the_waiting_dock_feedback_slot() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("game loads");
+            let waiting_user = if crate::player_for_user(&*database, game_id, &alice)
+                .await
+                .expect("Alice is seated")
+                == state.active_player
+            {
+                bob
+            } else {
+                alice
+            };
+            let session = create_session(&*database, &waiting_user, now, Duration::days(1))
+                .await
+                .expect("session creates");
+
+            let mut page_request =
+                RouteRequest::from_path(&format!("/games/{game_id}"), RequestInfo::default());
+            page_request.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            let page = game_route(&*database, &page_request, now)
+                .await
+                .display_to_string(false, false)
+                .expect("waiting page renders");
+            assert!(page.contains("waiting-banner"), "{page}");
+            assert!(page.contains("id=\"turn-feedback\""), "{page}");
+            assert!(page.contains("plan your next word"));
+
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let mut submit =
+                RouteRequest::from_path(&format!("/games/{game_id}/turn"), RequestInfo::default());
+            submit.method = "POST".parse().expect("POST parses");
+            submit.headers.insert(
+                "content-type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            );
+            submit.cookies.insert(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            );
+            submit.body = Some(std::sync::Arc::new(
+                format!(
+                    "command=PASS&command_id={}&idempotency_key={}&expected_revision={}",
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    state.revision
+                )
+                .into(),
+            ));
+            let view =
+                game_turn_route(&dispatcher, &*database, &submit, &game_id.to_string(), now).await;
+            assert!(view.primary.is_none());
+            let fragment = view
+                .fragments
+                .first()
+                .expect("off-turn submit returns a feedback fragment")
+                .container
+                .display_to_string(false, false)
+                .expect("fragment renders");
+            assert!(fragment.contains("id=\"turn-feedback\""), "{fragment}");
+            assert!(fragment.contains("not your turn"), "{fragment}");
+        });
     }
 
     #[test]

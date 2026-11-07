@@ -95,6 +95,21 @@ pub const MOBILE: &str = "mobile";
 /// Viewport width (px) at or below which the `mobile` trigger applies.
 pub const MOBILE_MAX_WIDTH: i32 = 600;
 
+/// Every named responsive trigger the page modules reference through `if_responsive(..)`.
+///
+/// Renderer wiring must register each `(name, trigger)` pair (for example with
+/// `Renderer::add_responsive_trigger`) so any renderer, not only HTML, applies the same
+/// breakpoint overrides.
+#[must_use]
+pub fn responsive_triggers() -> Vec<(String, hyperchad::transformer::ResponsiveTrigger)> {
+    vec![(
+        MOBILE.to_string(),
+        hyperchad::transformer::ResponsiveTrigger::MaxWidth(
+            hyperchad::transformer::Number::Integer(i64::from(MOBILE_MAX_WIDTH)),
+        ),
+    )]
+}
+
 // ---------------------------------------------------------------------------
 // Neutrals and menu pages (light)
 // ---------------------------------------------------------------------------

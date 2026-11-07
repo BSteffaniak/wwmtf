@@ -46,6 +46,13 @@ pub struct AuthorizedGameParticipant {
     pub avatar_url: Option<String>,
 }
 
+/// A pending lobby invitation from another participant of a completed game.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RematchInvite {
+    pub lobby_id: String,
+    pub inviter_display_name: String,
+}
+
 /// Authorized game presentation reconstructed from canonical persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedGamePage {
@@ -69,6 +76,9 @@ pub struct AuthorizedGamePage {
     pub latest_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
     pub viewer_play_coordinates: std::collections::BTreeSet<wwmtf_game_domain::Coordinate>,
     pub completion_reason: Option<String>,
+    /// Heuristic rematch hint for completed games: an open lobby another participant created
+    /// and invited the viewer to (matched on the inviter; lobbies do not record a source game).
+    pub rematch_invite: Option<RematchInvite>,
     state: wwmtf_game_domain::GameState,
     dictionary: &'static wwmtf_game_domain::WordSetDictionary,
     pub completed: bool,
@@ -309,10 +319,15 @@ pub async fn load_authorized_game_page(
     let final_score_adjustments = final_score_adjustments(&events)?;
     let (latest_action, latest_play_coordinates) = latest_public_action(&events, &names);
     let viewer_play_coordinates = player_play_coordinates(&events, player);
-    let completion_reason = completion_reason(&events, rules.scoreless_turn_limit);
+    let completion_reason = completion_reason(&events, &names);
     let rack_order = crate::load_rack_order(db, game_id, &user_id).await?;
     let exchange_available = state.bag.len() >= usize::from(rules.minimum_tiles_for_exchange);
     let completed = view.status == GameStatus::Completed;
+    let rematch_invite = if completed {
+        rematch_invite(db, &user_id, &participants).await
+    } else {
+        None
+    };
     Ok(AuthorizedGamePage {
         user_id,
         viewer_player: player,
@@ -334,10 +349,36 @@ pub async fn load_authorized_game_page(
         latest_play_coordinates,
         viewer_play_coordinates,
         completion_reason,
+        rematch_invite,
         state,
         dictionary,
         completed,
     })
+}
+
+/// Heuristic rematch hint: the newest open lobby another participant created and invited the
+/// viewer to. A lookup failure must not block the game page, so errors yield `None`.
+async fn rematch_invite(
+    db: &dyn Database,
+    user_id: &str,
+    participants: &[AuthorizedGameParticipant],
+) -> Option<RematchInvite> {
+    let others = participants
+        .iter()
+        .filter(|participant| participant.user_id != user_id)
+        .map(|participant| participant.user_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let (lobby_id, inviter) = crate::lobbies::pending_lobby_invite_from(db, user_id, &others)
+        .await
+        .ok()
+        .flatten()?;
+    participants
+        .iter()
+        .find(|participant| participant.user_id == inviter)
+        .map(|participant| RematchInvite {
+            lobby_id,
+            inviter_display_name: participant.display_name.clone(),
+        })
 }
 
 /// Loads the immutable presentation policy for a started game.
@@ -451,28 +492,57 @@ fn latest_public_action(
     (None, std::collections::BTreeSet::new())
 }
 
-fn completion_reason(events: &[wwmtf_game_domain::GameEvent], pass_limit: u8) -> Option<String> {
-    use wwmtf_game_domain::GameEvent;
+/// A friendly, public sentence explaining how a completed game ended (for example
+/// "bob resigned." or "alice played their last tile."). Only public events are consulted.
+fn completion_reason(
+    events: &[wwmtf_game_domain::GameEvent],
+    names: &std::collections::BTreeMap<wwmtf_game_domain::PlayerId, String>,
+) -> Option<String> {
+    use wwmtf_game_domain::{CompletionReason, GameEvent};
 
-    if events
+    let name = |player: &wwmtf_game_domain::PlayerId| {
+        names
+            .get(player)
+            .cloned()
+            .unwrap_or_else(|| "A player".to_string())
+    };
+    let (completion_index, reason) =
+        events
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, event)| match event {
+                GameEvent::GameCompleted { reason, .. } => Some((index, *reason)),
+                _ => None,
+            })?;
+    let resigned = events[..completion_index]
         .iter()
-        .any(|event| matches!(event, GameEvent::GameResigned { .. }))
-    {
-        return Some("Resignation".to_string());
-    }
-    let completion_index = events
-        .iter()
-        .rposition(|event| matches!(event, GameEvent::GameCompleted { .. }))?;
-    let consecutive_passes = events[..completion_index]
-        .iter()
-        .rev()
-        .take_while(|event| matches!(event, GameEvent::TurnPassed { .. }))
-        .count();
-    if consecutive_passes >= usize::from(pass_limit) {
-        Some("Consecutive-pass limit".to_string())
-    } else {
-        Some("A player emptied their rack".to_string())
-    }
+        .filter_map(|event| match event {
+            GameEvent::GameResigned { player_id, .. } => Some(name(player_id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let resignation =
+        (!resigned.is_empty()).then(|| format!("{} resigned.", resigned.join(" and ")));
+    Some(match reason {
+        CompletionReason::RackOut => events[..completion_index]
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                GameEvent::TilesPlayed { player_id, .. } => {
+                    Some(format!("{} played their last tile.", name(player_id)))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| "A player played their last tile.".to_string()),
+        CompletionReason::ConsecutivePassRounds => {
+            "Everyone passed for too many rounds in a row.".to_string()
+        }
+        CompletionReason::InsufficientActivePlayers => {
+            resignation.unwrap_or_else(|| "Too few players were left to continue.".to_string())
+        }
+        CompletionReason::Legacy => resignation.unwrap_or_else(|| "The game ended.".to_string()),
+    })
 }
 
 /// Authenticated presentation failure mapped to recoverable product states by routes.

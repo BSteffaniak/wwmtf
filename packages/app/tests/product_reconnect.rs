@@ -212,7 +212,7 @@ fn two_authenticated_clients_play_to_completion_with_private_live_views() {
             assert!(!rendered.contains("game-overlay"));
             assert!(rendered.contains("final-standings"));
             assert!(rendered.contains("Close"));
-            assert!(rendered.contains("Consecutive-pass limit"));
+            assert!(rendered.contains("Everyone passed for too many rounds in a row."));
             assert!(rendered.contains("Co-leaders: alice, bob"));
             assert!(rendered.contains("alice"));
             assert!(rendered.contains("bob"));
