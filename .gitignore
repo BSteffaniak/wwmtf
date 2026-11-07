@@ -7,3 +7,4 @@ target/
 *.db-shm
 *.db-wal
 __pycache__/
+.claude/
