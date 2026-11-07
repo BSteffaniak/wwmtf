@@ -26,6 +26,7 @@ futures-lite = { workspace = true }
 hyperchad = { workspace = true, features = [
     "actions",
     "app",
+    "logic",
     "renderer",
     "renderer-assets",
     "renderer-serde",

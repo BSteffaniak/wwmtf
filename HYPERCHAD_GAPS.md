@@ -35,3 +35,8 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 
 - **App metadata:** icon and theme color, mapped to favicon/manifest on HTML and window icon on desktop renderers.
 - **Responsive triggers beyond `MaxWidth`/`MaxHeight`** (min-width, orientation), and responsive values without requiring an explicit element id.
+
+## Layout and feature wiring
+
+- **Single flex properties imply the others.** Setting only `flex-shrink=0` emits `flex-grow:1; flex-basis:0%`, and `flex="0 0 auto"` emits `flex-basis:0`, so fixed-size items stretch or collapse. Workaround: pin fixed-size items with equal `width` and `min-width` and leave flex unset.
+- **Responsive template values are coupled to app logic.** `if_responsive(...)` needs the `logic` feature, which also turns on `hyperchad_app` logic; the app builder then spawns its action listener on the current runtime and panics if there is none. Workaround: build the app inside a dedicated runtime context. A template-only responsive feature would avoid this.

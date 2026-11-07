@@ -5,7 +5,9 @@
 mod durable_web_session;
 
 use hyperchad::app::AppBuilder;
+use hyperchad::renderer::Renderer as _;
 use hyperchad::renderer::assets::{AssetPathTarget, StaticAssetRoute};
+use hyperchad::transformer::{Number, ResponsiveTrigger};
 use wwmtf_app::{CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, create_product_router};
 
 struct GoogleRuntimeConfig {
@@ -261,6 +263,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .enable_all()
             .build()?,
     );
+    let action_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()?;
     let app = {
         use std::sync::Arc;
 
@@ -368,7 +374,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             not_found_behavior: None,
         })?;
-        let mut app = app_builder.build_default_html_vanilla_js_actix()?;
+        // HyperChad's `logic` feature (needed for renderer-neutral `if_responsive` overrides) makes
+        // the builder spawn its action listener on the current runtime, so build inside one.
+        let mut app = {
+            let _action_runtime_context = action_runtime.enter();
+            app_builder.build_default_html_vanilla_js_actix()?
+        };
+        // Renderer-neutral breakpoint consumed by `if_responsive(theme::MOBILE)` in page modules.
+        app.renderer.add_responsive_trigger(
+            wwmtf_app::theme::MOBILE.to_string(),
+            ResponsiveTrigger::MaxWidth(Number::Integer(i64::from(
+                wwmtf_app::theme::MOBILE_MAX_WIDTH,
+            ))),
+        );
         app.renderer
             .app
             .set_shared_state_csrf_token(csrf_token.clone());

@@ -12,27 +12,36 @@ use hyperchad::{
         TransportInbound, TransportOutbound,
     },
     shared_state_transport::{AuthenticatedTransportContext, SharedStateTransportDispatcher as _},
-    template::{LayoutOverflow, container},
+    template::container,
 };
 use serde::Deserialize;
 use switchy_database::Database;
 use time::{Duration, OffsetDateTime};
-use wwmtf_game_domain::{
-    Coordinate, GameCommand, GameError, Placement, PlacementGuidance, PremiumSquare, TileId,
-};
+use wwmtf_game_domain::{Coordinate, GameCommand, GameError, Placement, PlacementGuidance, TileId};
 
 use crate::{
-    AuthenticatedDashboard, AuthorizedGamePage, FirstPlayerPolicy, GameCreationPolicy, GameLobby,
-    GameVisibilitySettings, GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError,
-    ProductWorkflowError, UserScoreTotals, accept_pending_challenge, cancel_lobby,
-    cancel_pending_challenge, claim_oidc_attempt, cleanup_oidc_attempts, clear_move_plan,
-    complete_legacy_google_migration, consume_oidc_attempt, create_lobby, create_oidc_attempt,
-    decline_pending_challenge, error_component, find_or_create_development_user,
-    google_login_and_create_session, join_lobby, join_lobby_by_id, leave_lobby,
-    load_authenticated_dashboard, load_authorized_game_page, load_lobby, load_move_plan,
-    logout_session, move_history_component, redeem_shareable_invitation,
-    redeem_shareable_invitation_by_id, revoke_shareable_invitation, save_move_plan, start_lobby,
-    update_lobby_settings,
+    AuthorizedGamePage, FirstPlayerPolicy, GameCreationPolicy, GameVisibilitySettings,
+    GoogleOidcClient, LobbySettings, OidcAttemptPurpose, PresentationError, ProductWorkflowError,
+    accept_pending_challenge, cancel_lobby, cancel_pending_challenge, claim_oidc_attempt,
+    cleanup_oidc_attempts, clear_move_plan, complete_legacy_google_migration, consume_oidc_attempt,
+    create_lobby, create_oidc_attempt, decline_pending_challenge, error_component,
+    find_or_create_development_user, google_login_and_create_session, join_lobby, join_lobby_by_id,
+    leave_lobby, load_authenticated_dashboard, load_authorized_game_page, load_lobby,
+    load_move_plan, logout_session,
+    pages::{
+        auth::{
+            invitation_joined_page, invitation_page, login_page, login_page_with_invitation,
+            logout_page, migration_page, product_error_page, signed_out_page,
+        },
+        dashboard::dashboard_page,
+        game::{
+            definition_page, definition_panel, definition_panel_error, draft_error_page, game_page,
+            turn_feedback, visual_game_page,
+        },
+        lobby::{lobby_creation_page, lobby_page},
+    },
+    redeem_shareable_invitation, redeem_shareable_invitation_by_id, revoke_shareable_invitation,
+    save_move_plan, start_lobby, theme, update_lobby_settings,
 };
 
 #[derive(Debug, Deserialize)]
@@ -249,22 +258,22 @@ async fn dashboard_action_route(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize, Default)]
-struct TurnDraft {
-    selected_tile: Option<u16>,
-    selected_blank_letter: Option<char>,
-    placements: Vec<DraftPlacement>,
+pub struct TurnDraft {
+    pub selected_tile: Option<u16>,
+    pub selected_blank_letter: Option<char>,
+    pub placements: Vec<DraftPlacement>,
     #[serde(default)]
-    rack_tile: Option<u16>,
+    pub rack_tile: Option<u16>,
     #[serde(default)]
-    exchange_tiles: Vec<u16>,
+    pub exchange_tiles: Vec<u16>,
     #[serde(default)]
-    mode: TurnMode,
+    pub mode: TurnMode,
     #[serde(default)]
-    board_zoom: BoardZoom,
+    pub board_zoom: BoardZoom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-enum BoardZoom {
+pub enum BoardZoom {
     Fit,
     Compact,
     #[default]
@@ -273,7 +282,7 @@ enum BoardZoom {
 }
 
 impl BoardZoom {
-    const fn square_size(self) -> u32 {
+    pub const fn square_size(self) -> u32 {
         match self {
             Self::Fit => 20,
             Self::Compact => 28,
@@ -300,7 +309,7 @@ impl BoardZoom {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-enum TurnMode {
+pub enum TurnMode {
     #[default]
     Play,
     Exchange,
@@ -310,7 +319,7 @@ enum TurnMode {
 }
 
 impl TurnDraft {
-    fn has_composed_turn_input(&self) -> bool {
+    pub fn has_composed_turn_input(&self) -> bool {
         self.selected_blank_letter.is_some()
             || !self.placements.is_empty()
             || !self.exchange_tiles.is_empty()
@@ -347,7 +356,7 @@ fn is_zoom_action(action: &str) -> bool {
     matches!(action, "ZOOM_OUT" | "ZOOM_RESET" | "ZOOM_IN")
 }
 
-fn rack_action(draft: &TurnDraft) -> &'static str {
+pub fn rack_action(draft: &TurnDraft) -> &'static str {
     if draft.mode == TurnMode::Exchange {
         "TOGGLE_EXCHANGE"
     } else if draft.rack_tile.is_some() {
@@ -358,18 +367,18 @@ fn rack_action(draft: &TurnDraft) -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DraftFeedback {
-    candidate: Option<wwmtf_game_domain::CandidatePlayAnalysis>,
-    guidance: PlacementGuidance,
-    message: String,
+pub struct DraftFeedback {
+    pub candidate: Option<wwmtf_game_domain::CandidatePlayAnalysis>,
+    pub guidance: PlacementGuidance,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
-struct DraftPlacement {
-    tile_id: u16,
-    x: u8,
-    y: u8,
-    blank_letter: Option<char>,
+pub struct DraftPlacement {
+    pub tile_id: u16,
+    pub x: u8,
+    pub y: u8,
+    pub blank_letter: Option<char>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -917,7 +926,7 @@ async fn dashboard_refresh_page(
         )
 }
 
-fn draft_token(draft: &TurnDraft) -> String {
+pub fn draft_token(draft: &TurnDraft) -> String {
     serde_json::to_vec(draft)
         .expect("turn draft is serializable")
         .into_iter()
@@ -1001,7 +1010,7 @@ async fn persist_draft(
     }
 }
 
-fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback {
+pub fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeedback {
     let placements = draft.domain_placements();
     let guidance = game
         .placement_guidance(&placements)
@@ -1067,75 +1076,6 @@ fn draft_analysis_message(error: &GameError) -> String {
         }
         error => error.to_string(),
     }
-}
-
-fn invalid_words_message(words: &[String]) -> String {
-    if words.len() == 1 {
-        format!("{} is not a valid word", words[0])
-    } else {
-        format!("{} are not valid words", words.join(", "))
-    }
-}
-
-fn draft_feedback_component(
-    game: &AuthorizedGamePage,
-    feedback: &DraftFeedback,
-    draft: &TurnDraft,
-) -> Container {
-    let candidate_valid = feedback
-        .candidate
-        .as_ref()
-        .is_some_and(wwmtf_game_domain::CandidatePlayAnalysis::is_valid);
-    let message = match draft.mode {
-        TurnMode::Exchange => format!(
-            "{} tile(s) selected for exchange",
-            draft.exchange_tiles.len()
-        ),
-        TurnMode::ConfirmExchange => {
-            format!("Exchange {} selected tile(s)?", draft.exchange_tiles.len())
-        }
-        TurnMode::ConfirmPass => "Pass this turn?".to_string(),
-        TurnMode::ConfirmResign => "Resign this game?".to_string(),
-        TurnMode::Play => feedback.candidate.as_ref().map_or_else(
-            || feedback.message.clone(),
-            |candidate| {
-                let words = candidate
-                    .play
-                    .words
-                    .iter()
-                    .map(|word| word.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if candidate_valid {
-                    let status = if game.view.active_player == game.viewer_player {
-                        "ready to play"
-                    } else {
-                        "planned for your turn"
-                    };
-                    format!("{words} · {} points · {status}", candidate.play.score)
-                } else {
-                    invalid_words_message(&candidate.invalid_words)
-                }
-            },
-        ),
-    };
-    container! {
-        section id="draft-preview" class="dock-message" width="100%" direction="row"
-            align-items="center" justify-content="center" padding-y="4px" padding-x="8px"
-            background=(if candidate_valid { "#f4c95d" } else if feedback.candidate.is_some() { "#f7d8ae" } else { "#214c38" })
-            color=(if feedback.candidate.is_some() { "#2d2515" } else { "#f4f0df" })
-            border=((if candidate_valid { "#ffe29a" } else if feedback.candidate.is_some() { "#d77a59" } else { "#376d53" }, 1))
-            border-radius="10px" overflow-x="hidden" {
-            span font-size="13px" font-weight=bold text-overflow="ellipsis" white-space="preserve" {
-                (message)
-            }
-        }
-    }
-    .into()
-}
-
-fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &str) -> Container {
-    visual_game_page(game, draft, Some(message))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1506,20 +1446,6 @@ async fn game_turn_route(
     }
 }
 
-fn turn_feedback(message: Option<&str>) -> Container {
-    container! {
-        @if let Some(message) = message {
-            section id="turn-feedback" width="100%" {
-                div id="game-error" background=#fff3e8 border=(("#e2b98f", 1))
-                    border-radius="12px" padding="14px" {
-                    span color=#7a3f16 { (message) }
-                }
-            }
-        }
-    }
-    .into()
-}
-
 fn turn_rejection(reason: &str) -> View {
     let message = if reason.contains("revision") {
         "This game changed in another tab. Review the latest board and resubmit."
@@ -1547,53 +1473,6 @@ fn turn_rejection(reason: &str) -> View {
     View::builder()
         .with_fragment(turn_feedback(Some(message)))
         .build()
-}
-
-fn invitation_joined_page(game_id: wwmtf_game_domain::GameId) -> Container {
-    let game_href = format!("/games/{game_id}");
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
-            main width="100%" max-width="560px"
-                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="16px" {
-                span color=#3f5735 font-weight=bold { "INVITATION ACCEPTED" }
-                h1 { "Your game is ready" }
-                span color=#5d6258 { "The invitation was redeemed and the game was created." }
-                anchor href=(game_href) color=#ffffff background=#526243 border=(("#526243", 1))
-                    border-radius="10px" padding-y=13 padding-x=18 { "Open game" }
-            }
-        }
-    }
-    .into()
-}
-
-fn invitation_page(invitation_token: &str, signed_in: bool) -> Container {
-    let login_href = format!("/login?invite={invitation_token}");
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
-            main width="100%" max-width="560px"
-                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="18px" {
-                span color=#7b6240 font-weight=bold { "PRIVATE GAME INVITATION" }
-                h1 { "You’ve been invited to play" }
-                span color=#5d6258 { "This invitation creates a private two-player game. It can be used once." }
-                @if signed_in {
-                    form hx-post="/join" hx-target="#app-page" gap="10px" {
-                        input type=hidden name="action" value="REDEEM_INVITATION";
-                        input type=hidden name="invitation_token" value=(invitation_token);
-                        button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
-                            border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Accept invitation" }
-                    }
-                    anchor href="/" color=#526243 { "Back to dashboard" }
-                } @else {
-                    span { "Continue with Google to accept this invitation." }
-                    div direction="row" gap="10px" {
-                        anchor href=(login_href) color=#ffffff background=#526243 border=(("#526243", 1))
-                            border-radius="10px" padding-y=13 padding-x=18 { "Continue with Google" }
-                    }
-                }
-            }
-        }
-    }
-    .into()
 }
 
 async fn invitation_route(
@@ -1631,165 +1510,6 @@ async fn invitation_route(
     }
 }
 
-fn lobby_invitation_url(public_base_url: &str, lobby_id: &str) -> String {
-    format!(
-        "{}/lobbies/join/{lobby_id}",
-        public_base_url.trim_end_matches('/')
-    )
-}
-
-#[allow(clippy::too_many_lines, clippy::large_stack_frames)]
-fn lobby_page(lobby: &GameLobby, viewer_user_id: &str, public_base_url: &str) -> Container {
-    let is_creator = lobby.creator_user_id == viewer_user_id;
-    let first_player = match &lobby.settings.first_player {
-        FirstPlayerPolicy::Random => "Random".to_string(),
-        FirstPlayerPolicy::Creator => "Creator".to_string(),
-        FirstPlayerPolicy::Chosen(user_id) => format!("Chosen member: {user_id}"),
-    };
-    let invitation_url =
-        (lobby.status == "OPEN").then(|| lobby_invitation_url(public_base_url, &lobby.lobby_id));
-    let dashboard_channel = format!("dashboard:{viewer_user_id}");
-    let lobby_path = format!("/lobbies/{}", lobby.lobby_id);
-    // Page-specific handler elements must disappear on navigation. Idiomorph preserves #app-page,
-    // and removing its event attribute alone does not unregister HyperChad's window listener.
-    let refresh_lobby = ActionType::Navigate { url: lobby_path };
-    container! {
-        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
-            span id="lobby-live-refresh" hidden fx-global-shared-state-event=(refresh_lobby) { }
-            main id="multiplayer-lobby" width="100%" max-width="760px" background=#ffffff
-                border=(("#ded8c9", 1)) border-radius="18px" padding="28px" gap="18px" {
-                @if let Some(game_id) = lobby.started_game_id {
-                    span hidden fx-immediate=(ActionType::Navigate { url: format!("/games/{game_id}") }) { }
-                }
-                anchor href="/" color=#526243 { "← Dashboard" }
-                h1 { "Game lobby" }
-                span color=#5d6258 { (lobby.members.len()) " of " (lobby.settings.max_players) " seats joined" }
-                section id="lobby-settings" gap="5px" {
-                    h2 { "Game settings" }
-                    span { (lobby.settings.board_size) " × " (lobby.settings.board_size) " board" }
-                    span { (lobby.settings.tile_set_count) " complete tile set(s)" }
-                    span { "Remaining tile count: " (if lobby.settings.visibility.show_remaining_tile_count { "Shown" } else { "Hidden" }) }
-                    span { "Remaining tile faces: " (if lobby.settings.visibility.show_remaining_tile_faces { "Shown" } else { "Hidden" }) }
-                    span { "First player: " (first_player) }
-                }
-                @if let Some(invitation_url) = invitation_url.as_deref() {
-                    section id="lobby-invitation" background=#e8f1e3 padding=14 border-radius="10px" gap="5px" {
-                        span font-weight=bold { "Private invitation" }
-                        anchor href=(invitation_url) overflow-wrap="anywhere" color="#36512e" { (invitation_url) }
-                        span color=#5d6258 { "Share this private link, or invite players by username. Players can join while the lobby is open." }
-                    }
-                }
-                @if is_creator && lobby.status == "OPEN" {
-                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" gap="8px" {
-                        input type=hidden name="action" value="INVITE";
-                        h2 { "Invite by username" }
-                        input type=text name="username" placeholder="Exact @username" required=true padding="12px" border=(("#cfc8b8", 1)) border-radius="8px";
-                        button type=submit background=#2f8a57 color=#ffffff padding="12px" border-radius="8px" { "Send invite" }
-                    }
-                }
-                @if !lobby.invited_usernames.is_empty() {
-                    section gap="6px" {
-                        h2 { "Invites sent" }
-                        @for username in &lobby.invited_usernames {
-                            span { "@" (username) " — awaiting response" }
-                        }
-                    }
-                }
-                section id="lobby-members" gap="6px" {
-                    h2 { "Members" }
-                    @for member in &lobby.members {
-                        div direction="row" gap="8px" border-bottom=(("#ded8c9", 1)) padding-y="6px" {
-                            span font-weight=bold { "Seat " (member.seat + 1) }
-                            span { "@" (lobby.usernames.get(&member.user_id).map_or(member.user_id.as_str(), String::as_str)) }
-                            @if member.user_id == lobby.creator_user_id { span color=#526243 { "Creator" } }
-                        }
-                    }
-                }
-                @if lobby.status == "STARTED" {
-                    @if let Some(game_id) = lobby.started_game_id {
-                        anchor href=(format!("/games/{game_id}")) background=#526243 color=#ffffff padding-y=12 padding-x=16 border-radius="10px" { "Open game" }
-                    }
-                } @else if is_creator {
-                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" gap="8px" {
-                        input type=hidden name="action" value="UPDATE";
-                        h2 { "Edit lobby settings" }
-                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
-                            div flex=1 min-width="180px" gap="4px" {
-                                span font-weight=bold { "Maximum players" }
-                                input type=text name="max_players" value=(lobby.settings.max_players) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                            }
-                            div flex=1 min-width="180px" gap="4px" {
-                                span font-weight=bold { "Board size" }
-                                input type=text name="board_size" value=(lobby.settings.board_size) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                            }
-                            div flex=1 min-width="180px" gap="4px" {
-                                span font-weight=bold { "Tile sets" }
-                                input type=text name="tile_set_count" value=(lobby.settings.tile_set_count) padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                            }
-                        }
-                        div gap="4px" {
-                            span font-weight=bold { "Remaining tile count" }
-                            select name="show_remaining_tile_count" {
-                                @if lobby.settings.visibility.show_remaining_tile_count {
-                                    option value="true" { "Show" }
-                                    option value="false" { "Hide" }
-                                } @else {
-                                    option value="false" { "Hide" }
-                                    option value="true" { "Show" }
-                                }
-                            }
-                        }
-                        div gap="4px" {
-                            span font-weight=bold { "Remaining tile faces" }
-                            span color=#5d6258 font-size="12px" { "Shows an unordered inventory, never future draw order. Showing faces also reveals the total." }
-                            select name="show_remaining_tile_faces" {
-                                @if lobby.settings.visibility.show_remaining_tile_faces {
-                                    option value="true" { "Show" }
-                                    option value="false" { "Hide" }
-                                } @else {
-                                    option value="false" { "Hide" }
-                                    option value="true" { "Show" }
-                                }
-                            }
-                        }
-                        div gap="4px" {
-                            span font-weight=bold { "Who takes the first turn?" }
-                            select name="first_player_policy" {
-                                option value="CREATOR" { "Creator starts" }
-                                option value="RANDOM" { "Random member starts" }
-                                option value="CHOSEN" { "Choose a joined member" }
-                            }
-                        }
-                        div gap="4px" {
-                            span font-weight=bold { "Chosen member" }
-                            span color=#5d6258 font-size="12px" { "Only used when ‘Choose a joined member’ is selected." }
-                            input type=text name="chosen_first_user_id" placeholder="Joined member user ID" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                        }
-                        button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Save settings" }
-                    }
-                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
-                        form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
-                            input type=hidden name="action" value="START";
-                            button type=submit background=#526243 color=#ffffff padding-y=10 padding-x=14 border-radius="9px" { "Start game" }
-                        }
-                        form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
-                            input type=hidden name="action" value="CANCEL";
-                            button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Cancel lobby" }
-                        }
-                    }
-                } @else {
-                    form hx-post=(format!("/lobbies/{}/action", lobby.lobby_id)) hx-target="#app-page" {
-                        input type=hidden name="action" value="LEAVE";
-                        button type=submit background=#ffffff color=#7c3f38 padding-y=10 padding-x=14 border=(("#7c3f38", 1)) border-radius="9px" { "Leave lobby" }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
 fn view_with_internal_navigation(path: String, user_id: &str) -> View {
     // Keep the subscription alive through the navigation response; a channel-less intermediate
     // page otherwise races an unsubscribe against the destination's subscribe.
@@ -1797,7 +1517,7 @@ fn view_with_internal_navigation(path: String, user_id: &str) -> View {
     let navigate = ActionType::Navigate { url: path.clone() };
     View::builder()
         .with_primary(container! {
-            div id="app-page" data-shared-state-channel=(channel) fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
+            div id="app-page" font-family=(theme::FONT_UI) data-shared-state-channel=(channel) fx-immediate=(navigate) min-height="100vh" align-items="center" justify-content="center" {
                 span { "Loading…" }
             }
         })
@@ -1809,66 +1529,6 @@ fn view_with_internal_navigation(path: String, user_id: &str) -> View {
             ),
         })
         .build()
-}
-
-fn lobby_creation_page(user_id: &str) -> Container {
-    let channel = format!("dashboard:{user_id}");
-    container! {
-        div id="app-page" data-shared-state-channel=(channel) min-height="100vh" background=#f4f1e8 padding=24 align-items="center" {
-            main width="100%" max-width="760px" background=#ffffff border=(("#ded8c9", 1))
-                border-radius="18px" padding="28px" gap="18px" {
-                anchor href="/" color=#526243 { "← Dashboard" }
-                h1 { "Create game" }
-                span color=#5d6258 { "Choose the initial settings. You can change them again before starting the game." }
-                form hx-post="/lobbies/create" hx-target="#app-page" gap="14px" {
-                    input type=hidden name="action" value="CREATE";
-                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
-                        div flex=1 min-width="180px" gap="4px" {
-                            span font-weight=bold { "Maximum players" }
-                            span color=#5d6258 font-size="12px" { "Total lobby capacity, including you." }
-                            input type=text name="max_players" value="4" placeholder="For example, 4" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                        }
-                        div flex=1 min-width="180px" gap="4px" {
-                            span font-weight=bold { "Board size" }
-                            span color=#5d6258 font-size="12px" { "Width and height of the square board." }
-                            input type=text name="board_size" value="15" placeholder="For example, 15" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                        }
-                        div flex=1 min-width="180px" gap="4px" {
-                            span font-weight=bold { "Tile sets" }
-                            span color=#5d6258 font-size="12px" { "Number of complete 100-tile distributions." }
-                            input type=text name="tile_set_count" value="1" placeholder="For example, 1" padding-y=10 padding-x=12 border=(("#cfc8b8", 1)) border-radius="8px";
-                        }
-                    }
-                    div gap="4px" {
-                        span font-weight=bold { "Remaining tile count" }
-                        select name="show_remaining_tile_count" {
-                            option value="true" { "Show" }
-                            option value="false" { "Hide" }
-                        }
-                    }
-                    div gap="4px" {
-                        span font-weight=bold { "Remaining tile faces" }
-                        span color=#5d6258 font-size="12px" { "Shows an unordered inventory, never future draw order. Showing faces also reveals the total." }
-                        select name="show_remaining_tile_faces" {
-                            option value="true" { "Show" }
-                            option value="false" { "Hide" }
-                        }
-                    }
-                    div gap="4px" {
-                        span font-weight=bold { "Who takes the first turn?" }
-                        span color=#5d6258 font-size="12px" { "Choose yourself or select a random joined member when the game starts." }
-                        select name="first_player_policy" {
-                            option value="CREATOR" { "Creator starts" }
-                            option value="RANDOM" { "Random member starts" }
-                        }
-                    }
-                    button type=submit padding-y=12 padding-x=16 background=#2f8a57 color=#ffffff
-                        border=(("#246d45", 1)) border-radius="10px" cursor=pointer { "Create game" }
-                }
-            }
-        }
-    }
-    .into()
 }
 
 async fn refresh_lobby_dashboards(
@@ -1977,7 +1637,7 @@ async fn lobby_join_route(
             |lobby_id| format!("/lobbies/join/{lobby_id}"),
         );
         return View::from(container! {
-            div id="app-page" data-shared-state-channel=(format!("dashboard:{user_id}")) padding=24 {
+            div id="app-page" font-family=(theme::FONT_UI) data-shared-state-channel=(format!("dashboard:{user_id}")) padding=24 {
                 form hx-post=(action) hx-target="#app-page" gap="10px" {
                     span { "Join this private multiplayer lobby?" }
                     @if let Some(token) = legacy_token.as_deref() {
@@ -2594,94 +2254,6 @@ async fn game_word_panel_route(
     }
 }
 
-fn definition_content(word: &str, lookup: &crate::DefinitionLookup) -> Container {
-    container! {
-        h1 { (word) }
-        @match lookup {
-            crate::DefinitionLookup::Found(definition) => {
-                @for meaning in &definition.meanings {
-                    section gap="6px" {
-                        h2 font-size="18px" { (meaning.part_of_speech.as_str()) }
-                        @for text in &meaning.definitions {
-                            span { "• " (text.as_str()) }
-                        }
-                    }
-                }
-                span color=#5d6258 font-size="12px" {
-                    "Source: " anchor href=(definition.source_url.as_str()) color=#526243 { (definition.source_url.as_str()) }
-                }
-                span color=#5d6258 font-size="12px" {
-                    "License: " anchor href=(definition.license_url.as_str()) color=#526243 { (definition.license_name.as_str()) }
-                }
-            },
-            crate::DefinitionLookup::Missing => {
-                span { "No definition is available from the configured provider." }
-            },
-            crate::DefinitionLookup::Unavailable(reason) => {
-                span { (reason.user_message()) }
-            },
-        }
-    }
-    .into()
-}
-
-fn definition_page(
-    game_id: wwmtf_game_domain::GameId,
-    word: &str,
-    lookup: &crate::DefinitionLookup,
-) -> Container {
-    let game_href = format!("/games/{game_id}");
-    let content = definition_content(word, lookup);
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh"
-            background=#f4f1e8 padding-y=32 padding-x=18 {
-            main id="word-definition" width="100%" max-width="720px" background=#ffffff
-                border=(("#ded8c9", 1)) border-radius="18px" padding="24px" gap="14px" {
-                anchor href=(game_href) color=#526243 { "← Back to game" }
-                (content)
-            }
-        }
-    }
-    .into()
-}
-
-fn definition_panel(word: &str, lookup: &crate::DefinitionLookup) -> Container {
-    let content = definition_content(word, lookup);
-    container! {
-        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
-            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-            background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
-            padding="18px" gap="12px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                span color=#5d6e62 font-size="11px" font-weight=bold { "WORD DEFINITION" }
-                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
-                    background=#173326 color=#f4f0df border=(("#436854", 1)) border-radius="999px"
-                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
-            }
-            (content)
-        }
-    }
-    .into()
-}
-
-fn definition_panel_error(message: &str) -> Container {
-    container! {
-        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
-            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-            background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
-            padding="18px" gap="12px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                h2 { "Definition unavailable" }
-                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
-                    background=#173326 color=#f4f0df border=(("#436854", 1)) border-radius="999px"
-                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
-            }
-            span { (message) }
-        }
-    }
-    .into()
-}
-
 /// Loads and renders the signed-in dashboard, or a recoverable authentication page.
 pub async fn dashboard_route(
     database: &dyn Database,
@@ -2738,1244 +2310,6 @@ pub async fn game_route(
         }
         Err(error) => product_error_page("Unable to load game", &error.to_string()),
     }
-}
-
-/// Renders the renderer-neutral login form.
-#[must_use]
-pub fn login_page(error: Option<&str>) -> Container {
-    login_page_with_invitation(error, "", false, true)
-}
-
-fn login_page_with_invitation(
-    error: Option<&str>,
-    invitation_token: &str,
-    development_login: bool,
-    google_login: bool,
-) -> Container {
-    let message = error.unwrap_or_default();
-    let google_href = if invitation_token.is_empty() {
-        "/auth/google/start".to_string()
-    } else {
-        format!("/auth/google/start?invite={invitation_token}")
-    };
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
-            main width="100%" max-width="480px"
-                background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
-                anchor href="/" color=#526243 { "← Home" }
-                div gap="6px" {
-                    span color=#7b6240 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
-                    h1 { "Welcome back" }
-                    span color=#5d6258 { "Sign in to continue your private games." }
-                }
-                @if development_login {
-                    section background=#eef5e9 border=(("#b7c8ad", 1)) border-radius="10px" padding="14px" gap="12px" {
-                        span color=#3f5735 font-weight=bold { "Local development login" }
-                        span color=#5d6258 { "Enter any username. It will be created automatically if needed." }
-                        form method="post" gap="12px" {
-                            input type=hidden name="invitation_token" value=(invitation_token);
-                            input type=text name="username" placeholder="Username" autofocus=true padding-y=13 padding-x=14
-                                border=(("#cfc8b8", 1)) border-radius="10px";
-                            button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff
-                                border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Continue" }
-                        }
-                    }
-                }
-                @if google_login {
-                    anchor href=(google_href) target="_top" color=#ffffff background=#526243 border=(("#526243", 1))
-                        border-radius="10px" padding-y=13 padding-x=18 text-align="center" { "Continue with Google" }
-                    span color=#5d6258 { "Already have a username/password account? "
-                        anchor href="/account/migrate" color=#526243 { "Migrate it to Google" }
-                    }
-                }
-                @if !development_login && !google_login {
-                    span color=#5d6258 { "No login method is configured for this server." }
-                }
-                @if !message.is_empty() {
-                    section id="account-result" background=#fff3e8 border=(("#e2b98f", 1))
-                        border-radius="10px" padding="12px" { span color=#7a3f16 { (message) } }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-/// Renders the explicit legacy-account migration form.
-#[must_use]
-pub fn migration_page(error: Option<&str>) -> Container {
-    let message = error.unwrap_or_default();
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh" background=#f4f1e8 padding-y=48 padding-x=24 {
-            main width="100%" max-width="480px" background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding="32px" gap="20px" {
-                anchor href="/login" color=#526243 { "← Back to sign in" }
-                h1 { "Migrate your existing account" }
-                span color=#5d6258 { "Confirm your existing credentials, then connect Google without losing your games." }
-                form method="post" gap="12px" {
-                    span font-weight=bold { "Username" }
-                    input type=text name="username" placeholder="Username" padding-y=13 padding-x=14 border=(("#cfc8b8", 1)) border-radius="10px";
-                    span font-weight=bold { "Password" }
-                    input type=password name="password" placeholder="Password" padding-y=13 padding-x=14 border=(("#cfc8b8", 1)) border-radius="10px";
-                    button type=submit padding-y=13 padding-x=18 background=#526243 color=#ffffff border=(("#526243", 1)) border-radius="10px" cursor=pointer { "Continue with Google" }
-                }
-                @if !message.is_empty() {
-                    section background=#fff3e8 border=(("#e2b98f", 1)) border-radius="10px" padding="12px" { (message) }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-/// Renders logout confirmation. Session revocation is performed by the authenticated workflow.
-#[must_use]
-pub fn logout_page() -> Container {
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh"
-            background=#f4f1e8 padding=24 {
-            main width="100%" max-width="480px" background=#ffffff border=(("#ded8c9", 1))
-                border-radius=18 padding=32 gap=16 {
-                h1 { "Sign out" }
-                span color=#5d6258 { "Signing out revokes the current durable session." }
-                form hx-post="/logout" hx-target="#app-page" {
-                    button type=submit padding-y=12 padding-x=16 background=#526243 color=#ffffff
-                        border=(("#526243", 1)) border-radius=10 cursor="pointer" { "Sign out" }
-                }
-                section id="account-result" {}
-            }
-        }
-    }
-    .into()
-}
-
-/// Renders signed-out navigation and account entry points without exposing state.
-#[must_use]
-pub fn signed_out_page() -> Container {
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh"
-            background=#f4f1e8 padding=24 {
-            main width="100%" max-width="560px" background=#ffffff border=(("#ded8c9", 1))
-                border-radius=18 padding=32 gap=18 {
-                span color=#7b6240 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
-                h1 { "Sign in required" }
-                span color=#5d6258 { "A valid secure session is required to view games." }
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=10 {
-                    anchor href="/login" color=#ffffff background=#526243 border=(("#526243", 1))
-                        border-radius=10 padding-y=12 padding-x=16 { "Continue with Google" }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-/// Renders the complete signed-in dashboard projection.
-#[must_use]
-pub fn dashboard_page(dashboard: &AuthenticatedDashboard) -> Container {
-    dashboard_page_content(dashboard)
-}
-
-fn start_game_component() -> Container {
-    container! {
-        section id="new-game-actions" width="100%" gap="14px" {
-            h2 { "Start a game" }
-            span color=#5d6258 { "Choose your settings, invite players by username or link, and start from the lobby. For two players or more." }
-            anchor href="/lobbies/new" background=#2f8a57 color=#ffffff padding-y=12 padding-x=16
-                border=(("#246d45", 1)) border-radius="10px" { "Create game" }
-        }
-    }
-    .into()
-}
-
-#[allow(clippy::too_many_lines, clippy::large_stack_frames)]
-fn dashboard_page_content(dashboard: &AuthenticatedDashboard) -> Container {
-    let user_id = dashboard.user_id.as_str();
-    let username = dashboard.username.as_str();
-    let display_name = dashboard.display_name.as_str();
-    let avatar_url = dashboard.avatar_url.as_deref();
-    let totals = score_totals_label(dashboard.score_totals.as_ref());
-    let dashboard_channel = format!("dashboard:{}", dashboard.user_id);
-    let refresh_dashboard = ActionType::Navigate {
-        url: "/".to_string(),
-    };
-    container! {
-        div id="app-page" data-shared-state-channel=(dashboard_channel.as_str())
-            direction="column" align-items="center"
-            min-height="100vh" background=#e9efe8 color=#24352c
-            padding-y=24 padding-x=16 {
-            span id="dashboard-live-refresh" hidden fx-global-shared-state-event=(refresh_dashboard) { }
-            div id="dashboard-shell" width="100%" max-width="1080px" gap="28px" {
-                header id="dashboard-header" direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
-                    background=#ffffff border=(("#ded8c9", 1)) border-radius="18px" padding-y=22 padding-x=26 gap="16px" {
-                    div direction="row" align-items="center" gap="12px" {
-                        @if let Some(avatar_url) = avatar_url {
-                            image src=(avatar_url) alt="Profile avatar" width="48" height="48" border-radius="999px";
-                        }
-                        div gap="4px" {
-                            span color=#2f8a57 font-weight=bold { "WORDS WITH MORE THAN FRIENDS" }
-                            h1 { "Your games" }
-                            span color=#5d6258 { "Signed in as " (display_name) }
-                            @if display_name != username {
-                                span color=#747a71 { "@" (username) }
-                            }
-                        }
-                    }
-                    anchor href="/logout" color=#526243 { "Sign out" }
-                }
-                section id="active-games" data-dashboard-order="1" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="16px" padding="24px" gap="4px" {
-                    h2 { "Games" }
-                    @if dashboard.projection.games.is_empty() {
-                        div gap="8px" {
-                            h3 { "Your first game starts here" }
-                            span color=#777b73 { "Challenge someone by username or create a private link to send them." }
-                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a private game" }
-                        }
-                    }
-                    @for game in &dashboard.projection.games {
-                        @let href = format!("/games/{}", game.game_id);
-                        @let viewer = game.participants.iter().find(|participant| participant.viewer);
-                        @let others = game.participants.iter().filter(|participant| !participant.viewer).collect::<Vec<_>>();
-                        @let state = if game.status == "COMPLETED" {
-                            match viewer.and_then(|participant| participant.outcome.as_deref()) {
-                                Some("WIN") => "You won",
-                                Some("TIE") => "Tie game",
-                                Some("LOSS") => "You lost",
-                                _ => "Game complete",
-                            }
-                        } else if game.active_player_user_id.as_deref() == Some(user_id) {
-                            "Your turn"
-                        } else {
-                            "Waiting for another player"
-                        };
-                        @let opponents = others.iter().map(|participant| participant.display_name.as_str()).collect::<Vec<_>>().join(", ");
-                        div id=(format!("game-summary-{}", game.game_id)) class="game-summary"
-                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between"
-                            border-bottom=(("#e3ded2", 1)) padding-y=16 padding-x=4 gap="12px" {
-                            div gap="3px" {
-                                anchor href=(href) color=#526243 font-weight=bold { "Game with " (opponents) }
-                                span color=#3f5735 font-weight=bold { (state) }
-                                span color=#777b73 {
-                                    "You " (viewer.map_or(0, |participant| participant.score))
-                                    @for participant in &others {
-                                        " – " (participant.score) " " (participant.display_name.as_str())
-                                    }
-                                }
-                            }
-                            span color=#777b73 { (game.latest_activity.as_str()) }
-                        }
-                    }
-                }
-                section id="pending-games" data-dashboard-order="2" background=#ffffff border=(("#ded8c9", 1))
-                    border-radius="16px" padding="24px" gap="4px" {
-                    div gap="5px" {
-                        h2 { "Challenges & invitations" }
-                        span color=#5d6258 { "Invitations are private and single-use. Old invite secrets cannot be displayed again." }
-                    }
-                    @if dashboard.projection.pending.is_empty() {
-                        div gap="6px" {
-                            span color=#777b73 { "No challenges or invitations are waiting." }
-                            anchor href="#new-game-actions" color=#526243 font-weight=bold { "Start a game" }
-                        }
-                    }
-                    @for item in &dashboard.projection.pending {
-                        @let counterparty = item.counterparty_display_name.as_deref()
-                            .or(item.counterparty_username.as_deref())
-                            .unwrap_or("Private invite");
-                        @let heading = if item.kind == "LOBBY" {
-                            "Game lobby".to_string()
-                        } else if item.kind == "LOBBY_INVITATION" {
-                            format!("Lobby invite from {counterparty}")
-                        } else if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
-                            format!("Challenge from {counterparty}")
-                        } else if item.kind == "CHALLENGE" {
-                            format!("Challenge sent to {counterparty}")
-
-                        } else {
-                            "Active private invitation".to_string()
-                        };
-                        div id=(format!("pending-item-{}", item.id)) class="pending-item" data-direction=(item.direction.as_str())
-                            direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="space-between" align-items="center"
-                            border-bottom=(("#e3ded2", 1)) padding-y=14 padding-x=4 gap="12px" {
-                            div direction="row" align-items="center" gap="10px" {
-                                @if let Some(avatar_url) = item.counterparty_avatar_url.as_deref() {
-                                    image src=(avatar_url) alt="Challenge profile avatar" width="40" height="40" border-radius="999px";
-                                }
-                                div gap="3px" {
-                                    span font-weight=bold { (heading) }
-                                    @if let (Some(display_name), Some(handle)) = (
-                                        item.counterparty_display_name.as_deref(),
-                                        item.counterparty_username.as_deref(),
-                                    ) && display_name != handle {
-                                        span color=#777b73 { "@" (handle) }
-                                    }
-                                    @if item.kind == "INVITATION" {
-                                        span color=#777b73 { "Link hidden after creation for security." }
-                                    }
-                                }
-                            }
-                            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="8px" {
-                                @if item.kind == "LOBBY" {
-                                    anchor href=(format!("/lobbies/{}", item.id)) { "Open lobby" }
-                                } @else if item.kind == "LOBBY_INVITATION" {
-                                    form hx-post=(format!("/lobbies/{}/action", item.id)) hx-target="#app-page" {
-                                        input type=hidden name="action" value="ACCEPT_INVITE";
-                                        button type=submit padding="10px" background=#526243 color=#ffffff border-radius="8px" { "Accept invite" }
-                                    }
-                                    form hx-post=(format!("/lobbies/{}/action", item.id)) hx-target="#app-page" {
-                                        input type=hidden name="action" value="DECLINE_INVITE";
-                                        button type=submit padding="10px" { "Decline" }
-                                    }
-                                } @else if item.kind == "CHALLENGE" && item.direction == "INCOMING" {
-                                    form hx-post="/dashboard/action" hx-target="#app-page" {
-                                        input type=hidden name="action" value="ACCEPT_CHALLENGE";
-                                        input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding-y=9 padding-x=13 background=#526243 color=#ffffff
-                                            border=(("#526243", 1)) border-radius="8px" cursor=pointer { "Accept" }
-                                    }
-                                    form hx-post="/dashboard/action" hx-target="#app-page" {
-                                        input type=hidden name="action" value="DECLINE_CHALLENGE";
-                                        input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding-y=9 padding-x=13 border=(("#c9c2b4", 1))
-                                            border-radius="8px" cursor=pointer { "Decline" }
-                                    }
-                                } @else if item.kind == "CHALLENGE" {
-                                    form hx-post="/dashboard/action" hx-target="#app-page" {
-                                        input type=hidden name="action" value="CANCEL_CHALLENGE";
-                                        input type=hidden name="challenge_id" value=(item.id.as_str());
-                                        button type=submit padding-y=9 padding-x=13 border=(("#c9c2b4", 1))
-                                            border-radius="8px" cursor=pointer { "Cancel" }
-                                    }
-                                } @else {
-                                    form hx-post="/dashboard/action" hx-target="#app-page" {
-                                        input type=hidden name="action" value="REVOKE_INVITATION";
-                                        input type=hidden name="invitation_id" value=(item.id.as_str());
-                                        button type=submit padding-y=9 padding-x=13 color=#814434 border=(("#d3a99d", 1))
-                                            border-radius="8px" cursor=pointer { "Revoke" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                main id="dashboard-main" data-dashboard-order="3" direction="column" gap="16px" align-items="start" {
-                    details id="new-game-panel" width="100%" background=#ffffff border=(("#ded8c9", 1))
-                        border-radius="16px" padding="20px" {
-                        summary cursor="pointer" font-weight=bold { "New game" }
-                        div padding-top="14px" { (start_game_component()) }
-                    }
-                    details id="profile-settings" width="100%" background=#ffffff border=(("#ded8c9", 1))
-                        border-radius="16px" padding="20px" {
-                        summary cursor="pointer" font-weight=bold { "Profile" }
-                        div padding-top="14px" gap="12px" {
-                            form method="post" action="/dashboard/action" gap="8px" {
-                                input type="hidden" name="action" value="SET_DISPLAY_NAME";
-                                span { "Display name" }
-                                input type="text" id="profile-display-name" name="display_name" value=(display_name)
-                                    required=true padding="10px" border=(("#b9b3a5", 1)) border-radius="8px";
-                                button type="submit" background=#526243 color=#ffffff border-radius="8px" padding="10px" { "Save display name" }
-                            }
-                            form method="post" action="/dashboard/action" {
-                                input type="hidden" name="action" value="USE_GOOGLE_NAME";
-                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google name again" }
-                            }
-                            form method="post" action="/profile/avatar" enctype="multipart/form-data" gap="8px" {
-                                span { "Upload a profile picture" }
-                                input type="file" name="avatar";
-                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Upload picture" }
-                            }
-                            form method="post" action="/dashboard/action" {
-                                input type="hidden" name="action" value="REMOVE_AVATAR";
-                                button type="submit" background=#ffffff color=#7c3f38 border=(("#b57a73", 1)) border-radius="8px" padding="10px" { "Remove profile picture" }
-                            }
-                            form method="post" action="/dashboard/action" {
-                                input type="hidden" name="action" value="USE_GOOGLE_AVATAR";
-                                button type="submit" background=#ffffff color=#526243 border=(("#526243", 1)) border-radius="8px" padding="10px" { "Use Google photo again" }
-                            }
-                        }
-                    }
-                    details id="score-totals" width="100%" background=#ffffff border=(("#ded8c9", 1))
-                        border-radius="16px" padding="20px" {
-                        summary cursor="pointer" font-weight=bold { "Score history" }
-                        span padding-top="12px" color=#5d6258 { (totals) }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-fn score_totals_label(totals: Option<&UserScoreTotals>) -> String {
-    totals.map_or_else(
-        || "No completed games".to_string(),
-        |totals| {
-            format!(
-                "{} completed, {} wins, {} ties, {} total points",
-                totals.completed_games, totals.wins, totals.ties, totals.total_score
-            )
-        },
-    )
-}
-
-/// Renders the compact fallback command controls beneath the visual board.
-#[must_use]
-pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
-    let action = format!("/games/{}/turn", game.game_id);
-    let command_id = uuid::Uuid::new_v4().to_string();
-    let idempotency_key = uuid::Uuid::new_v4().to_string();
-    container! {
-        section id="turn-composer" gap="12px" {
-            h2 { "Turn controls" }
-            span color=#5d6258 { "Tap a rack tile, then tap an open board square. Use these controls for non-placement turns." }
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    input type=hidden name="command" value="PASS";
-                    input type=hidden name="command_id" value=(command_id.as_str());
-                    input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
-                    input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
-                }
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    input type=hidden name="command" value="RESIGN";
-                    input type=hidden name="command_id" value=(command_id.as_str());
-                    input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
-                    input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding-y=10 padding-x=14 background=#ffffff color=#814434
-                        border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-fn compose_form_fields(game: &AuthorizedGamePage, draft: &TurnDraft, action: &str) -> Container {
-    let encoded = draft_token(draft);
-    container! {
-        input type=hidden name="action" value=(action);
-        input type=hidden name="expected_revision" value=(game.view.revision);
-        input type=hidden name="draft" value=(encoded);
-    }
-    .into()
-}
-
-#[allow(clippy::too_many_lines)]
-fn visual_board(
-    game: &AuthorizedGamePage,
-    draft: &TurnDraft,
-    feedback: &DraftFeedback,
-) -> Container {
-    let action = format!("/games/{}/compose", game.game_id);
-    let occupied = game
-        .view
-        .board
-        .iter()
-        .map(|(coordinate, letter, points)| (*coordinate, (*letter, *points)))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let pending = draft
-        .placements
-        .iter()
-        .map(|placement| {
-            (
-                Coordinate::new(placement.x, placement.y),
-                (placement.tile_id, placement.blank_letter),
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let score_anchor = feedback.candidate.as_ref().and_then(|candidate| {
-        candidate
-            .play
-            .words
-            .iter()
-            .flat_map(|word| word.coordinates.iter().copied())
-            .filter(|coordinate| pending.contains_key(coordinate))
-            .max_by_key(|coordinate| (coordinate.y, coordinate.x))
-    });
-    let score = feedback
-        .candidate
-        .as_ref()
-        .map(|candidate| candidate.play.score);
-    let invalid_score = feedback
-        .candidate
-        .as_ref()
-        .is_some_and(|candidate| !candidate.is_valid());
-    let square_size = draft.board_zoom.square_size();
-    let score_bubble_left = score_anchor.map(|coordinate| {
-        u32::from(coordinate.x) * (square_size + 2) + square_size.saturating_sub(12) + 6
-    });
-    let score_bubble_top = score_anchor
-        .map(|coordinate| (u32::from(coordinate.y) * (square_size + 2) + 6).saturating_sub(16));
-    let tile_font_size = if square_size < 36 { 15 } else { 20 };
-    let premium_font_size = if square_size < 36 { 10 } else { 16 };
-    let board_grid_width = u32::from(game.rules.board_size) * square_size
-        + u32::from(game.rules.board_size.saturating_sub(1)) * 2;
-    let board_frame_width = board_grid_width + 12;
-    container! {
-        section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
-            position="absolute" top=0 right=0 bottom=0 left=0 direction="column" {
-            div class="board-zoom-controls" width="100%" flex="0 0 auto" direction="row"
-                justify-content="center" gap="7px" padding-y="6px" {
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_OUT"))
-                    button type=submit padding-y="6px" padding-x="11px"
-                        background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "−" }
-                }
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_RESET"))
-                    button type=submit padding-y="6px" padding-x="11px" background=#173d2c color=#ffffff
-                        border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "Fit" }
-                }
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_IN"))
-                    button type=submit padding-y="6px" padding-x="11px"
-                        background=#173d2c color=#ffffff border=(("#35674e", 1)) border-radius="999px" cursor=pointer { "+" }
-                }
-            }
-            div class="board-viewport" width="100%" min-height=0 flex=1
-                overflow-x="auto" overflow-y="auto" {
-                div class="board-scroll-content" width="100%" height="100%" min-width=(board_frame_width)
-                    min-height=(board_frame_width) align-items="center" justify-content="center" {
-                    div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
-                        width=(board_frame_width) height=(board_frame_width) position="relative"
-                        flex="0 0 auto" background=#594933 border=(("#493a28", 6)) border-radius="8px" gap="2px" {
-                    @for y in 0..game.rules.board_size {
-                        div direction="row" gap="2px" {
-                            @for x in 0..game.rules.board_size {
-                                @let coordinate = Coordinate::new(x, y);
-                                @let committed = occupied.get(&coordinate).copied();
-                                @let drafted = pending.get(&coordinate).copied();
-                                @let premium = game.rules.premiums.get(&coordinate).copied();
-                                @let required = feedback.guidance.required.contains(&coordinate);
-                                @let eligible = feedback.guidance.eligible.contains(&coordinate);
-                                @let latest = game.latest_play_coordinates.contains(&coordinate);
-                                @let viewer_owned = game.viewer_play_coordinates.contains(&coordinate);
-                                @let (background, label, color) = if let Some((letter, _)) = committed {
-                                    ("#f6d47f", letter.to_string(), "#302515")
-                                } else if let Some((tile_id, blank_letter)) = drafted {
-                                    let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
-                                        .map(|(_, letter, _)| blank_letter.unwrap_or(*letter)).unwrap_or('?');
-                                    ("#d8ecff", letter.to_string(), "#193751")
-                                } else if coordinate == game.rules.start {
-                                    ("#f5aaa7", "★".to_string(), "#6b2929")
-                                } else {
-                                    match premium {
-                                        Some(PremiumSquare::Letter(2)) => ("#a9d9f0", "DL".to_string(), "#24546a"),
-                                        Some(PremiumSquare::Letter(_)) => ("#5fb5dc", "TL".to_string(), "#123b4e"),
-                                        Some(PremiumSquare::Word(2)) => ("#f2b5b8", "DW".to_string(), "#743236"),
-                                        Some(PremiumSquare::Word(_)) => ("#e46e75", "TW".to_string(), "#ffffff"),
-                                        None => ("#eee7d5", String::new(), "#756f64"),
-                                    }
-                                };
-                                @let draft_points = drafted.and_then(|(tile_id, _)| {
-                                    game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
-                                        .map(|(_, _, points)| *points)
-                                });
-                                @if let Some((tile_id, _)) = drafted {
-                                    form hx-post=(action.as_str()) hx-target="#app-page" {
-                                        (compose_form_fields(game, draft, "REMOVE_TILE"))
-                                        input type=hidden name="tile_id" value=(tile_id);
-                                        button type=submit class="board-square pending-square" width=(square_size) height=(square_size)
-                                            background=#d8ecff color=#193751 border=(("#4381b3", 3)) border-radius="4px"
-                                            align-items="center" justify-content="center" font-weight=bold position="relative" cursor=pointer {
-                                            span font-size=(tile_font_size) { (label) }
-                                            @if let Some(points) = draft_points {
-                                                span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
-                                            }
-                                        }
-                                    }
-                                } @else if committed.is_some() {
-                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width=(square_size) height=(square_size)
-                                        background=(background) color=(color) border=((if latest { "#2f8a57" } else { "#9a7d45" }, if latest { 3 } else { 1 }))
-                                        border-radius="4px" align-items="center" justify-content="center" font-weight=bold position="relative" {
-                                        @if viewer_owned {
-                                            span class="viewer-tile-marker" position="absolute" top="4px" left="4px"
-                                                width="5px" height="5px" background=#7f93a8 opacity=0.55 border-radius="999px" { }
-                                        }
-                                        span font-size=(tile_font_size) { (label) }
-                                        @if let Some((_, points)) = committed {
-                                            span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
-                                        }
-                                    }
-                                } @else {
-                                    form hx-post=(action.as_str()) hx-target="#app-page" {
-                                        (compose_form_fields(game, draft, "PLACE_TILE"))
-                                        input type=hidden name="x" value=(x);
-                                        input type=hidden name="y" value=(y);
-                                        button type=submit class="board-square open-square" data-x=(x) data-y=(y)
-                                            width=(square_size) height=(square_size) background=(background) color=(color)
-                                            border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a4888", 3) } else { ("#aa9e85", 1) })
-                                            position="relative" align-items="center" justify-content="center"
-                                            font-weight=bold cursor=pointer {
-                                            @if required {
-                                                span class="required-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#f3a64b opacity=0.3 { }
-                                            } @else if eligible {
-                                                span class="eligible-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#7f9a78 opacity=0.3 { }
-                                            }
-                                            span position="relative" font-size=(premium_font_size) { (label) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    @if let (Some(score), Some(left), Some(top)) = (score, score_bubble_left, score_bubble_top) {
-                        span class=(if invalid_score { "draft-score-bubble invalid-draft-score" } else { "draft-score-bubble" })
-                            position="absolute" left=(left) top=(top) min-width="31px" height="25px"
-                            background=(if invalid_score { "#b4452f" } else { "#2f8a57" }) color=#ffffff
-                            border=(if invalid_score { ("#7a2d20", 2) } else { ("#246d45", 2) }) border-radius="999px"
-                            align-items="center" justify-content="center" font-size="12px" font-weight=bold {
-                            (score)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    }
-    .into()
-}
-
-fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
-    let action = format!("/games/{}/compose", game.game_id);
-    let can_compose = !game.completed;
-    let rack = game
-        .rack_order
-        .iter()
-        .filter_map(|ordered| {
-            game.view
-                .rack
-                .iter()
-                .find(|(tile_id, _, _)| tile_id == ordered)
-        })
-        .collect::<Vec<_>>();
-    container! {
-        section id="player-rack" width="100%" max-width="100%" position="relative" {
-            div class="rack-tray" width="100%" max-width="100%" direction="row" overflow-x="hidden" overflow-y="hidden"
-                justify-content="center" gap="3px"
-                background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="8px" padding-x="6px" {
-                @for (tile_id, letter, points) in rack {
-                    @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
-                    @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
-                    @let exchange_selected = draft.exchange_tiles.contains(tile_id);
-                    @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
-                    @if can_compose || draft.mode == TurnMode::Play {
-                        @let rack_action = rack_action(draft);
-                        form hx-post=(action.as_str()) hx-target="#app-page"
-                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
-                            min-width=0 flex-shrink=0 {
-                            (compose_form_fields(game, draft, rack_action))
-                            input type=hidden name="tile_id" value=(tile_id);
-                            button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id)
-                                width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
-                                min-width=0 overflow-x="hidden" overflow-y="hidden"
-                                background=(if selected { "#fff0a8" } else if exchange_selected { "#f7b9a9" } else if placed { "#b99e66" } else { "#f7d67f" }) color=#2e291f
-                                border=((if selected { "#ffffff" } else if exchange_selected { "#ff796b" } else { "#b88a31" }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
-                                position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
-                                span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
-                                span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
-                                    font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
-                            }
-                        }
-                    } @else {
-                        div class="rack-tile" data-tile-id=(tile_id)
-                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
-                            min-width=0 flex-shrink=0 overflow-x="hidden" overflow-y="hidden"
-                            background=#f7d67f color=#2e291f border=(("#b88a31", 2)) border-radius="7px"
-                            align-items="center" justify-content="center" position="relative" font-weight=bold {
-                            span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
-                            span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
-                                font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-fn blank_letter_picker_open(draft: &TurnDraft, rack: &[(u16, char, u8)]) -> bool {
-    draft.selected_blank_letter.is_none()
-        && draft.selected_tile.is_some_and(|tile_id| {
-            rack.iter()
-                .any(|(id, letter, _)| *id == tile_id && *letter == ' ')
-        })
-}
-
-fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
-    let action = format!("/games/{}/compose", game.game_id);
-    let selected_blank_needs_letter = blank_letter_picker_open(draft, &game.view.rack);
-    container! {
-        @if selected_blank_needs_letter {
-            section class="blank-letter-layer" position="fixed" top=0 right=0 bottom=0 left=0
-                width="100vw" height="100dvh" align-items="center" justify-content="end"
-                background=#00000066 padding="2vw" {
-                section width="100%" max-height="72dvh" overflow-y="auto"
-                    background=#f4f1e8 color=#26382d border=(("#8e7651", 2)) border-radius="12px"
-                    padding="10px" gap="7px" {
-                    div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
-                        span font-weight=bold { "Choose the blank tile’s letter:" }
-                        form hx-post=(action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "CANCEL_TILE_PICK"))
-                            button type=submit background=#ffffff color=#526243 border=(("#839276", 1))
-                                border-radius="999px" padding-y="5px" padding-x="9px" cursor=pointer { "Cancel" }
-                        }
-                    }
-                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap="5px" {
-                        @for letter in 'A'..='Z' {
-                            form hx-post=(action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
-                                input type=hidden name="letter" value=(letter.to_string());
-                                button type=submit data-blank-letter=(letter.to_string()) width="38px" height="38px" border=(("#aa9e85", 1))
-                                    background=(if draft.selected_blank_letter == Some(letter) { "#e8f1e3" } else { "#ffffff" })
-                                    border-radius="7px" font-weight=bold cursor=pointer { (letter) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-#[allow(clippy::too_many_lines)]
-fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
-    let turn_action = format!("/games/{}/turn", game.game_id);
-    let compose_action = format!("/games/{}/compose", game.game_id);
-    let command_id = uuid::Uuid::new_v4().to_string();
-    let idempotency_key = uuid::Uuid::new_v4().to_string();
-    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
-    let play_score = draft_feedback(game, draft)
-        .candidate
-        .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
-        .map(|candidate| candidate.play.score);
-    container! {
-        section id="turn-actions" class="turn-composer action-hud" max-width="100%" position="relative" padding-y="4px" padding-x="6px"
-            background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { "#173d2c" })
-            color=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#402c1e" } else { "#f4f0df" })
-            border=((if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f3b66e" } else { "#35674e" }, 1))
-            border-radius="10px" {
-            @if draft.mode == TurnMode::Exchange {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden"
-                    align-items="center" gap="6px" {
-                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                        (compose_form_fields(game, draft, "REVIEW_EXCHANGE"))
-                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
-                            border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { "Review exchange" }
-                    }
-                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                        (compose_form_fields(game, draft, "CANCEL_MODE"))
-                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
-                    }
-                }
-            } @else if draft.mode == TurnMode::ConfirmExchange {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden" gap="6px" {
-                    form hx-post=(turn_action.as_str()) hx-target="#app-page" {
-                        input type=hidden name="command" value="EXCHANGE";
-                        input type=hidden name="command_id" value=(command_id.as_str());
-                        input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
-                        input type=hidden name="expected_revision" value=(game.view.revision);
-                        @for (index, tile_id) in draft.exchange_tiles.iter().enumerate() {
-                            input type=hidden name=(format!("tile_{index}")) value=(tile_id);
-                        }
-                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
-                            border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { "Confirm exchange" }
-                    }
-                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                        (compose_form_fields(game, draft, "CANCEL_MODE"))
-                        button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                            border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
-                    }
-                }
-            } @else if draft.mode == TurnMode::ConfirmPass {
-                (confirmed_command_forms(game, draft, "PASS", "Confirm pass", &command_id, &idempotency_key))
-            } @else if draft.mode == TurnMode::ConfirmResign {
-                (confirmed_command_forms(game, draft, "RESIGN", "Confirm resignation", &command_id, &idempotency_key))
-            } @else {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden"
-                    align-items="center" justify-content="space-between" gap="6px" {
-                    @if !game.completed {
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "SHUFFLE_RACK"))
-                            button type=submit padding-y=7 padding-x=10 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Shuffle" }
-                        }
-                    }
-                    @if !draft.placements.is_empty() {
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "CLEAR"))
-                            button type=submit padding-y=7 padding-x=10 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall" }
-                        }
-                    }
-                    @if !draft.placements.is_empty() && viewer_turn {
-                        form hx-post=(turn_action.as_str()) hx-target="#app-page" {
-                            input type=hidden name="command" value="PLAY";
-                            input type=hidden name="command_id" value=(command_id.as_str());
-                            input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
-                            input type=hidden name="expected_revision" value=(game.view.revision);
-                            @for (index, placement) in draft.placements.iter().enumerate() {
-                                input type=hidden name=(format!("tile_{index}")) value=(placement.tile_id);
-                                input type=hidden name=(format!("x_{index}")) value=(placement.x);
-                                input type=hidden name=(format!("y_{index}")) value=(placement.y);
-                                @if let Some(letter) = placement.blank_letter {
-                                    input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
-                                }
-                            }
-                            button type=submit class="primary-turn-action" padding-y=7 padding-x=12 background=#2f8a57 color=#ffffff
-                                border=(("#246d45", 2)) border-radius="9px" font-weight=bold cursor=pointer {
-                                @if let Some(score) = play_score { "Play · " (score) } @else { "Play" }
-                            }
-                        }
-                    }
-                    @if !game.completed && viewer_turn {
-                        button type=button fx-click=(ActionType::toggle_display_by_id("more-turn-actions-menu"))
-                            color=#f4f0df font-weight=bold padding-y="7px" padding-x="6px"
-                            cursor=pointer { "More ···" }
-                    }
-                }
-                @if !game.completed && viewer_turn {
-                    div id="more-turn-actions-menu" hidden position="absolute" bottom="100%" right=0
-                        background=#ffffff color=#26382d border=(("#d8d1c1", 1)) border-radius="12px"
-                        padding="12px" gap="8px" {
-                        @if game.exchange_available {
-                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
-                                button type=submit padding-y=8 padding-x=12 background=#ffffff color=#526243
-                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Exchange" }
-                            }
-                        }
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "CONFIRM_PASS"))
-                            button type=submit padding-y=8 padding-x=12 background=#ffffff color=#526243
-                                border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Pass" }
-                        }
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                            (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
-                            button type=submit padding-y=8 padding-x=12 background=#ffffff color=#814434
-                                border=(("#d3a99d", 1)) border-radius="9px" cursor=pointer { "Resign" }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-fn confirmed_command_forms(
-    game: &AuthorizedGamePage,
-    draft: &TurnDraft,
-    command: &str,
-    label: &str,
-    command_id: &str,
-    idempotency_key: &str,
-) -> Container {
-    let turn_action = format!("/games/{}/turn", game.game_id);
-    let compose_action = format!("/games/{}/compose", game.game_id);
-    container! {
-        div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden" gap="6px" {
-            form hx-post=(turn_action.as_str()) hx-target="#app-page" {
-                input type=hidden name="command" value=(command);
-                input type=hidden name="command_id" value=(command_id);
-                input type=hidden name="idempotency_key" value=(idempotency_key);
-                input type=hidden name="expected_revision" value=(game.view.revision);
-                button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=#2f8a57 color=#ffffff
-                    border=(("#246d45", 2)) border-radius="11px" font-weight=bold cursor=pointer { (label) }
-            }
-            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                (compose_form_fields(game, draft, "CANCEL_MODE"))
-                button type=submit padding-y=10 padding-x=14 background=#ffffff color=#526243
-                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Cancel" }
-            }
-        }
-    }
-    .into()
-}
-
-fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
-    let current_turn_name = game
-        .participants
-        .iter()
-        .find(|participant| participant.player_id == game.view.active_player)
-        .map_or("Player", |participant| participant.display_name.as_str());
-    let turn = if game.completed {
-        "Game complete".to_string()
-    } else if game.view.active_player == game.viewer_player {
-        "Your move".to_string()
-    } else {
-        format!("{current_turn_name}'s move")
-    };
-    container! {
-        section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
-            overflow-x="auto" overflow-y="hidden" background=#f4c95d color=#2d2515
-            border=(("#ffe29a", 2)) border-radius="16px" padding-y="6px" padding-x="8px" gap="5px" {
-            div min-width=0 align-items="center" {
-                span id="named-turn-status" font-size="11px" font-weight=bold white-space="preserve" { (turn) }
-                div direction="row" gap="5px" align-items="center" {
-                    span id="live-status-connected" hidden fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "● Live" }
-                    span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                    span id="live-status-disconnected" hidden fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
-                }
-            }
-            div id="participant-scoreboard" direction="row" gap="6px" min-width=0 overflow-x="auto" overflow-y="hidden" {
-                @for participant in &game.participants {
-                    @let public = game.view.players.iter().find(|player| player.player_id == participant.player_id);
-                    @let score = public.map_or(0, |player| player.score);
-                    @let is_viewer = participant.player_id == game.viewer_player;
-                    @let active = public.is_some_and(|player| player.active);
-                    @let leader = public.is_some_and(|player| player.leader);
-                    @let initial = participant.username.chars().next().unwrap_or('?').to_uppercase().to_string();
-                    @let state = if game.completed && leader {
-                        "Leader"
-                    } else if game.completed {
-                        "Completed"
-                    } else if !active {
-                        "Resigned"
-                    } else if participant.player_id == game.view.active_player {
-                        "Playing"
-                    } else {
-                        "Waiting"
-                    };
-                    div id=(format!("player-scoreboard-{}", participant.player_id.as_uuid()))
-                        direction="row" align-items="center" gap="5px" flex="0 0 auto"
-                        background=(if is_viewer { "#fff1bd" } else { "#e1bd63" })
-                        border=((if leader { "#2e7049" } else { "#b08e43" }, 2)) border-radius="999px"
-                        padding-y="3px" padding-x="6px" {
-                        @if let Some(avatar_url) = participant.avatar_url.as_deref() {
-                            image src=(avatar_url) alt=(format!("{} profile avatar", participant.display_name)) width="30" height="30" border-radius="999px";
-                        } @else {
-                            span width="30px" height="30px" border-radius="999px"
-                                background=(if active { "#2e7049" } else { "#776f5d" }) color=#ffffff
-                                align-items="center" justify-content="center" font-size="14px" font-weight=bold { (initial) }
-                        }
-                        div gap="1px" min-width="70px" {
-                            span font-size="12px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                                (participant.display_name.as_str()) @if is_viewer { " (you)" }
-                            }
-                            span font-size="10px" white-space="preserve" { (state) }
-                        }
-                        span min-width="30px" align-items="center" justify-content="center"
-                            background=#ffffff border-radius="999px" padding-y="2px" padding-x="5px"
-                            font-size="17px" font-weight=bold { (score) }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
-    let mut standings = game
-        .participants
-        .iter()
-        .filter_map(|participant| {
-            game.view
-                .players
-                .iter()
-                .find(|player| player.player_id == participant.player_id)
-                .map(|player| {
-                    (
-                        participant,
-                        player.score,
-                        game.final_score_adjustments
-                            .get(&participant.player_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        player.leader,
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    standings.sort_by_key(|standing| std::cmp::Reverse(standing.1));
-    let leaders = standings
-        .iter()
-        .filter(|standing| standing.3)
-        .map(|standing| standing.0.display_name.as_str())
-        .collect::<Vec<_>>();
-    let outcome = if leaders.len() > 1 {
-        format!("Co-leaders: {}", leaders.join(", "))
-    } else if let Some(leader) = leaders.first() {
-        format!("{leader} won")
-    } else {
-        "Game complete".to_string()
-    };
-    container! {
-        section id="completed-game-summary" width="100%" background=#ffffff color=#26382d border=(("#c8b88f", 2))
-            border-radius="12px" padding-y="8px" padding-x="10px" gap="6px" {
-            div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
-                span font-size="18px" font-weight=bold { (outcome) }
-                button type=button fx-click=(ActionType::no_display_by_id("completed-game-summary"))
-                    background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
-                    padding-y="4px" padding-x="8px" cursor=pointer { "Close" }
-            }
-            div id="final-standings" width="100%" overflow-x="auto" overflow-y="hidden" gap="4px" {
-                @for (rank, (participant, score, adjustment, leader)) in standings.iter().enumerate() {
-                    @let is_viewer = participant.player_id == game.viewer_player;
-                    div direction="row" justify-content="space-between" align-items="center" gap="8px"
-                        border-bottom=(("#ded8c9", 1)) padding-y="4px" padding-x="2px" {
-                        span {
-                            @if *leader { span font-weight=bold { (rank + 1) ". " (participant.display_name.as_str()) } }
-                            @else { span { (rank + 1) ". " (participant.display_name.as_str()) } }
-                            @if is_viewer { " (you)" }
-                            @if *leader { " · leader" }
-                        }
-                        span white-space="preserve" {
-                            (score) @if *adjustment != 0 { " (" (format!("{adjustment:+}")) ")" }
-                        }
-                    }
-                }
-            }
-            @if let Some(reason) = &game.completion_reason {
-                span color=#5d6258 { "Completed by: " (reason.as_str()) }
-            }
-        }
-    }
-    .into()
-}
-
-fn rules_component(game: &AuthorizedGamePage) -> Container {
-    let exchange_requirement = game.rules.minimum_tiles_for_exchange;
-    let rack_size = game.rules.rack_size;
-    let full_rack_bonus = game.rules.full_rack_bonus;
-    let scoreless_turn_limit = game.rules.scoreless_turn_limit;
-    container! {
-        details id="game-rules" width="100%" {
-            summary cursor="pointer" font-weight=bold { "Rules and board key" }
-            div padding-top="12px" gap="9px" color=#5d6258 {
-                span { "Place tiles in one row or column to form connected words. The opening play must cover the center star. All formed words must be accepted by this game’s pinned dictionary." }
-                span { "A tile scores its printed value. DL and TL multiply a newly placed tile; DW and TW multiply the whole word. Premium squares apply only when first covered." }
-                span { "Playing all " (rack_size) " rack tiles adds a " (full_rack_bonus) "-point full-rack bonus." }
-                span { "Exchange replaces selected tiles and ends your turn. It is available only while at least " (exchange_requirement) " tiles remain in the reserve; exchanged tile identities stay private." }
-                span { "Passing ends your turn without playing. Three uninterrupted complete rounds of passes by all active players end the game. For the classic two-player profile this is " (scoreless_turn_limit) " consecutive passes; the threshold scales with active membership." }
-                span { "Resigning removes that player from turn rotation. Their rack stays locked and hidden while play continues; resignation ends the game only when fewer than two active players remain." }
-                span { "When the game ends, remaining rack values are applied according to the completion reason. Final adjusted scores determine the ordered standings, and equal highest scores produce co-leaders." }
-            }
-        }
-    }
-    .into()
-}
-
-fn live_status_action(visible_id: &str) -> ActionType {
-    ActionType::Multi(vec![
-        ActionType::no_display_by_id("live-status-connecting"),
-        ActionType::no_display_by_id("live-status-connected"),
-        ActionType::no_display_by_id("live-status-reconnecting"),
-        ActionType::no_display_by_id("live-status-disconnected"),
-        ActionType::display_by_id(visible_id),
-    ])
-}
-
-fn remaining_tiles_component(game: &AuthorizedGamePage) -> Container {
-    let faces = game.view.remaining_tile_faces.as_deref();
-    container! {
-        section id="remaining-tiles" gap="8px" {
-            h3 { "Tiles remaining" }
-            @if let Some(count) = game.view.remaining_tile_count {
-                span { (count) " tile" (if count == 1 { "" } else { "s" }) " in the bag" }
-            }
-            @if let Some(faces) = faces {
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
-                    @for face in faces {
-                        span background=#f2d79b color=#26382d border=(("#c3a86d", 1))
-                            border-radius="7px" padding-y="5px" padding-x="8px" {
-                            (face.letter.map_or_else(|| "Blank".to_string(), |letter| letter.to_string()))
-                            " × " (face.count)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    .into()
-}
-
-#[allow(clippy::too_many_lines)]
-fn visual_game_page(
-    game: &AuthorizedGamePage,
-    draft: &TurnDraft,
-    error: Option<&str>,
-) -> Container {
-    let game_id = game.game_id.to_string();
-    let short_game_id = game_id.chars().take(8).collect::<String>();
-    let feedback = draft_feedback(game, draft);
-    let board = visual_board(game, draft, &feedback);
-    let draft_preview = draft_feedback_component(game, &feedback, draft);
-    let scoreboard = player_scoreboard_component(game);
-    let completed_summary = game.completed.then(|| completed_game_summary(game));
-    let rack = visual_rack(game, draft);
-    let actions = visual_turn_actions(game, draft);
-    let blank_letter_layer = visual_blank_letter_layer(game, draft);
-    let history = move_history_component(game.game_id, &game.history);
-    let game_channel = format!("game:{}", game.game_id);
-    let game_path = if draft.has_composed_turn_input() {
-        format!("/games/{game_id}?draft_revision={}", game.view.revision)
-    } else {
-        format!("/games/{game_id}")
-    };
-    let refresh_game = ActionType::Navigate { url: game_path };
-    let turn_feedback_view = turn_feedback(error);
-    container! {
-        div id="app-page" class="game-scene" data-shared-state-channel=(game_channel.as_str())
-            direction="column" width=vw100 height=dvh100 min-height=dvh100
-            position="fixed" top=0 right=0 bottom=0 left=0
-            overflow-x="hidden" overflow-y="hidden"
-            background=#123b2a color=#f4f0df gap="6px" {
-            span id="game-live-refresh" hidden fx-global-shared-state-event=(refresh_game) { }
-            header id="scene-controls" width="100%" min-width=0 direction="row"
-                align-items="center" gap="6px" padding-y="8px" padding-x="6px" {
-                div class="header-action-slot header-action-left" min-width=0 flex=1 direction="row" justify-content="start" {
-                    anchor href="/" flex="0 0 auto" background=#173326 color=#f4f0df border=(("#436854", 1))
-                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
-                }
-                (scoreboard)
-                div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" gap="6px" {
-                    @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
-                        button id="remaining-tiles-button" type=button
-                            fx-click=(ActionType::toggle_display_by_id("remaining-tiles-panel"))
-                            background=#173326 color=#f4f0df border=(("#436854", 1))
-                            border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer {
-                            "Bag"
-                            @if let Some(count) = game.view.remaining_tile_count {
-                                " · " (count)
-                            }
-                        }
-                    }
-                    button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
-                        background=#173326 color=#f4f0df border=(("#436854", 1))
-                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer { "Menu ···" }
-                }
-            }
-            main id="game-layout" class="game-arena" width="100%" min-height=0
-                flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
-                section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
-                    overflow-x="hidden" overflow-y="hidden" {
-                    (board)
-                }
-            }
-            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
-                section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
-                    background=#2a523c border=(("#8e6b3d", 3)) border-radius="16px"
-                    padding-y="6px" padding-x="8px" gap="5px" {
-                    @if let Some(completed_summary) = completed_summary {
-                        (completed_summary)
-                    } @else if error.is_some() {
-                        (turn_feedback_view)
-                    } @else if game.view.active_player == game.viewer_player {
-                        (draft_preview)
-                    } @else {
-                        section class="dock-message" width="100%" direction="row" justify-content="center"
-                            background=#214c38 border=(("#376d53", 1)) border-radius="10px" padding-y="4px" padding-x="8px" {
-                            span font-size="13px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                                (game.participants.iter().find(|participant| participant.player_id == game.view.active_player).map_or("Player", |participant| participant.display_name.as_str())) " is playing · rearrange your rack while you wait"
-                            }
-                        }
-                    }
-                    (rack)
-                    @if !game.completed && game.view.active_player == game.viewer_player {
-                        (actions)
-                    } @else if !game.completed {
-                        @let compose_action = format!("/games/{}/compose", game.game_id);
-                        section id="turn-actions" class="primary-action-row" max-width="100%" direction="row"
-                            justify-content="center" gap="6px" overflow-x="auto" overflow-y="hidden" {
-                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                (compose_form_fields(game, draft, "SHUFFLE_RACK"))
-                                button type=submit padding-y=7 padding-x=12 background=#ffffff color=#526243
-                                    border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Shuffle" }
-                            }
-                            @if !draft.placements.is_empty() {
-                                form hx-post=(compose_action.as_str()) hx-target="#app-page" {
-                                    (compose_form_fields(game, draft, "CLEAR"))
-                                    button type=submit padding-y=7 padding-x=12 background=#ffffff color=#526243
-                                        border=(("#839276", 1)) border-radius="9px" cursor=pointer { "Recall" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
-                aside id="remaining-tiles-panel" hidden position="fixed" top=62 right=6
-                    width="340px" max-width="92vw" max-height="72vh" overflow-y="auto"
-                    background=#f6f0df color=#26382d border=(("#8e7651", 3)) border-radius="18px"
-                    padding-y="16px" padding-x="16px" gap="12px" {
-                    div direction="row" justify-content="space-between" align-items="start" gap="8px" {
-                        h2 { "Bag" }
-                        button type=button fx-click=(ActionType::no_display_by_id("remaining-tiles-panel"))
-                            background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
-                            padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
-                    }
-                    (remaining_tiles_component(game))
-                }
-            }
-            aside id="activity-rail" hidden position="fixed" top=62 right=6 width="340px" max-width="92vw"
-                max-height="78vh" overflow-y="auto" background=#f6f0df color=#26382d
-                border=(("#8e7651", 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
-                div direction="row" justify-content="space-between" align-items="start" gap="8px" {
-                    div gap="2px" {
-                        span color=#5d6e62 font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
-                        h2 { (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str()) }
-                    }
-                    button type=button fx-click=(ActionType::no_display_by_id("activity-rail"))
-                        background=#ffffff color=#526243 border=(("#839276", 1)) border-radius="999px"
-                        padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
-                }
-                @if let Some(latest) = &game.latest_action {
-                    section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))
-                        border-radius="12px" padding="12px" gap="3px" {
-                        span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
-                        span font-weight=bold { (latest.as_str()) }
-                    }
-                }
-                section id="recent-activity" gap="8px" {
-                    h3 { "Move history" }
-                    (history)
-                }
-                section id="game-reference" width="100%" border-top=(("#d8c9a7", 1))
-                    padding-top="12px" gap="10px" {
-                    (rules_component(game))
-                }
-            }
-            aside id="game-definition-layer" hidden position="fixed" top=68 right="2%"
-                width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-                background=#f4f1e8 color=#26382d border=(("#8e7651", 3)) border-radius="18px"
-                padding="18px" gap="12px" {
-                span color=#5d6e62 font-size="11px" font-weight=bold { "WORD DEFINITION" }
-                span { "Loading definition…" }
-            }
-            (blank_letter_layer)
-        }
-    }
-    .into()
-}
-
-/// Renders public board/status/history and only the authorized viewer's rack.
-#[must_use]
-pub fn game_page(game: &AuthorizedGamePage) -> Container {
-    visual_game_page(game, &TurnDraft::default(), None)
-}
-
-fn product_error_page(title: &str, message: &str) -> Container {
-    let error = error_component(message);
-    container! {
-        div id="app-page" direction="column" align-items="center" min-height="100vh"
-            background=#f4f1e8 padding=24 {
-            main width="100%" max-width="560px" background=#ffffff border=(("#ded8c9", 1))
-                border-radius=18 padding=32 gap=16 {
-                anchor href="/" color=#526243 { "← Dashboard" }
-                h1 { (title) }
-                (error)
-            }
-        }
-    }
-    .into()
 }
 
 /// Builds session response effects using the runtime's cookie transport policy.
@@ -4038,6 +2372,10 @@ mod tests {
     use wwmtf_game_domain::Dictionary as _;
 
     use super::*;
+    use crate::pages::{
+        game::{blank_letter_picker_open, draft_feedback_component},
+        lobby::lobby_invitation_url,
+    };
     use crate::{
         GameSharedStateDispatcher, SESSION_COOKIE_NAME, VerifiedExternalIdentity, accept_challenge,
         create_challenge, create_session, migrate_app, register,
@@ -4510,15 +2848,6 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_has_one_game_creation_path() {
-        let page = start_game_component().to_string();
-        assert!(page.contains("/lobbies/new"));
-        assert!(page.contains("invite players by username"));
-        assert!(!page.contains("CHALLENGE"));
-        assert!(!page.contains("CREATE_INVITATION"));
-    }
-
-    #[test]
     fn google_callback_query_requires_code_and_state_without_reflecting_values() {
         let malformed = RouteRequest::from_path("/auth/google/callback", RequestInfo::default());
         assert!(google_callback_query(&malformed).is_err());
@@ -4726,18 +3055,6 @@ mod tests {
             assert!(rendered.contains(expected), "{rendered}");
             assert!(rendered.contains("game-error"));
         }
-    }
-
-    #[test]
-    fn invalid_word_status_only_names_rejected_words() {
-        assert_eq!(
-            invalid_words_message(&["BAR".to_string()]),
-            "BAR is not a valid word"
-        );
-        assert_eq!(
-            invalid_words_message(&["ABC".to_string(), "BAZ".to_string()]),
-            "ABC, BAZ are not valid words"
-        );
     }
 
     #[test]
@@ -5489,95 +3806,6 @@ mod tests {
     }
 
     #[test]
-    fn turn_action_controls_require_review_before_destructive_commands() {
-        block_on(async {
-            let database: Arc<dyn Database> = Arc::from(
-                switchy_database_connection::builder()
-                    .turso()
-                    .with_in_memory()
-                    .build()
-                    .await
-                    .expect("Turso opens"),
-            );
-            migrate_app(&*database).await.expect("migrations run");
-            let now = OffsetDateTime::UNIX_EPOCH;
-            let alice = register(&*database, "alice", "correct horse battery staple", now)
-                .await
-                .expect("Alice registers");
-            let bob = register(&*database, "bob", "another correct horse battery", now)
-                .await
-                .expect("Bob registers");
-            let challenge = create_challenge(&*database, &alice, &bob, now)
-                .await
-                .expect("challenge creates");
-            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
-                .await
-                .expect("game starts");
-            let state = crate::recover_game(&*database, game_id)
-                .await
-                .expect("game loads");
-            let active_user = if crate::player_for_user(&*database, game_id, &alice)
-                .await
-                .expect("Alice is seated")
-                == state.active_player
-            {
-                alice
-            } else {
-                bob
-            };
-            let session = create_session(&*database, &active_user, now, Duration::days(1))
-                .await
-                .expect("active session creates");
-            let cookies = std::collections::BTreeMap::from([(
-                SESSION_COOKIE_NAME.to_string(),
-                session.expose().to_string(),
-            )]);
-            let game = load_authorized_game_page(&*database, &cookies, &game_id.to_string(), now)
-                .await
-                .expect("game loads");
-
-            let initial = visual_turn_actions(&game, &TurnDraft::default())
-                .display_to_string(false, false)
-                .expect("actions render");
-            assert!(initial.contains("value=\"CONFIRM_PASS\""));
-            assert!(initial.contains("value=\"CONFIRM_RESIGN\""));
-            assert!(initial.contains("more-turn-actions-menu"));
-            assert!(initial.contains("fx-click"));
-            assert!(!initial.contains("<details"));
-            assert!(!initial.contains("<summary"));
-            assert!(!initial.contains("name=\"command\" value=\"PASS\""));
-            assert!(!initial.contains("name=\"command\" value=\"RESIGN\""));
-
-            let pass = visual_turn_actions(
-                &game,
-                &TurnDraft {
-                    mode: TurnMode::ConfirmPass,
-                    ..TurnDraft::default()
-                },
-            )
-            .display_to_string(false, false)
-            .expect("confirmation renders");
-            assert!(pass.contains("name=\"command\" value=\"PASS\""));
-            assert!(pass.contains("Confirm pass"));
-            assert!(pass.contains("value=\"CANCEL_MODE\""));
-
-            let exchange = visual_turn_actions(
-                &game,
-                &TurnDraft {
-                    exchange_tiles: game.rack_order[..2].to_vec(),
-                    mode: TurnMode::ConfirmExchange,
-                    ..TurnDraft::default()
-                },
-            )
-            .display_to_string(false, false)
-            .expect("exchange confirmation renders");
-            assert!(exchange.contains("name=\"command\" value=\"EXCHANGE\""));
-            assert!(exchange.contains("Confirm exchange"));
-            assert!(!exchange.contains("blank_0"));
-        });
-    }
-
-    #[test]
     fn turn_route_uses_shared_dispatcher_and_publishes_authorized_updates() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -6284,60 +4512,6 @@ mod tests {
                 .iter()
                 .all(|cookie| cookie.max_age_seconds == Some(0) && !cookie.secure)
         );
-    }
-
-    #[test]
-    fn account_pages_expose_renderer_neutral_forms() {
-        let login = login_page(None)
-            .display_to_string(false, false)
-            .expect("login page renders");
-        assert!(login.contains("href=\"/auth/google/start\""));
-        assert!(login.contains("target=\"_top\""));
-        assert!(login.contains("Continue with Google"));
-        assert!(login.contains("href=\"/account/migrate\""));
-        assert!(!login.contains("script"));
-
-        let logout = logout_page()
-            .display_to_string(false, false)
-            .expect("logout page renders");
-        assert!(logout.contains("hx-post=\"/logout\""));
-        assert!(!logout.contains("script"));
-        let migration = migration_page(None)
-            .display_to_string(false, false)
-            .expect("migration page renders");
-        assert!(migration.contains("method=\"post\""));
-        assert!(!migration.contains("action="));
-        assert!(!migration.contains("hx-post"));
-        assert!(!migration.contains("script"));
-    }
-
-    #[test]
-    fn account_pages_do_not_serialize_authentication_secrets() {
-        let secrets = [
-            "secret-subject",
-            "https://lh3.googleusercontent.com/secret-picture",
-            "secret-state",
-            "secret-nonce",
-            "secret-pkce-verifier",
-            "secret-code",
-            "secret-token",
-            "secret-password",
-            "secret-session",
-            "secret-invitation",
-        ];
-        for page in [
-            login_page(Some("Google sign-in could not be verified.")),
-            migration_page(Some("Existing credentials are incorrect.")),
-            signed_out_page(),
-            logout_page(),
-        ] {
-            let rendered = page
-                .display_to_string(false, false)
-                .expect("account page renders");
-            for secret in secrets {
-                assert!(!rendered.contains(secret));
-            }
-        }
     }
 
     #[test]

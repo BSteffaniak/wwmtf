@@ -20,6 +20,7 @@ mod move_plans;
 mod observability;
 mod oidc;
 mod oidc_attempts;
+mod pages;
 mod presentation;
 mod profiles;
 mod projections;
@@ -27,6 +28,8 @@ mod rack_preferences;
 mod routes;
 mod sessions;
 mod shared_state_security;
+pub mod theme;
+pub mod ui;
 mod workflows;
 
 pub use accounts::{
@@ -82,6 +85,11 @@ pub use oidc_attempts::{
     ClaimedOidcAttempt, NewOidcAttempt, OidcAttemptError, OidcAttemptPurpose, claim_oidc_attempt,
     cleanup_oidc_attempts, consume_oidc_attempt, create_oidc_attempt,
 };
+pub use pages::{
+    auth::{login_page, logout_page, migration_page, signed_out_page},
+    dashboard::dashboard_page,
+    game::{game_page, turn_composer},
+};
 pub use presentation::{
     AuthenticatedDashboard, AuthorizedGamePage, AuthorizedGameParticipant, CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME, OIDC_BINDING_COOKIE_NAME, PresentationError, SESSION_COOKIE_NAME,
@@ -107,9 +115,8 @@ pub use rack_preferences::{
     shuffle_rack_order, swap_rack_tiles,
 };
 pub use routes::{
-    authenticated_session_response, create_product_router, dashboard_page, dashboard_route,
-    game_page, game_route, game_view_response, logged_out_response, login_page, logout_page,
-    migration_page, signed_out_page, turn_composer,
+    authenticated_session_response, create_product_router, dashboard_route, game_route,
+    game_view_response, logged_out_response,
 };
 pub use sessions::{
     SessionError, SessionToken, create_session, resolve_session, revoke_session,
