@@ -1785,6 +1785,57 @@ async fn lobby_action_route(
     }
 }
 
+// ---- Rematch route ---------------------------------------------------------------------------
+
+/// Creates a rematch lobby from a completed game and navigates its requester there.
+///
+/// Only `POST` creates a lobby; any other method returns the viewer to the game page.
+async fn game_rematch_route(
+    dispatcher: &crate::GameSharedStateDispatcher,
+    database: &dyn Database,
+    request: &RouteRequest,
+    game_id: &str,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+) -> View {
+    let Ok(user_id) = crate::authenticated_user(database, &request.cookies, now).await else {
+        return View::from(product_error_page(
+            "Sign in required",
+            "Sign in to start a rematch.",
+        ));
+    };
+    let Ok(parsed_game_id) = game_id.parse::<wwmtf_game_domain::GameId>() else {
+        return View::from(product_error_page(
+            "Rematch unavailable",
+            &crate::LobbyError::NotGameParticipant.to_string(),
+        ));
+    };
+    if request.method.as_ref() != "POST" {
+        return view_with_internal_navigation(format!("/games/{parsed_game_id}"), &user_id);
+    }
+    match crate::lobbies::create_rematch_lobby(
+        database,
+        parsed_game_id,
+        &user_id,
+        policy,
+        now,
+        Duration::days(30),
+    )
+    .await
+    {
+        Ok(lobby_id) => {
+            refresh_lobby_dashboards(dispatcher, now, Some(&user_id)).await;
+            view_with_internal_navigation(format!("/lobbies/{lobby_id}"), &user_id)
+        }
+        Err(error) => View::from(product_error_page(
+            "Rematch unavailable",
+            &error.to_string(),
+        )),
+    }
+}
+
+// ---- End rematch route -----------------------------------------------------------------------
+
 /// Builds the database-backed renderer-neutral application router.
 #[must_use]
 #[allow(clippy::too_many_lines)]
@@ -2180,6 +2231,18 @@ pub fn create_product_router(
                         )
                         .await,
                     )) as Result<View, Box<dyn std::error::Error>>
+                } else if let Some(game_id) = game_path.strip_suffix("/rematch") {
+                    // Checked after the word routes so a played word spelled "rematch" keeps
+                    // resolving to its definition.
+                    Ok(game_rematch_route(
+                        &dispatcher,
+                        &*database,
+                        &request,
+                        game_id,
+                        lobby_policy,
+                        OffsetDateTime::now_utc(),
+                    )
+                    .await) as Result<View, Box<dyn std::error::Error>>
                 } else {
                     Ok(View::from(
                         game_route(&*database, &request, OffsetDateTime::now_utc()).await,
@@ -2522,6 +2585,180 @@ mod tests {
             );
         });
     }
+
+    // ---- Rematch route tests -----------------------------------------------------------------
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn rematch_route_creates_invited_lobby_only_for_completed_participants() {
+        block_on(async {
+            let database = test_database().await;
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let mut users = Vec::new();
+            for name in ["route-rematch-a", "route-rematch-b", "route-rematch-x"] {
+                let user = register(&*database, name, "correct horse battery staple", now)
+                    .await
+                    .expect("user registers");
+                let session = create_session(&*database, &user, now, Duration::days(1))
+                    .await
+                    .expect("session creates");
+                users.push((user, session));
+            }
+            let [(alice, alice_session), (bob, _), (_, outsider_session)] = users.as_slice() else {
+                panic!("three users")
+            };
+            let policy = GameCreationPolicy::new(16, 64, 16).expect("policy");
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let challenge = create_challenge(&*database, alice, bob, now)
+                .await
+                .expect("challenge");
+            let game_id = accept_challenge(&*database, &challenge, bob, now, 11)
+                .await
+                .expect("game starts");
+            let request = |session: &crate::SessionToken, method: &str| {
+                let mut request = RouteRequest::from_path(
+                    &format!("/games/{game_id}/rematch"),
+                    RequestInfo::default(),
+                );
+                request.method = method.parse().expect("method parses");
+                request.cookies.insert(
+                    SESSION_COOKIE_NAME.to_string(),
+                    session.expose().to_string(),
+                );
+                request
+            };
+            let id = game_id.to_string();
+            let text = |view: &View| {
+                view.primary
+                    .as_ref()
+                    .expect("page")
+                    .display_to_string(false, false)
+                    .expect("renders")
+            };
+
+            let active = game_rematch_route(
+                &dispatcher,
+                &*database,
+                &request(alice_session, "POST"),
+                &id,
+                policy,
+                now,
+            )
+            .await;
+            assert!(active.response.navigation.is_none());
+            assert!(text(&active).contains("a rematch is available after the game ends"));
+
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("recover");
+            let active_user = if crate::player_for_user(&*database, game_id, alice)
+                .await
+                .expect("alice plays")
+                == state.active_player
+            {
+                alice
+            } else {
+                bob
+            };
+            crate::submit_game_command(
+                &*database,
+                game_id,
+                active_user,
+                "route-rematch-resign",
+                "route-rematch-resign",
+                state.revision,
+                &GameCommand::Resign,
+                0,
+            )
+            .await
+            .expect("resignation completes the game");
+
+            let outsider = game_rematch_route(
+                &dispatcher,
+                &*database,
+                &request(outsider_session, "POST"),
+                &id,
+                policy,
+                now,
+            )
+            .await;
+            assert!(outsider.response.navigation.is_none());
+            assert!(text(&outsider).contains("only players in this game may request a rematch"));
+
+            let get = game_rematch_route(
+                &dispatcher,
+                &*database,
+                &request(alice_session, "GET"),
+                &id,
+                policy,
+                now,
+            )
+            .await;
+            assert_eq!(
+                get.response
+                    .navigation
+                    .as_ref()
+                    .expect("GET returns to the game")
+                    .location(),
+                format!("/games/{game_id}")
+            );
+            assert!(
+                crate::dashboard_projection(&*database, bob)
+                    .await
+                    .expect("dashboard")
+                    .pending
+                    .is_empty(),
+                "GET must not create a lobby"
+            );
+
+            let bob_events = dispatcher
+                .subscribe_channel(
+                    &AuthenticatedTransportContext {
+                        participant_id: ParticipantId::new(bob),
+                        identity_binding: "bob-browser".to_string(),
+                    },
+                    &crate::dashboard_channel(bob),
+                )
+                .await
+                .expect("bob subscribes");
+            bob_events.recv_async().await.expect("initial dashboard");
+            let created = game_rematch_route(
+                &dispatcher,
+                &*database,
+                &request(alice_session, "POST"),
+                &id,
+                policy,
+                now,
+            )
+            .await;
+            let location = created
+                .response
+                .navigation
+                .as_ref()
+                .expect("lobby navigation")
+                .location()
+                .to_string();
+            let lobby_id = location
+                .strip_prefix("/lobbies/")
+                .expect("navigates to the new lobby");
+            bob_events
+                .try_recv()
+                .expect("invitee dashboard refreshes live");
+            let pending = crate::dashboard_projection(&*database, bob)
+                .await
+                .expect("dashboard")
+                .pending;
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].kind, "LOBBY_INVITATION");
+            let lobby = load_lobby(&*database, lobby_id, alice)
+                .await
+                .expect("creator loads rematch lobby");
+            assert_eq!(lobby.invited_usernames, ["route-rematch-b"]);
+            assert_eq!(lobby.settings.max_players, 2);
+        });
+    }
+
+    // ---- End rematch route tests -------------------------------------------------------------
 
     #[test]
     fn lobby_creation_uses_refreshable_get_and_canonical_navigation() {

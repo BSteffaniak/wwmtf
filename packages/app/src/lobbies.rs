@@ -154,7 +154,29 @@ pub async fn create_lobby(
     now: OffsetDateTime,
     invitation_lifetime: Duration,
 ) -> Result<(String, LobbyInvitationToken), LobbyError> {
-    policy.validate(&settings)?;
+    let tx = db.begin_transaction().await?;
+    let created = create_lobby_in_transaction(
+        &*tx,
+        creator_user_id,
+        &settings,
+        policy,
+        now,
+        invitation_lifetime,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(created)
+}
+
+async fn create_lobby_in_transaction(
+    tx: &dyn Database,
+    creator_user_id: &str,
+    settings: &LobbySettings,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+    invitation_lifetime: Duration,
+) -> Result<(String, LobbyInvitationToken), LobbyError> {
+    policy.validate(settings)?;
     if let FirstPlayerPolicy::Chosen(user_id) = &settings.first_player
         && user_id != creator_user_id
     {
@@ -169,16 +191,15 @@ pub async fn create_lobby(
         let lobby_id = Uuid::new_v4().to_string();
         let token = LobbyInvitationToken(format!("{}{}", Uuid::new_v4(), Uuid::new_v4()));
         let token_hash = token_hash(token.expose());
-        if !db
+        if !tx
             .select("game_lobbies")
             .where_eq("invitation_token_hash", token_hash.clone())
-            .execute(db)
+            .execute(tx)
             .await?
             .is_empty()
         {
             continue;
         }
-        let tx = db.begin_transaction().await?;
         tx.insert("game_lobbies")
             .value("lobby_id", lobby_id.clone())
             .value("creator_user_id", creator_user_id)
@@ -208,10 +229,9 @@ pub async fn create_lobby(
             .value("started_game_id", Option::<String>::None)
             .value("created_at_ms", now_ms)
             .value("updated_at_ms", now_ms)
-            .execute(&*tx)
+            .execute(tx)
             .await?;
-        insert_member(&*tx, &lobby_id, creator_user_id, 0, now_ms).await?;
-        tx.commit().await?;
+        insert_member(tx, &lobby_id, creator_user_id, 0, now_ms).await?;
         return Ok((lobby_id, token));
     }
     Err(LobbyError::Collision)
@@ -352,14 +372,26 @@ pub async fn invite_lobby_username(
         .await?
         .ok_or(LobbyError::UnknownUsername)?;
     let tx = db.begin_transaction().await?;
-    let lobby = load_lobby(&*tx, lobby_id, creator_user_id).await?;
+    invite_user_in_transaction(&*tx, lobby_id, creator_user_id, &user_id, now).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn invite_user_in_transaction(
+    tx: &dyn Database,
+    lobby_id: &str,
+    creator_user_id: &str,
+    user_id: &str,
+    now: OffsetDateTime,
+) -> Result<(), LobbyError> {
+    let lobby = load_lobby(tx, lobby_id, creator_user_id).await?;
     if lobby.creator_user_id != creator_user_id {
         return Err(LobbyError::Unauthorized);
     }
     let rows = tx
         .select("game_lobbies")
         .where_eq("lobby_id", lobby_id)
-        .execute(&*tx)
+        .execute(tx)
         .await?;
     let row = rows.first().ok_or(LobbyError::Unavailable)?;
     if lobby.status != "OPEN"
@@ -381,7 +413,7 @@ pub async fn invite_lobby_username(
         .where_eq("lobby_id", lobby_id)
         .where_eq("status", "OPEN")
         .where_eq("revision", signed(row, "revision")?)
-        .execute(&*tx)
+        .execute(tx)
         .await?;
     if updated.len() != 1 {
         return Err(LobbyError::Conflict);
@@ -390,7 +422,7 @@ pub async fn invite_lobby_username(
     let existing = tx
         .select("lobby_invitations")
         .where_eq("invitation_id", id.clone())
-        .execute(&*tx)
+        .execute(tx)
         .await?;
     if !existing.is_empty() {
         return Err(LobbyError::AlreadyInvited);
@@ -401,9 +433,8 @@ pub async fn invite_lobby_username(
         .value("user_id", user_id)
         .value("status", "PENDING")
         .value("created_at_ms", timestamp_ms(now)?)
-        .execute(&*tx)
+        .execute(tx)
         .await?;
-    tx.commit().await?;
     Ok(())
 }
 
@@ -776,6 +807,114 @@ pub async fn start_lobby(
     Ok(game_id)
 }
 
+// ---- Rematch lobbies -------------------------------------------------------------------------
+
+/// Creates a private rematch lobby for one participant of a completed game.
+///
+/// The new open lobby is owned by the requester, mirrors the finished game's public settings
+/// (board size, tile sets, remaining-tile visibility, and seat count), uses a random first player,
+/// and privately invites every other participant. Only public game configuration is read; racks
+/// and bag order never leave the canonical aggregate. Lobby creation and all invitations commit
+/// atomically.
+///
+/// # Errors
+///
+/// Returns [`LobbyError::NotGameParticipant`] for unknown games or non-participants,
+/// [`LobbyError::GameNotCompleted`] while the game is still active,
+/// [`LobbyError::InvalidSettings`] when the current creation policy no longer admits the
+/// finished game's settings, and replay, collision, or persistence failures.
+pub async fn create_rematch_lobby(
+    db: &dyn Database,
+    game_id: GameId,
+    requester_user_id: &str,
+    policy: GameCreationPolicy,
+    now: OffsetDateTime,
+    invitation_lifetime: Duration,
+) -> Result<String, LobbyError> {
+    let mut seats = db
+        .select("game_players")
+        .where_eq("game_id", game_id.to_string())
+        .execute(db)
+        .await?
+        .iter()
+        .map(|row| Ok((signed(row, "seat")?, string(row, "user_id")?)))
+        .collect::<Result<Vec<_>, LobbyError>>()?;
+    seats.sort();
+    if !seats
+        .iter()
+        .any(|(_, user_id)| user_id == requester_user_id)
+    {
+        return Err(LobbyError::NotGameParticipant);
+    }
+    let state = crate::recover_game(db, game_id).await?;
+    if state.status != wwmtf_game_domain::GameStatus::Completed {
+        return Err(LobbyError::GameNotCompleted);
+    }
+    let visibility =
+        crate::game_visibility_settings(db, game_id)
+            .await
+            .map_err(|error| match error {
+                crate::PresentationError::Database(error) => LobbyError::Database(error),
+                _ => LobbyError::Invalid,
+            })?;
+    let settings = LobbySettings {
+        max_players: seats.len(),
+        board_size: state.rules.board_size,
+        tile_set_count: rematch_tile_set_count(db, game_id, &state.rules).await?,
+        first_player: FirstPlayerPolicy::Random,
+        visibility,
+    };
+    let tx = db.begin_transaction().await?;
+    let (lobby_id, _token) = create_lobby_in_transaction(
+        &*tx,
+        requester_user_id,
+        &settings,
+        policy,
+        now,
+        invitation_lifetime,
+    )
+    .await?;
+    for (_, user_id) in &seats {
+        if user_id != requester_user_id {
+            invite_user_in_transaction(&*tx, &lobby_id, requester_user_id, user_id, now).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(lobby_id)
+}
+
+/// Recovers the tile-set multiplier from the originating lobby, or from the pinned rule profile
+/// for games that did not start from a lobby.
+async fn rematch_tile_set_count(
+    db: &dyn Database,
+    game_id: GameId,
+    rules: &wwmtf_game_domain::RuleProfile,
+) -> Result<u8, LobbyError> {
+    if let Some(row) = db
+        .select("game_lobbies")
+        .where_eq("started_game_id", game_id.to_string())
+        .execute(db)
+        .await?
+        .first()
+    {
+        return u8::try_from(unsigned(row, "tile_set_count")?).map_err(|_| LobbyError::Invalid);
+    }
+    let total = |profile: &wwmtf_game_domain::RuleProfile| {
+        profile
+            .tiles
+            .iter()
+            .map(|tile| u32::from(tile.quantity))
+            .sum::<u32>()
+    };
+    let base = total(&wwmtf_game_domain::initial_rule_profile());
+    if base == 0 {
+        return Err(LobbyError::Invalid);
+    }
+    u8::try_from((total(rules) / base).max(1)).map_err(|_| LobbyError::Invalid)
+}
+
+// ---- End rematch lobbies ---------------------------------------------------------------------
+
 async fn insert_member(
     db: &dyn Database,
     lobby_id: &str,
@@ -892,6 +1031,10 @@ pub enum LobbyError {
     UnknownUsername,
     #[error("this player has already been invited")]
     AlreadyInvited,
+    #[error("only players in this game may request a rematch")]
+    NotGameParticipant,
+    #[error("a rematch is available after the game ends")]
+    GameNotCompleted,
     #[error("lobby changed concurrently")]
     Conflict,
     #[error("lobby data is malformed")]
@@ -904,6 +1047,8 @@ pub enum LobbyError {
     Rules(#[from] wwmtf_game_domain::RuleProfileError),
     #[error(transparent)]
     GameCreation(#[from] crate::ChallengeError),
+    #[error(transparent)]
+    Journal(#[from] crate::JournalError),
     #[error(transparent)]
     Database(#[from] switchy_database::DatabaseError),
 }
@@ -1465,6 +1610,223 @@ mod tests {
                 create_lobby(&*db, &alice, settings, policy, now, Duration::days(1)).await,
                 Err(LobbyError::InvalidSettings)
             ));
+        });
+    }
+
+    /// Resigns whichever of `users` currently holds the turn.
+    async fn resign(db: &dyn Database, game_id: GameId, users: &[&String], key: &str) {
+        let state = recover_game(db, game_id).await.expect("recover");
+        let mut active = None;
+        for user in users {
+            if crate::player_for_user(db, game_id, user).await.ok() == Some(state.active_player) {
+                active = Some(user.as_str());
+            }
+        }
+        let user_id = active.expect("one listed user is active");
+        crate::submit_game_command(
+            db,
+            game_id,
+            user_id,
+            key,
+            key,
+            state.revision,
+            &wwmtf_game_domain::GameCommand::Resign,
+            0,
+        )
+        .await
+        .expect("resignation accepted");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn rematch_mirrors_completed_game_and_invites_every_other_player() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let mut users = Vec::new();
+            for name in [
+                "rematch-alice",
+                "rematch-bob",
+                "rematch-carol",
+                "rematch-mallory",
+            ] {
+                users.push(
+                    register(&*db, name, "correct horse battery staple", now)
+                        .await
+                        .expect("user"),
+                );
+            }
+            let [alice, bob, carol, mallory] = users.as_slice() else {
+                panic!("four users")
+            };
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let visibility = GameVisibilitySettings {
+                show_remaining_tile_count: true,
+                show_remaining_tile_faces: false,
+            };
+            let (lobby_id, token) = create_lobby(
+                &*db,
+                alice,
+                LobbySettings {
+                    max_players: 4,
+                    board_size: 17,
+                    tile_set_count: 2,
+                    first_player: FirstPlayerPolicy::Creator,
+                    visibility,
+                },
+                policy,
+                now,
+                Duration::days(1),
+            )
+            .await
+            .expect("lobby");
+            for user in [bob, carol] {
+                join_lobby(&*db, token.expose(), user, policy, now)
+                    .await
+                    .expect("join");
+            }
+            let game_id = start_lobby(&*db, &lobby_id, alice, policy, now, 9)
+                .await
+                .expect("start");
+
+            assert!(matches!(
+                create_rematch_lobby(&*db, game_id, bob, policy, now, Duration::days(1)).await,
+                Err(LobbyError::GameNotCompleted)
+            ));
+            resign(&*db, game_id, &[alice, bob, carol], "rematch-first-resigns").await;
+            assert!(matches!(
+                create_rematch_lobby(&*db, game_id, bob, policy, now, Duration::days(1)).await,
+                Err(LobbyError::GameNotCompleted)
+            ));
+            resign(
+                &*db,
+                game_id,
+                &[alice, bob, carol],
+                "rematch-second-resigns",
+            )
+            .await;
+            assert_eq!(
+                recover_game(&*db, game_id).await.expect("recover").status,
+                wwmtf_game_domain::GameStatus::Completed
+            );
+
+            assert!(matches!(
+                create_rematch_lobby(&*db, game_id, mallory, policy, now, Duration::days(1)).await,
+                Err(LobbyError::NotGameParticipant)
+            ));
+            assert!(matches!(
+                create_rematch_lobby(&*db, GameId::new(), bob, policy, now, Duration::days(1))
+                    .await,
+                Err(LobbyError::NotGameParticipant)
+            ));
+            let tight = GameCreationPolicy::new(8, 15, 4).expect("tight policy");
+            assert!(matches!(
+                create_rematch_lobby(&*db, game_id, bob, tight, now, Duration::days(1)).await,
+                Err(LobbyError::InvalidSettings)
+            ));
+            assert!(
+                crate::dashboard_projection(&*db, alice)
+                    .await
+                    .expect("dashboard")
+                    .pending
+                    .is_empty(),
+                "rejected rematches leave no partial invitations"
+            );
+
+            let rematch = create_rematch_lobby(&*db, game_id, bob, policy, now, Duration::days(1))
+                .await
+                .expect("rematch");
+            let lobby = load_lobby(&*db, &rematch, bob).await.expect("creator view");
+            assert_eq!(lobby.creator_user_id, *bob);
+            assert_eq!(lobby.status, "OPEN");
+            assert_eq!(
+                lobby.settings,
+                LobbySettings {
+                    max_players: 3,
+                    board_size: 17,
+                    tile_set_count: 2,
+                    first_player: FirstPlayerPolicy::Random,
+                    visibility,
+                }
+            );
+            assert_eq!(lobby.members.len(), 1);
+            assert_eq!(lobby.invited_usernames, ["rematch-alice", "rematch-carol"]);
+            for user in [alice, carol] {
+                let pending = crate::dashboard_projection(&*db, user)
+                    .await
+                    .expect("dashboard")
+                    .pending;
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].kind, "LOBBY_INVITATION");
+            }
+            assert!(
+                crate::dashboard_projection(&*db, mallory)
+                    .await
+                    .expect("dashboard")
+                    .pending
+                    .is_empty()
+            );
+            respond_lobby_invitation(&*db, &rematch, alice, true, policy, now)
+                .await
+                .expect("alice accepts");
+            respond_lobby_invitation(&*db, &rematch, carol, true, policy, now)
+                .await
+                .expect("carol accepts");
+            let second = start_lobby(&*db, &rematch, bob, policy, now, 3)
+                .await
+                .expect("rematch starts");
+            let state = recover_game(&*db, second).await.expect("recover rematch");
+            assert_eq!(state.players.len(), 3);
+            assert_eq!(state.rules.board_size, 17);
+            assert_eq!(
+                crate::game_visibility_settings(&*db, second)
+                    .await
+                    .expect("visibility"),
+                visibility
+            );
+        });
+    }
+
+    #[test]
+    fn rematch_of_a_challenge_game_derives_a_single_tile_set() {
+        block_on(async {
+            let db = switchy_database_connection::builder()
+                .turso()
+                .with_in_memory()
+                .build()
+                .await
+                .expect("db");
+            migrate_app(&*db).await.expect("migrate");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*db, "challenge-alice", "correct horse battery staple", now)
+                .await
+                .expect("alice");
+            let bob = register(&*db, "challenge-bob", "correct horse battery staple", now)
+                .await
+                .expect("bob");
+            let challenge = crate::create_challenge(&*db, &alice, &bob, now)
+                .await
+                .expect("challenge");
+            let game_id = crate::accept_challenge(&*db, &challenge, &bob, now, 5)
+                .await
+                .expect("accept");
+            resign(&*db, game_id, &[&alice, &bob], "challenge-resigns").await;
+            let policy = GameCreationPolicy::new(8, 32, 4).expect("policy");
+            let rematch =
+                create_rematch_lobby(&*db, game_id, &alice, policy, now, Duration::days(1))
+                    .await
+                    .expect("rematch");
+            let lobby = load_lobby(&*db, &rematch, &alice).await.expect("lobby");
+            assert_eq!(lobby.settings.max_players, 2);
+            assert_eq!(lobby.settings.board_size, 15);
+            assert_eq!(lobby.settings.tile_set_count, 1);
+            assert_eq!(lobby.invited_usernames, ["challenge-bob"]);
         });
     }
 }
