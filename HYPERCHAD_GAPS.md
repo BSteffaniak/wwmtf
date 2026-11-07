@@ -24,6 +24,7 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 
 - **Declarative state variants** (hover, pressed, focused, disabled) declared in the template and implemented natively per renderer. Today `fx-hover` is the only option and pressed/focus have no reset. Workaround: server-rendered selected states and `fx-hover` background changes.
 - **Pointer drag and drop triggers** (drag start/over/drop with element data). Workaround: tap tile, then tap square.
+- **Read-only text inputs** (and select-all on focus). The template accepts `readonly` but the text input element drops it. Workaround: the lobby invite link is an unnamed text input outside any form (edits are never submitted), next to a plain anchor.
 
 ## Client actions
 

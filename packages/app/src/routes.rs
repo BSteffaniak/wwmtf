@@ -1566,7 +1566,7 @@ async fn lobby_create_route(
         ));
     };
     if request.method.as_ref() != "POST" {
-        return View::from(lobby_creation_page(&user_id));
+        return View::from(lobby_creation_page(&user_id, policy));
     }
     let form = request
         .parse_form::<LobbyActionForm>()
@@ -1670,6 +1670,7 @@ async fn lobby_join_route(
 async fn lobby_route(
     database: &dyn Database,
     request: &RouteRequest,
+    policy: GameCreationPolicy,
     public_base_url: &str,
     now: OffsetDateTime,
 ) -> Container {
@@ -1682,7 +1683,7 @@ async fn lobby_route(
         return product_error_page("Sign in required", "Sign in to view this lobby.");
     };
     match load_lobby(database, lobby_id, &user_id).await {
-        Ok(lobby) => lobby_page(&lobby, &user_id, public_base_url),
+        Ok(lobby) => lobby_page(&lobby, &user_id, public_base_url, policy),
         Err(error) => product_error_page("Lobby unavailable", &error.to_string()),
     }
 }
@@ -1987,6 +1988,7 @@ pub fn create_product_router(
                         lobby_route(
                             &*database,
                             &request,
+                            lobby_policy,
                             &public_base_url,
                             OffsetDateTime::now_utc(),
                         )
@@ -2882,7 +2884,7 @@ mod tests {
             let lobby = load_lobby(&*database, &lobby_id, &creator)
                 .await
                 .expect("lobby loads");
-            let canonical_page = lobby_page(&lobby, &creator, "https://games.example.test")
+            let canonical_page = lobby_page(&lobby, &creator, "https://games.example.test", policy)
                 .display_to_string(false, false)
                 .expect("canonical lobby renders");
             assert!(canonical_page.contains(&share_url));
