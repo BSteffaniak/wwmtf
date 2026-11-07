@@ -604,6 +604,32 @@ def assert_game_controls(browser: Browser, width: int) -> None:
         raise AcceptanceError(
             f"zoom in did not enlarge board squares: {compact_square_size} -> {restored_square_size}"
         )
+    restored_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
+    browser.submit('form:has(input[value="ZOOM_IN"])')
+    browser.wait(
+        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(restored_zoom)}"
+    )
+    large = browser.evaluate(
+        """(() => {
+            const scroller = document.querySelector('#game-board .board-viewport');
+            return {
+                squareSize: document.querySelector('#game-board .board-square')?.getBoundingClientRect().width,
+                boardOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : null,
+                boardRight: scroller?.getBoundingClientRect().right ?? null,
+                documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            };
+        })()"""
+    )
+    if large["squareSize"] <= restored_square_size:
+        raise AcceptanceError(f"large zoom did not enlarge board squares: {large!r}")
+    if large["documentOverflow"] != 0:
+        raise AcceptanceError(f"large zoom overflows the page at {width}px: {large!r}")
+    if width < 800 and (
+        large["boardOverflow"] is None
+        or large["boardOverflow"] <= 0
+        or large["boardRight"] > width
+    ):
+        raise AcceptanceError(f"mobile large-zoom board scrolling is not contained: {large!r}")
     browser.submit('form:has(input[value="ZOOM_RESET"])')
     browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
     fit_square_size = browser.evaluate(
@@ -764,9 +790,11 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
     if width >= 800 and layout["boardOverflow"] != 0:
         raise AcceptanceError(f"desktop board unexpectedly scrolls: {layout!r}")
+    # The default zoom fits the whole board inside the viewport; larger zoom
+    # levels scroll inside the contained board viewport (see assert_game_controls).
     if width < 800 and (
         layout["boardOverflow"] is None
-        or layout["boardOverflow"] <= 0
+        or layout["boardOverflow"] < 0
         or layout["boardRight"] > width
     ):
         raise AcceptanceError(f"mobile board scrolling is not contained: {layout!r}")
@@ -863,7 +891,13 @@ def migrate_legacy_account(browser: Browser, provider: FakeOidcProvider) -> None
     browser.evaluate(
         "fetch('/login', {method: 'POST', headers: {'content-type': 'application/x-www-form-urlencoded'}, body: 'username=legacy-acceptance&password=correct+horse+battery+staple'}).then(response => response.text()).then(html => { document.open(); document.write(html); document.close(); })"
     )
-    browser.wait("document.body.innerText.includes('Password sign-in is no longer available')")
+    # Password sign-in was removed. Acceptance runs in development mode, where the
+    # username-only development login (79da948) ignores the password field and
+    # resolves the existing normalized username instead of a password session.
+    browser.wait(
+        "document.body.innerText.includes('Signed in as ') && document.body.innerText.includes('@legacy-acceptance')"
+    )
+    logout(browser)
     provider.next_login_subjects.append(4)
     google_login(browser)
     returning = browser.evaluate("document.querySelector('#dashboard-shell')?.innerText ?? ''")
@@ -1369,10 +1403,10 @@ def run() -> None:
             alice.navigate(game_path)
             bob.navigate(game_path)
             alice.wait(
-                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
+                "document.querySelector('#game-live-refresh')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
             )
             bob.wait(
-                "document.querySelector('#app-page')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
+                "document.querySelector('#game-live-refresh')?.getAttribute('v-onevent')?.startsWith('shared-state-event:')"
             )
             alice.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")
             bob.wait("window.__acceptanceSubscriptions?.some?.(channel => channel.startsWith('game:'))")

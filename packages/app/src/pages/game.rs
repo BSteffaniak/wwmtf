@@ -321,12 +321,16 @@ pub fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &
     visual_game_page(game, draft, Some(message))
 }
 
+/// Renders the turn feedback slot. Without a message it is an empty placeholder so a
+/// rejected turn's `#turn-feedback` fragment has an element to replace.
 pub fn turn_feedback(message: Option<&str>) -> Container {
     one(container! {
         @if let Some(message) = message {
             section id="turn-feedback" width="100%" {
                 (ui::with_id(ui::notice(message, Tone::Danger), "game-error"))
             }
+        } @else {
+            section id="turn-feedback" width="100%" {}
         }
     })
 }
@@ -1511,6 +1515,7 @@ pub fn visual_game_page(
                     } @else if error.is_some() {
                         (turn_feedback_view)
                     } @else if game.view.active_player == game.viewer_player {
+                        (turn_feedback_view)
                         (draft_preview)
                     } @else {
                         section class="dock-message waiting-banner" width="100%" direction="row" align-items="center"

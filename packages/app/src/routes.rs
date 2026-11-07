@@ -3705,7 +3705,8 @@ mod tests {
             assert!(page.contains("move-history"));
             assert!(page.contains("data-shared-state-channel"));
             assert!(!page.contains("data-shared-state-refresh-"));
-            assert!(!page.contains("id=\"turn-feedback\""));
+            assert!(page.contains("id=\"turn-feedback\""));
+            assert!(!page.contains("id=\"game-error\""));
             assert!(!page.contains("draft_revision="));
             assert!(page.contains("name=\"expected_revision\" value=\"1\""));
             assert!(page.contains("turn-actions"));
