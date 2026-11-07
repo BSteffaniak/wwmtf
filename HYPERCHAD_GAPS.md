@@ -28,8 +28,9 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 
 ## Client actions
 
-- **Set/toggle class or data attribute, and set arbitrary style properties** (border, opacity, translate), not only background, display and visibility. This would let ephemeral selection state, such as which rack tile is picked, live client-side without a server round trip. Workaround: every pick is a compose POST; `fx-http-before-request` gives immediate background feedback.
+- **Set/toggle class or data attribute, and set arbitrary style properties** (border, opacity, translate), not only background, display and visibility. This would let ephemeral selection state, such as which rack tile is picked, live client-side without a server round trip. Workaround: every pick is a compose POST; `fx-click` sets an immediate background on the tapped tile or square.
 - **Set input value.** Workaround: separate hidden-field forms per option.
+- **Element-scoped HTTP lifecycle triggers.** With the vanilla-js `http-events` plugin, a request started without an originating element (shared-state, navigation) dispatches `http-before-request` on the document, and the handler then runs every `fx-http-before-request` action on the page. Per-element pending feedback therefore fires on unrelated requests. Workaround: use `fx-click` on the submit control for immediate pending feedback; the plugin stays disabled.
 - **Clipboard write** (copy text). Workaround: invite links shown in selectable read-only fields.
 
 ## App shell and responsiveness
@@ -41,3 +42,4 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 
 - **Single flex properties imply the others.** Setting only `flex-shrink=0` emits `flex-grow:1; flex-basis:0%`, and `flex="0 0 auto"` emits `flex-basis:0`, so fixed-size items stretch or collapse. Workaround: pin fixed-size items with equal `width` and `min-width` and leave flex unset.
 - **Responsive template values are coupled to app logic.** `if_responsive(...)` needs the `logic` feature, which also turns on `hyperchad_app` logic; the app builder then spawns its action listener on the current runtime and panics if there is none. Workaround: build the app inside a dedicated runtime context. A template-only responsive feature would avoid this.
+- **Returned page roots are unwrapped.** A route view whose container is the page root element itself renders only its children, so the root's id and styles (for example `#app-page`) disappear. Workaround: return the root inside a wrapper container (`Container::from(vec![root])`).

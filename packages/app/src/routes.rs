@@ -282,12 +282,16 @@ pub enum BoardZoom {
 }
 
 impl BoardZoom {
-    pub const fn square_size(self) -> u32 {
+    /// Board square size as a percentage of the size that fits the visible play area.
+    ///
+    /// `Normal` (the default) fits the whole board; zooming in enlarges squares for touch,
+    /// zooming out leaves breathing room around the board.
+    pub const fn fit_percent(self) -> u32 {
         match self {
-            Self::Fit => 20,
-            Self::Compact => 28,
-            Self::Normal => 44,
-            Self::Large => 56,
+            Self::Fit => 78,
+            Self::Compact => 89,
+            Self::Normal => 100,
+            Self::Large => 160,
         }
     }
 
@@ -3321,10 +3325,10 @@ mod tests {
         assert_eq!(BoardZoom::Compact.zoom_in(), BoardZoom::Normal);
         assert_eq!(BoardZoom::Normal.zoom_in(), BoardZoom::Large);
         assert_eq!(BoardZoom::Large.zoom_in(), BoardZoom::Large);
-        assert_eq!(BoardZoom::Fit.square_size(), 20);
-        assert_eq!(BoardZoom::Compact.square_size(), 28);
-        assert_eq!(BoardZoom::Normal.square_size(), 44);
-        assert_eq!(BoardZoom::Large.square_size(), 56);
+        assert_eq!(BoardZoom::Fit.fit_percent(), 78);
+        assert_eq!(BoardZoom::Compact.fit_percent(), 89);
+        assert_eq!(BoardZoom::Normal.fit_percent(), 100);
+        assert_eq!(BoardZoom::Large.fit_percent(), 160);
 
         let legacy = r#"{"selected_tile":null,"selected_blank_letter":null,"placements":[],"rack_tile":null,"exchange_tiles":[],"mode":"Play"}"#;
         let draft: TurnDraft = serde_json::from_str(legacy).expect("legacy draft parses");
@@ -3757,11 +3761,17 @@ mod tests {
             assert!(page.contains("open-square"));
             assert!(page.contains("rack-tile"));
             assert!(!page.contains("board-tile-points"));
-            assert!(page.contains("data-board-grid-width=\"688\""));
-            assert!(page.contains("data-board-frame-width=\"700\""));
+            assert!(page.contains("data-board-size=\"15\""));
+            assert!(page.contains("data-board-fit-percent=\"100\""));
+            assert!(
+                page.contains("dvh"),
+                "board squares fit the dynamic viewport"
+            );
             assert!(!page.contains("width:720px"));
-            assert!(page.contains("DL"));
-            assert!(page.contains("TW"));
+            assert!(page.contains("2L"));
+            assert!(page.contains("3W"));
+            assert!(page.contains("board-zoom-controls"));
+            assert!(page.contains("Place tiles to play"));
             assert!(page.contains("eligible-square-highlight"));
             assert!(page.contains("game-rules"));
             assert!(page.contains("50-point full-rack bonus"));

@@ -405,43 +405,66 @@ pub fn final_score_adjustments(
     Ok(std::collections::BTreeMap::new())
 }
 
-/// Renders chronological move/score history.
+/// Renders chronological move/score history as a playful timeline.
 #[must_use]
 pub fn move_history_component(
     game_id: wwmtf_game_domain::GameId,
     history: &[MoveHistoryView],
 ) -> Container {
     container! {
-        section id="move-history" gap=8 {
+        section id="move-history" gap=(crate::theme::SPACE_2) {
             @if history.is_empty() {
-                div background=#f3f0e8 border-radius="12px" padding="12px" {
-                    span color=#777b73 { "No moves yet. The first word will start the story." }
+                div background=(crate::theme::SURFACE_ALT) border=((crate::theme::BORDER, 2))
+                    border-radius=(crate::theme::RADIUS_MD) padding=(crate::theme::SPACE_3) {
+                    span color=(crate::theme::INK_MUTED) { "No moves yet. The first word will start the story." }
                 }
             }
-            @for entry in history {
-                div background=#f7f5ef border-left=(("#8eb59a", 3)) border-radius="10px"
-                    padding-y="10px" padding-x="12px" gap="3px" {
-                    span font-weight=bold { (entry.description.as_str()) }
-                    @if !entry.played_words.is_empty() {
-                        div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
-                            @for word in &entry.played_words {
-                                @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
-                                button type=button class="played-word-definition"
-                                    hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
-                                    fx-click=(ActionType::display_by_id("game-definition-layer")) color=#28573b
-                                    background=#e8f1e3 border=(("#8eb59a", 1)) border-radius="999px"
-                                    padding-y="4px" padding-x="9px" font-weight=bold cursor=pointer {
-                                    (word.text.as_str()) " · " (word.score)
+            div class="move-timeline" gap=(crate::theme::SPACE_2) margin-left=6
+                border-left=((crate::theme::SURFACE_LAVENDER, 3)) padding-left=(crate::theme::SPACE_4) {
+                @for entry in history.iter().rev() {
+                    @let (dot, dot_edge) = history_marker(&entry.kind);
+                    div class="move-entry" position="relative" background=(crate::theme::SURFACE)
+                        border=((crate::theme::BORDER, 2)) border-bottom=((crate::theme::BORDER_STRONG, 3))
+                        border-radius=(crate::theme::RADIUS_MD) padding-y=(crate::theme::SPACE_2)
+                        padding-x=(crate::theme::SPACE_3) gap=(crate::theme::SPACE_1) {
+                        span class="move-entry-dot" position="absolute" left=-29 top=12 width=12 height=12
+                            border-radius=(crate::theme::RADIUS_PILL) background=(dot) border=((dot_edge, 2)) { }
+                        span font-weight=bold color=(crate::theme::INK) { (entry.description.as_str()) }
+                        @if !entry.played_words.is_empty() {
+                            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=6 {
+                                @for word in &entry.played_words {
+                                    @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
+                                    button type=button class="played-word-definition"
+                                        hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
+                                        fx-click=(ActionType::display_by_id("game-definition-layer"))
+                                        color=(crate::theme::TILE_INK) background=(crate::theme::TILE)
+                                        border=((crate::theme::TILE_EDGE, 1)) border-bottom=((crate::theme::TILE_EDGE, 3))
+                                        border-radius=(crate::theme::RADIUS_PILL) padding-y=3 padding-x=10
+                                        font-family=(crate::theme::FONT_DISPLAY) font-weight=bold cursor=pointer
+                                        fx-hover=(ActionType::set_background_self(crate::theme::TILE_HI)) {
+                                        (word.text.as_str()) " · " (word.score)
+                                    }
                                 }
                             }
                         }
+                        span color=(crate::theme::INK_SOFT) font-size=(crate::theme::TEXT_XS) font-weight=bold { (entry.score_summary.as_str()) }
                     }
-                    span color=#5d6258 font-size="12px" { (entry.score_summary.as_str()) }
                 }
             }
         }
     }
     .into()
+}
+
+/// `(fill, edge)` of the timeline dot for one public history entry kind.
+fn history_marker(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "TILES_PLAYED" => (crate::theme::PRIMARY, crate::theme::PRIMARY_EDGE),
+        "TILES_EXCHANGED" => (crate::theme::INFO, crate::theme::ACCENT_EDGE),
+        "TURN_PASSED" => (crate::theme::SUNNY, crate::theme::SUNNY_EDGE),
+        "GAME_RESIGNED" => (crate::theme::DANGER, crate::theme::DANGER_EDGE),
+        _ => (crate::theme::ACCENT, crate::theme::ACCENT_EDGE),
+    }
 }
 
 /// Renders one premium-square label.

@@ -1,17 +1,244 @@
 //! Visual game scene: board, rack, turn dock, scoreboard, overlays, and definition panels.
+//!
+//! Everything here is styled with `HyperChad` template attributes and `fx-*` actions only. The
+//! board sizes itself with `calc(...)` against the dynamic viewport so the whole board fits the
+//! play area by default; zoom levels scale relative to that fit.
 
 use hyperchad::{
     actions::ActionType,
     router::Container,
-    template::{LayoutOverflow, container},
+    template::{LayoutDirection, LayoutOverflow, container, if_responsive},
+    transformer::{Calculation, Number},
 };
 use wwmtf_game_domain::{Coordinate, PremiumSquare};
 
 use crate::{
     AuthorizedGamePage, move_history_component,
-    routes::{DraftFeedback, TurnDraft, TurnMode, draft_feedback, draft_token, rack_action},
+    routes::{
+        BoardZoom, DraftFeedback, TurnDraft, TurnMode, draft_feedback, draft_token, rack_action,
+    },
     theme,
+    ui::{self, ButtonSize, ButtonVariant, Tone},
 };
+
+// ---------------------------------------------------------------------------
+// Layout constants (page-local; candidates for promotion into `theme`).
+// ---------------------------------------------------------------------------
+
+/// Gap between board squares (the frame color shows through as grout).
+const BOARD_GAP: f32 = 2.0;
+/// Frame border width around the board grid.
+const BOARD_FRAME_BORDER: f32 = 5.0;
+/// Horizontal space reserved around the board when fitting it to the viewport.
+const BOARD_RESERVED_WIDTH: f32 = 16.0;
+/// Vertical space reserved for the header and the turn dock when fitting the board.
+const BOARD_RESERVED_HEIGHT: f32 = 296.0;
+/// Upper bound for the fitted board edge on very large screens.
+const BOARD_MAX_EDGE: f32 = 920.0;
+/// Largest rack tile edge.
+const RACK_TILE_MAX: f32 = 54.0;
+/// Horizontal space around the seven rack tiles (dock and tray padding, borders, and gaps).
+const RACK_RESERVED_WIDTH: f32 = 100.0;
+/// Rack tiles shown per row.
+const RACK_SLOTS: f32 = 7.0;
+/// Maximum width of the floating turn dock.
+const DOCK_MAX_WIDTH: i32 = 560;
+/// Width of the floating drawers (menu, bag, definitions).
+const DRAWER_WIDTH: i32 = 360;
+/// Header avatar size.
+const HEADER_AVATAR: i32 = 26;
+/// Header control size (back, bag, menu buttons).
+const HEADER_CONTROL: i32 = 38;
+
+// ---------------------------------------------------------------------------
+// calc() helpers
+// ---------------------------------------------------------------------------
+
+fn calc_value(number: Number) -> Calculation {
+    Calculation::Number(Box::new(number))
+}
+
+fn calc_px(value: f32) -> Calculation {
+    calc_value(Number::Real(value))
+}
+
+fn calc_group(calculation: Calculation) -> Calculation {
+    Calculation::Grouping(Box::new(calculation))
+}
+
+fn calc_add(left: Calculation, right: Calculation) -> Calculation {
+    calc_group(Calculation::Add(Box::new(left), Box::new(right)))
+}
+
+fn calc_sub(left: Calculation, right: Calculation) -> Calculation {
+    calc_group(Calculation::Subtract(Box::new(left), Box::new(right)))
+}
+
+/// Multiplies a length by a unitless factor.
+fn calc_times(left: Calculation, factor: f32) -> Calculation {
+    calc_group(Calculation::Multiply(
+        Box::new(left),
+        Box::new(calc_value(Number::Real(factor))),
+    ))
+}
+
+/// Divides a length by a unitless divisor.
+fn calc_over(left: Calculation, divisor: f32) -> Calculation {
+    calc_group(Calculation::Divide(
+        Box::new(left),
+        Box::new(calc_value(Number::Real(divisor))),
+    ))
+}
+
+fn calc_min(left: Calculation, right: Calculation) -> Calculation {
+    Calculation::Min(Box::new(left), Box::new(right))
+}
+
+fn calc_max(left: Calculation, right: Calculation) -> Calculation {
+    Calculation::Max(Box::new(left), Box::new(right))
+}
+
+const fn calc_number(calculation: Calculation) -> Number {
+    Number::Calc(calculation)
+}
+
+/// Viewport-relative board geometry for one zoom level.
+struct BoardMetrics {
+    square: Calculation,
+    size: f32,
+}
+
+impl BoardMetrics {
+    fn new(board_size: u8, zoom: BoardZoom) -> Self {
+        let size = f32::from(board_size);
+        let available = calc_min(
+            calc_min(
+                calc_sub(
+                    calc_value(Number::RealDvw(100.0)),
+                    calc_px(BOARD_RESERVED_WIDTH),
+                ),
+                calc_sub(
+                    calc_value(Number::RealDvh(100.0)),
+                    calc_px(BOARD_RESERVED_HEIGHT),
+                ),
+            ),
+            calc_px(BOARD_MAX_EDGE),
+        );
+        let grid = calc_sub(
+            calc_group(available),
+            calc_px(BOARD_FRAME_BORDER.mul_add(2.0, (size - 1.0) * BOARD_GAP)),
+        );
+        let fit = calc_over(grid, size);
+        #[allow(clippy::cast_precision_loss)]
+        let scale = zoom.fit_percent() as f32 / 100.0;
+        let square = if zoom.fit_percent() == 100 {
+            fit
+        } else {
+            calc_times(fit, scale)
+        };
+        Self { square, size }
+    }
+
+    /// Square edge length.
+    fn square(&self) -> Number {
+        calc_number(self.square.clone())
+    }
+
+    /// A fraction of the square edge (font sizes).
+    fn scaled(&self, factor: f32) -> Number {
+        calc_number(calc_times(self.square.clone(), factor))
+    }
+
+    /// Offset of the `index`th square from the grid origin, plus `extra` pixels.
+    fn offset(&self, index: u8, extra: f32) -> Calculation {
+        calc_add(
+            calc_times(
+                calc_add(self.square.clone(), calc_px(BOARD_GAP)),
+                f32::from(index),
+            ),
+            calc_px(extra),
+        )
+    }
+
+    /// Outer edge of the framed board.
+    fn frame(&self) -> Number {
+        calc_number(calc_add(
+            calc_times(self.square.clone(), self.size),
+            calc_px(BOARD_FRAME_BORDER.mul_add(2.0, (self.size - 1.0) * BOARD_GAP)),
+        ))
+    }
+}
+
+/// Edge length of one rack tile: as big as fits seven across the dock, capped for desktops.
+fn rack_tile_size() -> Calculation {
+    calc_min(
+        calc_px(RACK_TILE_MAX),
+        calc_over(
+            calc_sub(
+                calc_value(Number::RealDvw(100.0)),
+                calc_px(RACK_RESERVED_WIDTH),
+            ),
+            RACK_SLOTS,
+        ),
+    )
+}
+
+fn active_player_name(game: &AuthorizedGamePage) -> &str {
+    game.participants
+        .iter()
+        .find(|participant| participant.player_id == game.view.active_player)
+        .map_or("Player", |participant| participant.display_name.as_str())
+}
+
+fn participant_seat(
+    game: &AuthorizedGamePage,
+    player: wwmtf_game_domain::PlayerId,
+) -> theme::SeatColor {
+    let index = game
+        .participants
+        .iter()
+        .position(|participant| participant.player_id == player)
+        .unwrap_or_default();
+    theme::seat_color(index)
+}
+
+/// `(fill, ink, label)` for an empty board square.
+fn square_style(
+    coordinate: Coordinate,
+    start: Coordinate,
+    premium: Option<PremiumSquare>,
+) -> (&'static str, &'static str, String) {
+    if coordinate == start {
+        return (
+            theme::PREMIUM_START,
+            theme::PREMIUM_START_INK,
+            "★".to_string(),
+        );
+    }
+    match premium {
+        Some(PremiumSquare::Letter(2)) => {
+            (theme::PREMIUM_DL, theme::PREMIUM_DL_INK, "2L".to_string())
+        }
+        Some(PremiumSquare::Letter(multiplier)) => (
+            theme::PREMIUM_TL,
+            theme::PREMIUM_TL_INK,
+            format!("{multiplier}L"),
+        ),
+        Some(PremiumSquare::Word(2)) => {
+            (theme::PREMIUM_DW, theme::PREMIUM_DW_INK, "2W".to_string())
+        }
+        Some(PremiumSquare::Word(multiplier)) => (
+            theme::PREMIUM_TW,
+            theme::PREMIUM_TW_INK,
+            format!("{multiplier}W"),
+        ),
+        None => (theme::SQUARE, theme::SQUARE_INK, String::new()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Draft feedback
+// ---------------------------------------------------------------------------
 
 pub fn invalid_words_message(words: &[String]) -> String {
     if words.len() == 1 {
@@ -63,19 +290,31 @@ pub fn draft_feedback_component(
             },
         ),
     };
-    container! {
+    let (background, edge, ink, glyph) = match draft.mode {
+        TurnMode::ConfirmResign => (theme::DANGER_SOFT, theme::DANGER, theme::DANGER_INK, "!"),
+        TurnMode::Exchange | TurnMode::ConfirmExchange | TurnMode::ConfirmPass => {
+            (theme::SUNNY_SOFT, theme::SUNNY, theme::ON_SUNNY, "?")
+        }
+        TurnMode::Play if candidate_valid => {
+            (theme::PRIMARY, theme::PRIMARY_EDGE, theme::ON_PRIMARY, "✓")
+        }
+        TurnMode::Play if feedback.candidate.is_some() => {
+            (theme::DANGER_SOFT, theme::DANGER, theme::DANGER_INK, "×")
+        }
+        TurnMode::Play => (theme::NIGHT_DEEP, theme::NIGHT_LINE, theme::NIGHT_INK, "✦"),
+    };
+    one(container! {
         section id="draft-preview" class="dock-message" width="100%" direction="row"
-            align-items="center" justify-content="center" padding-y="4px" padding-x="8px"
-            background=(if candidate_valid { "#f4c95d" } else if feedback.candidate.is_some() { "#f7d8ae" } else { theme::NIGHT_DEEP })
-            color=(if feedback.candidate.is_some() { "#2d2515" } else { theme::NIGHT_INK })
-            border=((if candidate_valid { "#ffe29a" } else if feedback.candidate.is_some() { "#d77a59" } else { theme::NIGHT_LINE }, 1))
-            border-radius="10px" overflow-x="hidden" {
-            span font-size="13px" font-weight=bold text-overflow="ellipsis" white-space="preserve" {
+            align-items="center" justify-content="center" gap=(theme::SPACE_2)
+            padding-y=6 padding-x=(theme::SPACE_3)
+            background=(background) color=(ink) border=((edge, theme::EDGE_THIN))
+            border-radius=(theme::RADIUS_PILL) overflow-x="hidden" {
+            span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold { (glyph) }
+            span font-size=(theme::TEXT_SM) font-weight=bold text-overflow="ellipsis" white-space="preserve" {
                 (message)
             }
         }
-    }
-    .into()
+    })
 }
 
 pub fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &str) -> Container {
@@ -83,48 +322,54 @@ pub fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &
 }
 
 pub fn turn_feedback(message: Option<&str>) -> Container {
-    container! {
+    one(container! {
         @if let Some(message) = message {
             section id="turn-feedback" width="100%" {
-                div id="game-error" background=(theme::DANGER_SOFT) border=((theme::DANGER, 1))
-                    border-radius="12px" padding="14px" {
-                    span color=(theme::DANGER_INK) { (message) }
-                }
+                (ui::with_id(ui::notice(message, Tone::Danger), "game-error"))
             }
         }
-    }
-    .into()
+    })
 }
 
+// ---------------------------------------------------------------------------
+// Definitions
+// ---------------------------------------------------------------------------
+
 pub fn definition_content(word: &str, lookup: &crate::DefinitionLookup) -> Container {
-    container! {
-        h1 { (word) }
+    let letters = word
+        .chars()
+        .take(12)
+        .map(|letter| ui::tile_face(&letter.to_uppercase().to_string(), None, 30))
+        .collect::<Vec<_>>();
+    one(container! {
+        div direction="row" gap=(theme::SPACE_1) overflow-x=(LayoutOverflow::Wrap { grid: false }) { (letters) }
+        h1 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) color=(theme::INK) { (word) }
         @match lookup {
             crate::DefinitionLookup::Found(definition) => {
                 @for meaning in &definition.meanings {
-                    section gap="6px" {
-                        h2 font-size="18px" { (meaning.part_of_speech.as_str()) }
+                    section gap=6 background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN))
+                        border-radius=(theme::RADIUS_MD) padding=(theme::SPACE_3) {
+                        (ui::eyebrow(&meaning.part_of_speech.to_uppercase(), theme::ACCENT))
                         @for text in &meaning.definitions {
-                            span { "• " (text.as_str()) }
+                            span color=(theme::INK) { "• " (text.as_str()) }
                         }
                     }
                 }
-                span color=(theme::INK_MUTED) font-size="12px" {
+                span color=(theme::INK_MUTED) font-size=(theme::TEXT_XS) {
                     "Source: " anchor href=(definition.source_url.as_str()) color=(theme::LINK) { (definition.source_url.as_str()) }
                 }
-                span color=(theme::INK_MUTED) font-size="12px" {
+                span color=(theme::INK_MUTED) font-size=(theme::TEXT_XS) {
                     "License: " anchor href=(definition.license_url.as_str()) color=(theme::LINK) { (definition.license_name.as_str()) }
                 }
             },
             crate::DefinitionLookup::Missing => {
-                span { "No definition is available from the configured provider." }
+                span color=(theme::INK_MUTED) { "No definition is available from the configured provider." }
             },
             crate::DefinitionLookup::Unavailable(reason) => {
-                span { (reason.user_message()) }
+                span color=(theme::INK_MUTED) { (reason.user_message()) }
             },
         }
-    }
-    .into()
+    })
 }
 
 pub fn definition_page(
@@ -134,54 +379,62 @@ pub fn definition_page(
 ) -> Container {
     let game_href = format!("/games/{game_id}");
     let content = definition_content(word, lookup);
-    container! {
-        div id="app-page" font-family=(theme::FONT_UI) direction="column" align-items="center" min-height="100vh"
-            background=(theme::MENU_BG) padding-y=32 padding-x=18 {
-            main id="word-definition" width="100%" max-width="720px" background=(theme::WHITE)
-                border=((theme::BORDER, 1)) border-radius="18px" padding="24px" gap="14px" {
-                anchor href=(game_href) color=(theme::LINK) { "← Back to game" }
-                (content)
-            }
+    // Top-level views keep a wrapper element: the router renders the returned container's
+    // children, so the `#app-page` root must be a child rather than the returned element.
+    Container::from(vec![ui::menu_page(container! {
+        main id="word-definition" width="100%" max-width=(theme::PAGE_MEDIUM)
+            background=(theme::SURFACE) color=(theme::INK)
+            border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, theme::EDGE_DEPTH))
+            border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_6) gap=(theme::SPACE_3) {
+            (ui::text_link(&game_href, "← Back to game"))
+            (content)
         }
-    }
-    .into()
+    })])
+}
+
+/// Shared chrome for the floating definition panel.
+fn definition_panel_shell(children: impl Into<Vec<Container>>) -> Container {
+    let children: Vec<Container> = children.into();
+    // Swapped in as a whole element, so keep the wrapper (see `definition_page`).
+    Container::from(container! {
+        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
+            top=64 right=8 width=(DRAWER_WIDTH + 80) max-width="94%" max-height="72vh" overflow-y="auto"
+            background=(theme::MENU_BG) color=(theme::INK)
+            border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
+            border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_3) {
+            (children)
+        }
+    })
+}
+
+fn drawer_close_button(target: &str) -> Container {
+    ui::action_button(
+        "Close",
+        ButtonVariant::Secondary,
+        ButtonSize::Small,
+        ActionType::no_display_by_id(target),
+    )
 }
 
 pub fn definition_panel(word: &str, lookup: &crate::DefinitionLookup) -> Container {
     let content = definition_content(word, lookup);
-    container! {
-        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
-            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-            background=(theme::MENU_BG) color=(theme::INK) border=((theme::BORDER_STRONG, 3)) border-radius="18px"
-            padding="18px" gap="12px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                span color=(theme::INK_MUTED) font-size="11px" font-weight=bold { "WORD DEFINITION" }
-                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
-                    background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK) border=((theme::NIGHT_LINE, 1)) border-radius="999px"
-                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
-            }
-            (content)
+    definition_panel_shell(container! {
+        div direction="row" justify-content="space-between" align-items="center" gap=(theme::SPACE_3) {
+            (ui::eyebrow("WORD DEFINITION", theme::ACCENT))
+            (drawer_close_button("game-definition-layer"))
         }
-    }
-    .into()
+        (content)
+    })
 }
 
 pub fn definition_panel_error(message: &str) -> Container {
-    container! {
-        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
-            top=68 right="2%" width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-            background=(theme::MENU_BG) color=(theme::INK) border=((theme::BORDER_STRONG, 3)) border-radius="18px"
-            padding="18px" gap="12px" {
-            div direction="row" justify-content="space-between" align-items="center" gap="12px" {
-                h2 { "Definition unavailable" }
-                button type=button fx-click=(ActionType::no_display_by_id("game-definition-layer"))
-                    background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK) border=((theme::NIGHT_LINE, 1)) border-radius="999px"
-                    padding-y="6px" padding-x="10px" cursor=pointer { "Close" }
-            }
-            span { (message) }
+    definition_panel_shell(container! {
+        div direction="row" justify-content="space-between" align-items="center" gap=(theme::SPACE_3) {
+            h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) { "Definition unavailable" }
+            (drawer_close_button("game-definition-layer"))
         }
-    }
-    .into()
+        span color=(theme::INK_MUTED) { (message) }
+    })
 }
 
 /// Renders the compact fallback command controls beneath the visual board.
@@ -190,31 +443,28 @@ pub fn turn_composer(game: &AuthorizedGamePage) -> Container {
     let action = format!("/games/{}/turn", game.game_id);
     let command_id = uuid::Uuid::new_v4().to_string();
     let idempotency_key = uuid::Uuid::new_v4().to_string();
-    container! {
-        section id="turn-composer" gap="12px" {
-            h2 { "Turn controls" }
+    one(container! {
+        section id="turn-composer" gap=(theme::SPACE_3) {
+            h2 font-family=(theme::FONT_DISPLAY) { "Turn controls" }
             span color=(theme::INK_MUTED) { "Tap a rack tile, then tap an open board square. Use these controls for non-placement turns." }
-            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="10px" {
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     input type=hidden name="command" value="PASS";
                     input type=hidden name="command_id" value=(command_id.as_str());
                     input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
                     input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding-y=10 padding-x=14 background=(theme::WHITE) color=(theme::LINK)
-                        border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Pass" }
+                    (ui::submit_button("Pass", ButtonVariant::Secondary, ButtonSize::Medium))
                 }
                 form hx-post=(action.as_str()) hx-target="#app-page" {
                     input type=hidden name="command" value="RESIGN";
                     input type=hidden name="command_id" value=(command_id.as_str());
                     input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
                     input type=hidden name="expected_revision" value=(game.view.revision);
-                    button type=submit padding-y=10 padding-x=14 background=(theme::WHITE) color=(theme::DANGER_INK)
-                        border=((theme::DANGER_EDGE, 1)) border-radius="9px" cursor=pointer { "Resign" }
+                    (ui::submit_button("Resign", ButtonVariant::Danger, ButtonSize::Medium))
                 }
             }
         }
-    }
-    .into()
+    })
 }
 
 pub fn compose_form_fields(
@@ -223,12 +473,40 @@ pub fn compose_form_fields(
     action: &str,
 ) -> Container {
     let encoded = draft_token(draft);
-    container! {
+    one(container! {
         input type=hidden name="action" value=(action);
         input type=hidden name="expected_revision" value=(game.view.revision);
         input type=hidden name="draft" value=(encoded);
-    }
-    .into()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Board
+// ---------------------------------------------------------------------------
+
+/// One round zoom button for the floating control cluster.
+fn zoom_button(
+    game: &AuthorizedGamePage,
+    draft: &TurnDraft,
+    action: &str,
+    label: &str,
+    font_size: i32,
+) -> Container {
+    let compose_action = format!("/games/{}/compose", game.game_id);
+    let style = ui::button_style(ButtonVariant::Night);
+    one(container! {
+        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+            (compose_form_fields(game, draft, action))
+            button type=submit width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
+                background=(style.background) color=(style.ink)
+                border=((style.edge, theme::EDGE_THIN)) border-bottom=((style.edge, 4))
+                border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
+                font-family=(theme::FONT_DISPLAY) font-size=(font_size) font-weight=bold cursor=pointer
+                fx-hover=(ActionType::set_background_self(style.hover)) {
+                (label)
+            }
+        }
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -271,47 +549,40 @@ pub fn visual_board(
         .candidate
         .as_ref()
         .is_some_and(|candidate| !candidate.is_valid());
-    let square_size = draft.board_zoom.square_size();
-    let score_bubble_left = score_anchor.map(|coordinate| {
-        u32::from(coordinate.x) * (square_size + 2) + square_size.saturating_sub(12) + 6
+    let metrics = BoardMetrics::new(game.rules.board_size, draft.board_zoom);
+    let square = metrics.square();
+    let tile_font = metrics.scaled(0.5);
+    let points_font = metrics.scaled(0.26);
+    let premium_font = metrics.scaled(0.34);
+    let star_font = metrics.scaled(0.58);
+    let frame = metrics.frame();
+    let score_bubble_position = score_anchor.map(|coordinate| {
+        (
+            calc_number(calc_add(
+                metrics.offset(coordinate.x, -8.0),
+                metrics.square.clone(),
+            )),
+            calc_number(calc_max(metrics.offset(coordinate.y, -14.0), calc_px(-4.0))),
+        )
     });
-    let score_bubble_top = score_anchor
-        .map(|coordinate| (u32::from(coordinate.y) * (square_size + 2) + 6).saturating_sub(16));
-    let tile_font_size = if square_size < 36 { 15 } else { 20 };
-    let premium_font_size = if square_size < 36 { 10 } else { 16 };
-    let board_grid_width = u32::from(game.rules.board_size) * square_size
-        + u32::from(game.rules.board_size.saturating_sub(1)) * 2;
-    let board_frame_width = board_grid_width + 12;
-    container! {
+    let picking_tile = draft.selected_tile.is_some() && draft.mode == TurnMode::Play;
+    let zoom_in = zoom_button(game, draft, "ZOOM_IN", "+", theme::TEXT_LG);
+    let zoom_reset = zoom_button(game, draft, "ZOOM_RESET", "Fit", theme::TEXT_XS);
+    let zoom_out = zoom_button(game, draft, "ZOOM_OUT", "−", theme::TEXT_LG);
+    one(container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
             position="absolute" top=0 right=0 bottom=0 left=0 direction="column" {
-            div class="board-zoom-controls" width="100%" flex="0 0 auto" direction="row"
-                justify-content="center" gap="7px" padding-y="6px" {
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_OUT"))
-                    button type=submit padding-y="6px" padding-x="11px"
-                        background=(theme::NIGHT_RAISED) color=(theme::WHITE) border=((theme::NIGHT_LINE, 1)) border-radius="999px" cursor=pointer { "−" }
-                }
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_RESET"))
-                    button type=submit padding-y="6px" padding-x="11px" background=(theme::NIGHT_RAISED) color=(theme::WHITE)
-                        border=((theme::NIGHT_LINE, 1)) border-radius="999px" cursor=pointer { "Fit" }
-                }
-                form hx-post=(action.as_str()) hx-target="#app-page" {
-                    (compose_form_fields(game, draft, "ZOOM_IN"))
-                    button type=submit padding-y="6px" padding-x="11px"
-                        background=(theme::NIGHT_RAISED) color=(theme::WHITE) border=((theme::NIGHT_LINE, 1)) border-radius="999px" cursor=pointer { "+" }
-                }
-            }
             div class="board-viewport" width="100%" min-height=0 flex=1
                 overflow-x="auto" overflow-y="auto" {
-                div class="board-scroll-content" width="100%" height="100%" min-width=(board_frame_width)
-                    min-height=(board_frame_width) align-items="center" justify-content="center" {
-                    div data-board-grid-width=(board_grid_width) data-board-frame-width=(board_frame_width)
-                        width=(board_frame_width) height=(board_frame_width) position="relative"
-                        flex="0 0 auto" background=(theme::BOARD_FRAME) border=((theme::BOARD_FRAME_EDGE, 6)) border-radius="8px" gap="2px" {
+                div class="board-scroll-content" width="100%" height="100%" min-width=(frame.clone())
+                    min-height=(frame.clone()) align-items="center" justify-content="center" {
+                    div class="board-frame" data-board-size=(game.rules.board_size)
+                        data-board-fit-percent=(draft.board_zoom.fit_percent())
+                        width=(frame.clone()) height=(frame.clone()) min-width=(frame.clone()) position="relative"
+                        background=(theme::BOARD_FRAME) border=((theme::BOARD_FRAME_EDGE, 5))
+                        border-radius=(theme::RADIUS_MD) gap=(BOARD_GAP) {
                     @for y in 0..game.rules.board_size {
-                        div direction="row" gap="2px" {
+                        div direction="row" gap=(BOARD_GAP) {
                             @for x in 0..game.rules.board_size {
                                 @let coordinate = Coordinate::new(x, y);
                                 @let committed = occupied.get(&coordinate).copied();
@@ -321,93 +592,100 @@ pub fn visual_board(
                                 @let eligible = feedback.guidance.eligible.contains(&coordinate);
                                 @let latest = game.latest_play_coordinates.contains(&coordinate);
                                 @let viewer_owned = game.viewer_play_coordinates.contains(&coordinate);
-                                @let (background, label, color) = if let Some((letter, _)) = committed {
-                                    (theme::TILE, letter.to_string(), theme::TILE_INK)
-                                } else if let Some((tile_id, blank_letter)) = drafted {
-                                    let letter = game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
-                                        .map(|(_, letter, _)| blank_letter.unwrap_or(*letter)).unwrap_or('?');
-                                    (theme::TILE_PENDING, letter.to_string(), theme::TILE_PENDING_INK)
-                                } else if coordinate == game.rules.start {
-                                    (theme::PREMIUM_START, "★".to_string(), theme::PREMIUM_START_INK)
-                                } else {
-                                    match premium {
-                                        Some(PremiumSquare::Letter(2)) => (theme::PREMIUM_DL, "DL".to_string(), theme::PREMIUM_DL_INK),
-                                        Some(PremiumSquare::Letter(_)) => (theme::PREMIUM_TL, "TL".to_string(), theme::PREMIUM_TL_INK),
-                                        Some(PremiumSquare::Word(2)) => (theme::PREMIUM_DW, "DW".to_string(), theme::PREMIUM_DW_INK),
-                                        Some(PremiumSquare::Word(_)) => (theme::PREMIUM_TW, "TW".to_string(), theme::WHITE),
-                                        None => (theme::SQUARE, String::new(), theme::SQUARE_INK),
-                                    }
-                                };
-                                @let draft_points = drafted.and_then(|(tile_id, _)| {
-                                    game.view.rack.iter().find(|(id, _, _)| *id == tile_id)
-                                        .map(|(_, _, points)| *points)
-                                });
-                                @if let Some((tile_id, _)) = drafted {
+                                @if let Some((tile_id, blank_letter)) = drafted {
+                                    @let rack_tile = game.view.rack.iter().find(|(id, _, _)| *id == tile_id);
+                                    @let label = rack_tile.map_or('?', |(_, letter, _)| blank_letter.unwrap_or(*letter));
+                                    @let draft_points = rack_tile.map(|(_, _, points)| *points);
                                     form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
-                                        button type=submit class="board-square pending-square" width=(square_size) height=(square_size)
-                                            background=(theme::TILE_PENDING) color=(theme::TILE_PENDING_INK) border=((theme::TILE_PENDING_EDGE, 3)) border-radius="4px"
-                                            align-items="center" justify-content="center" font-weight=bold position="relative" cursor=pointer {
-                                            span font-size=(tile_font_size) { (label) }
+                                        button type=submit class="board-square pending-square"
+                                            width=(square.clone()) height=(square.clone())
+                                            background=(theme::TILE_PENDING) color=(theme::TILE_PENDING_INK)
+                                            border=((theme::TILE_PENDING_EDGE, 1)) border-bottom=((theme::TILE_PENDING_EDGE, 4))
+                                            border-radius=5 align-items="center" justify-content="center"
+                                            font-family=(theme::FONT_DISPLAY) font-weight=bold position="relative" cursor=pointer
+                                            fx-hover=(ActionType::set_background_self(theme::WHITE))
+                                            fx-click=(ActionType::set_background_self(theme::SQUARE)) {
+                                            span font-size=(tile_font.clone()) { (label) }
                                             @if let Some(points) = draft_points {
-                                                span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
+                                                span class="board-tile-points" position="absolute" right=2 bottom=0 font-size=(points_font.clone()) { (points) }
                                             }
                                         }
                                     }
-                                } @else if committed.is_some() {
-                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" }) width=(square_size) height=(square_size)
-                                        background=(background) color=(color) border=((if latest { theme::LATEST_MOVE } else { theme::TILE_EDGE }, if latest { 3 } else { 1 }))
-                                        border-radius="4px" align-items="center" justify-content="center" font-weight=bold position="relative" {
+                                } @else if let Some((letter, points)) = committed {
+                                    div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" })
+                                        width=(square.clone()) height=(square.clone())
+                                        background=(if latest { theme::TILE_HI } else { theme::TILE }) color=(theme::TILE_INK)
+                                        border=((if latest { theme::LATEST_MOVE } else { theme::TILE_EDGE }, if latest { 2 } else { 1 }))
+                                        border-bottom=((if latest { theme::PRIMARY_EDGE } else { theme::TILE_EDGE }, 4))
+                                        border-radius=5 align-items="center" justify-content="center"
+                                        font-family=(theme::FONT_DISPLAY) font-weight=bold position="relative" user-select="none" {
                                         @if viewer_owned {
-                                            span class="viewer-tile-marker" position="absolute" top="4px" left="4px"
-                                                width="5px" height="5px" background=#7f93a8 opacity=0.55 border-radius="999px" { }
+                                            span class="viewer-tile-marker" position="absolute" top=2 left=2
+                                                width=4 height=4 background=(theme::TILE_EDGE) opacity=0.7 border-radius=(theme::RADIUS_PILL) { }
                                         }
-                                        span font-size=(tile_font_size) { (label) }
-                                        @if let Some((_, points)) = committed {
-                                            span class="board-tile-points" position="absolute" right="4px" bottom="2px" font-size="10px" { (points) }
-                                        }
+                                        span font-size=(tile_font.clone()) { (letter) }
+                                        span class="board-tile-points" position="absolute" right=2 bottom=0 font-size=(points_font.clone()) { (points) }
                                     }
                                 } @else {
+                                    @let (background, ink, label) = square_style(coordinate, game.rules.start, premium);
                                     form hx-post=(action.as_str()) hx-target="#app-page" {
                                         (compose_form_fields(game, draft, "PLACE_TILE"))
                                         input type=hidden name="x" value=(x);
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
-                                            width=(square_size) height=(square_size) background=(background) color=(color)
-                                            border=(if required { ("#b96d2b", 3) } else if eligible { ("#527a4888", 3) } else { (theme::SQUARE_LINE, 1) })
-                                            position="relative" align-items="center" justify-content="center"
-                                            font-weight=bold cursor=pointer {
+                                            width=(square.clone()) height=(square.clone()) background=(background) color=(ink)
+                                            border=(if required { (theme::SUNNY, 2) } else { (background, 0) })
+                                            border-radius=4 position="relative" align-items="center" justify-content="center"
+                                            font-family=(theme::FONT_DISPLAY) font-weight=bold cursor=pointer
+                                            fx-hover=(ActionType::set_background_self(if picking_tile { theme::TILE_PENDING } else { theme::WHITE }))
+                                            fx-click=(if picking_tile { ActionType::set_background_self(theme::TILE_PENDING) } else { ActionType::NoOp }) {
                                             @if required {
                                                 span class="required-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#f3a64b opacity=0.3 { }
+                                                    width="100%" height="100%" background=(theme::SUNNY) opacity=0.45 border-radius=3 { }
                                             } @else if eligible {
                                                 span class="eligible-square-highlight" position="absolute" top=0 left=0
-                                                    width="100%" height="100%" background=#7f9a78 opacity=0.3 { }
+                                                    width="100%" height="100%" background=(theme::PRIMARY) opacity=0.3 border-radius=3 { }
                                             }
-                                            span position="relative" font-size=(premium_font_size) { (label) }
+                                            @if !label.is_empty() {
+                                                span position="relative" font-size=(if label == "★" { star_font.clone() } else { premium_font.clone() }) { (label) }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    @if let (Some(score), Some(left), Some(top)) = (score, score_bubble_left, score_bubble_top) {
+                    @if let (Some(score), Some((left, top))) = (score, score_bubble_position) {
                         span class=(if invalid_score { "draft-score-bubble invalid-draft-score" } else { "draft-score-bubble" })
-                            position="absolute" left=(left) top=(top) min-width="31px" height="25px"
-                            background=(if invalid_score { "#b4452f" } else { "#2f8a57" }) color=(theme::WHITE)
-                            border=(if invalid_score { ("#7a2d20", 2) } else { (theme::PRIMARY_EDGE, 2) }) border-radius="999px"
-                            align-items="center" justify-content="center" font-size="12px" font-weight=bold {
+                            position="absolute" left=(left) top=(top) min-width=30 height=26 padding-x=7
+                            background=(if invalid_score { theme::DANGER } else { theme::SUNNY })
+                            color=(if invalid_score { theme::ON_DANGER } else { theme::ON_SUNNY })
+                            border=((theme::WHITE, 2)) border-bottom=((if invalid_score { theme::DANGER_EDGE } else { theme::SUNNY_EDGE }, 4))
+                            border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
+                            font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_SM) font-weight=bold user-select="none" {
                             (score)
                         }
                     }
                 }
             }
+            }
+            div id="board-zoom-controls" class="board-zoom-controls" position="absolute" right=10 bottom=10
+                direction=(if_responsive(theme::MOBILE).then::<LayoutDirection>(LayoutDirection::Row).or_else(LayoutDirection::Column))
+                align-items="center" gap=6 padding=4 background=(theme::NIGHT_DEEP)
+                border=((theme::NIGHT_LINE, 1)) border-radius=(theme::RADIUS_PILL) opacity=0.94 {
+                (zoom_in)
+                (zoom_reset)
+                (zoom_out)
+            }
         }
-    }
-    }
-    .into()
+    })
 }
+
+// ---------------------------------------------------------------------------
+// Rack
+// ---------------------------------------------------------------------------
 
 pub fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
@@ -422,50 +700,65 @@ pub fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
                 .find(|(tile_id, _, _)| tile_id == ordered)
         })
         .collect::<Vec<_>>();
-    container! {
+    let tile = rack_tile_size();
+    let tile_size = calc_number(tile.clone());
+    let face_font = calc_number(calc_times(tile.clone(), 0.4));
+    let points_font = calc_number(calc_times(tile, 0.19));
+    one(container! {
         section id="player-rack" width="100%" max-width="100%" position="relative" {
             div class="rack-tray" width="100%" max-width="100%" direction="row" overflow-x="hidden" overflow-y="hidden"
-                justify-content="center" gap="3px"
-                background=#6b4528 border=(("#3f2919", 4)) border-radius="14px" padding-y="8px" padding-x="6px" {
+                justify-content="center" align-items="end" gap=5
+                background=(theme::NIGHT_DEEP) border=((theme::NIGHT_BORDER, theme::EDGE_THIN))
+                border-radius=(theme::RADIUS_LG) padding-top=12 padding-bottom=8 padding-x=6 {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
                     @let exchange_selected = draft.exchange_tiles.contains(tile_id);
                     @let face = if *letter == ' ' { "?".to_string() } else { letter.to_string() };
+                    @let face_color = if selected { theme::TILE_HI } else if exchange_selected { theme::TILE_EXCHANGE } else if placed { theme::NIGHT_RAISED } else { theme::TILE };
+                    @let edge_color = if selected { theme::WHITE } else if exchange_selected { theme::TILE_EXCHANGE_EDGE } else if placed { theme::NIGHT_LINE } else { theme::TILE_EDGE };
+                    @let ink_color = if placed && !selected { theme::NIGHT_INK_MUTED } else { theme::TILE_INK };
+                    @let lift = if selected { theme::LIFT_OFFSET } else if exchange_selected { theme::PRESS_OFFSET } else { 0 };
                     @if can_compose || draft.mode == TurnMode::Play {
                         @let rack_action = rack_action(draft);
                         form hx-post=(action.as_str()) hx-target="#app-page"
-                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
-                            min-width=0 flex-shrink=0 {
+                            width=(tile_size.clone()) height=(tile_size.clone()) min-width=0 {
                             (compose_form_fields(game, draft, rack_action))
                             input type=hidden name="tile_id" value=(tile_id);
                             button type=submit class=(if selected || exchange_selected { "rack-tile rack-tile-selected" } else { "rack-tile" }) data-tile-id=(tile_id)
-                                width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
+                                width=(tile_size.clone()) height=(tile_size.clone())
                                 min-width=0 overflow-x="hidden" overflow-y="hidden"
-                                background=(if selected { theme::TILE_HI } else if exchange_selected { theme::TILE_EXCHANGE } else if placed { theme::TILE_DIM } else { theme::TILE }) color=(theme::TILE_INK)
-                                border=((if selected { theme::WHITE } else if exchange_selected { theme::TILE_EXCHANGE_EDGE } else { theme::TILE_EDGE }, if selected || exchange_selected { 4 } else { 2 })) border-radius="7px" align-items="center" justify-content="center"
-                                position="relative" font-weight=bold opacity=(if placed { 0.45 } else { 1.0 }) cursor=pointer {
-                                span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
-                                span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
-                                    font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
+                                background=(face_color) color=(ink_color)
+                                border=((edge_color, theme::EDGE_THIN))
+                                border-bottom=((if selected { theme::TILE_EDGE } else { edge_color }, if exchange_selected { theme::EDGE_PRESSED } else { theme::EDGE_DEPTH }))
+                                border-radius=(theme::RADIUS_SM + 2) align-items="center" justify-content="center"
+                                translate-y=(lift)
+                                position="relative" font-family=(theme::FONT_DISPLAY) font-weight=bold
+                                opacity=(if placed { 0.55 } else { 1.0 }) cursor=pointer user-select="none"
+                                fx-hover=(ActionType::set_background_self(theme::TILE_HI))
+                                fx-click=(ActionType::set_background_self(theme::TILE_PENDING)) {
+                                span class="rack-tile-face" font-size=(face_font.clone()) { (face) }
+                                span class="rack-tile-points" position="absolute" right=3 bottom=1
+                                    font-size=(points_font.clone()) { (points) }
                             }
                         }
                     } @else {
                         div class="rack-tile" data-tile-id=(tile_id)
-                            width=calc(min(44, (dvw(100) - 80) / 7)) height=calc(min(44, (dvw(100) - 80) / 7))
-                            min-width=0 flex-shrink=0 overflow-x="hidden" overflow-y="hidden"
-                            background=(theme::TILE) color=(theme::TILE_INK) border=((theme::TILE_EDGE, 2)) border-radius="7px"
-                            align-items="center" justify-content="center" position="relative" font-weight=bold {
-                            span class="rack-tile-face" font-size=calc(min(18, (dvw(100) - 80) / 24)) { (face) }
-                            span class="rack-tile-points" position="absolute" right="2px" bottom="1px"
-                                font-size=calc(min(8, (dvw(100) - 80) / 48)) { (points) }
+                            width=(tile_size.clone()) height=(tile_size.clone())
+                            min-width=0 overflow-x="hidden" overflow-y="hidden"
+                            background=(theme::TILE) color=(theme::TILE_INK)
+                            border=((theme::TILE_EDGE, theme::EDGE_THIN)) border-bottom=((theme::TILE_EDGE, theme::EDGE_DEPTH))
+                            border-radius=(theme::RADIUS_SM + 2) align-items="center" justify-content="center"
+                            position="relative" font-family=(theme::FONT_DISPLAY) font-weight=bold user-select="none" {
+                            span class="rack-tile-face" font-size=(face_font.clone()) { (face) }
+                            span class="rack-tile-points" position="absolute" right=3 bottom=1
+                                font-size=(points_font.clone()) { (points) }
                         }
                     }
                 }
             }
         }
-    }
-    .into()
+    })
 }
 
 pub fn blank_letter_picker_open(draft: &TurnDraft, rack: &[(u16, char, u8)]) -> bool {
@@ -479,38 +772,86 @@ pub fn blank_letter_picker_open(draft: &TurnDraft, rack: &[(u16, char, u8)]) -> 
 pub fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let action = format!("/games/{}/compose", game.game_id);
     let selected_blank_needs_letter = blank_letter_picker_open(draft, &game.view.rack);
-    container! {
+    let blank_tile = ui::tile_face("?", None, 36);
+    one(container! {
         @if selected_blank_needs_letter {
             section class="blank-letter-layer" position="fixed" top=0 right=0 bottom=0 left=0
                 width="100vw" height="100dvh" align-items="center" justify-content="end"
-                background=#00000066 padding="2vw" {
-                section width="100%" max-height="72dvh" overflow-y="auto"
-                    background=(theme::MENU_BG) color=(theme::INK) border=((theme::BORDER_STRONG, 2)) border-radius="12px"
-                    padding="10px" gap="7px" {
-                    div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
-                        span font-weight=bold { "Choose the blank tile’s letter:" }
+                background=(theme::SCRIM) padding=(theme::SPACE_2) {
+                section width="100%" max-width=(theme::PAGE_NARROW + 40) max-height="78dvh" overflow-y="auto"
+                    background=(theme::MENU_BG) color=(theme::INK)
+                    border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
+                    border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_3) {
+                    div width="100%" direction="row" justify-content="space-between" align-items="center" gap=(theme::SPACE_2) {
+                        div direction="row" align-items="center" gap=(theme::SPACE_3) min-width=0 {
+                            (blank_tile)
+                            div gap=2 min-width=0 {
+                                span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold { "Choose the blank tile’s letter:" }
+                                span color=(theme::INK_MUTED) font-size=(theme::TEXT_XS) { "Blanks score 0 points but can be any letter." }
+                            }
+                        }
                         form hx-post=(action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, "CANCEL_TILE_PICK"))
-                            button type=submit background=(theme::WHITE) color=(theme::LINK) border=((theme::SECONDARY_EDGE, 1))
-                                border-radius="999px" padding-y="5px" padding-x="9px" cursor=pointer { "Cancel" }
+                            (ui::submit_button("Cancel", ButtonVariant::Secondary, ButtonSize::Small))
                         }
                     }
-                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap="5px" {
+                    div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) justify-content="center" gap=6 {
                         @for letter in 'A'..='Z' {
+                            @let chosen = draft.selected_blank_letter == Some(letter);
                             form hx-post=(action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "CHOOSE_BLANK_LETTER"))
                                 input type=hidden name="letter" value=(letter.to_string());
-                                button type=submit data-blank-letter=(letter.to_string()) width="38px" height="38px" border=((theme::SQUARE_LINE, 1))
-                                    background=(if draft.selected_blank_letter == Some(letter) { theme::BLANK_LETTER_CHOSEN } else { theme::WHITE })
-                                    border-radius="7px" font-weight=bold cursor=pointer { (letter) }
+                                button type=submit data-blank-letter=(letter.to_string()) width=44 height=44 min-width=44
+                                    background=(if chosen { theme::BLANK_LETTER_CHOSEN } else { theme::TILE })
+                                    color=(theme::TILE_INK)
+                                    border=((theme::TILE_EDGE, 1)) border-bottom=((theme::TILE_EDGE, 4))
+                                    border-radius=(theme::RADIUS_SM + 1) align-items="center" justify-content="center"
+                                    font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG + 2) font-weight=bold cursor=pointer
+                                    fx-hover=(ActionType::set_background_self(theme::TILE_HI))
+                                    fx-click=(ActionType::set_background_self(theme::BLANK_LETTER_CHOSEN)) {
+                                    (letter)
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
-    .into()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Turn actions
+// ---------------------------------------------------------------------------
+
+/// A compact icon+label secondary button for the dock (Shuffle, Recall, Cancel).
+fn dock_submit_button(label: &str) -> Container {
+    ui::submit_button(label, ButtonVariant::Secondary, ButtonSize::Small)
+}
+
+/// The dominant call to action in the dock ("Play · 12", "Confirm exchange").
+fn hero_submit_button(label: &str, variant: ButtonVariant) -> Container {
+    let style = ui::button_style(variant);
+    let label = label.to_string();
+    one(container! {
+        button type=submit class="primary-turn-action" width="100%"
+            padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
+            background=(style.background) color=(style.ink)
+            border=((style.edge, theme::EDGE_THIN)) border-bottom=((style.edge, 6))
+            border-radius=(theme::RADIUS_LG) align-items="center" justify-content="center" text-align="center"
+            font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG + 2) font-weight=bold cursor=pointer
+            white-space="preserve"
+            fx-hover=(ActionType::set_background_self(style.hover)) {
+            (label)
+        }
+    })
+}
+
+/// A full-width menu row button inside the "More" sheet.
+fn sheet_submit_button(label: &str, variant: ButtonVariant) -> Container {
+    let mut button = ui::submit_button(label, variant, ButtonSize::Medium);
+    button.width = Some(Number::IntegerPercent(100));
+    button
 }
 
 #[allow(clippy::too_many_lines)]
@@ -524,29 +865,25 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
         .candidate
         .filter(wwmtf_game_domain::CandidatePlayAnalysis::is_valid)
         .map(|candidate| candidate.play.score);
-    container! {
-        section id="turn-actions" class="turn-composer action-hud" max-width="100%" position="relative" padding-y="4px" padding-x="6px"
-            background=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f7d8ae" } else { theme::NIGHT_RAISED })
-            color=(if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#402c1e" } else { theme::NIGHT_INK })
-            border=((if matches!(draft.mode, TurnMode::ConfirmExchange | TurnMode::ConfirmPass | TurnMode::ConfirmResign) { "#f3b66e" } else { theme::NIGHT_LINE }, 1))
-            border-radius="10px" {
+    let play_label =
+        play_score.map_or_else(|| "Play".to_string(), |score| format!("Play · {score}"));
+    let more_style = ui::button_style(ButtonVariant::Night);
+    one(container! {
+        section id="turn-actions" class="turn-composer action-hud" width="100%" max-width="100%" position="relative" {
             @if draft.mode == TurnMode::Exchange {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden"
-                    align-items="center" gap="6px" {
-                    form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
+                    form hx-post=(compose_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                         (compose_form_fields(game, draft, "REVIEW_EXCHANGE"))
-                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=(theme::PRIMARY) color=(theme::ON_PRIMARY)
-                            border=((theme::PRIMARY_EDGE, 2)) border-radius="11px" font-weight=bold cursor=pointer { "Review exchange" }
+                        (hero_submit_button("Review exchange", ButtonVariant::Sunny))
                     }
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                         (compose_form_fields(game, draft, "CANCEL_MODE"))
-                        button type=submit padding-y=10 padding-x=14 background=(theme::WHITE) color=(theme::LINK)
-                            border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Cancel" }
+                        (dock_submit_button("Cancel"))
                     }
                 }
             } @else if draft.mode == TurnMode::ConfirmExchange {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden" gap="6px" {
-                    form hx-post=(turn_action.as_str()) hx-target="#app-page" {
+                div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
+                    form hx-post=(turn_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                         input type=hidden name="command" value="EXCHANGE";
                         input type=hidden name="command_id" value=(command_id.as_str());
                         input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
@@ -554,13 +891,11 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
                         @for (index, tile_id) in draft.exchange_tiles.iter().enumerate() {
                             input type=hidden name=(format!("tile_{index}")) value=(tile_id);
                         }
-                        button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=(theme::PRIMARY) color=(theme::ON_PRIMARY)
-                            border=((theme::PRIMARY_EDGE, 2)) border-radius="11px" font-weight=bold cursor=pointer { "Confirm exchange" }
+                        (hero_submit_button("Confirm exchange", ButtonVariant::Sunny))
                     }
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                         (compose_form_fields(game, draft, "CANCEL_MODE"))
-                        button type=submit padding-y=10 padding-x=14 background=(theme::WHITE) color=(theme::LINK)
-                            border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Cancel" }
+                        (dock_submit_button("Cancel"))
                     }
                 }
             } @else if draft.mode == TurnMode::ConfirmPass {
@@ -568,24 +903,21 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
             } @else if draft.mode == TurnMode::ConfirmResign {
                 (confirmed_command_forms(game, draft, "RESIGN", "Confirm resignation", &command_id, &idempotency_key))
             } @else {
-                div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden"
-                    align-items="center" justify-content="space-between" gap="6px" {
+                div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
                     @if !game.completed {
                         form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, "SHUFFLE_RACK"))
-                            button type=submit padding-y=7 padding-x=10 background=(theme::WHITE) color=(theme::LINK)
-                                border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Shuffle" }
+                            (dock_submit_button("⇄ Shuffle"))
                         }
                     }
                     @if !draft.placements.is_empty() {
                         form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                             (compose_form_fields(game, draft, "CLEAR"))
-                            button type=submit padding-y=7 padding-x=10 background=(theme::WHITE) color=(theme::LINK)
-                                border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Recall" }
+                            (dock_submit_button("↺ Recall"))
                         }
                     }
                     @if !draft.placements.is_empty() && viewer_turn {
-                        form hx-post=(turn_action.as_str()) hx-target="#app-page" {
+                        form hx-post=(turn_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                             input type=hidden name="command" value="PLAY";
                             input type=hidden name="command_id" value=(command_id.as_str());
                             input type=hidden name="idempotency_key" value=(idempotency_key.as_str());
@@ -598,45 +930,58 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
                                     input type=hidden name=(format!("blank_{index}")) value=(letter.to_string());
                                 }
                             }
-                            button type=submit class="primary-turn-action" padding-y=7 padding-x=12 background=(theme::PRIMARY) color=(theme::ON_PRIMARY)
-                                border=((theme::PRIMARY_EDGE, 2)) border-radius="9px" font-weight=bold cursor=pointer {
-                                @if let Some(score) = play_score { "Play · " (score) } @else { "Play" }
-                            }
+                            (hero_submit_button(&play_label, ButtonVariant::Primary))
+                        }
+                    } @else {
+                        div class="play-placeholder" flex=1 min-width=0 align-items="center" justify-content="center"
+                            padding-y=(theme::SPACE_3) border=((theme::NIGHT_LINE, theme::EDGE_THIN))
+                            border-radius=(theme::RADIUS_LG) color=(theme::NIGHT_INK_MUTED)
+                            font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold
+                            white-space="preserve" text-align="center" {
+                            "Place tiles to play"
                         }
                     }
                     @if !game.completed && viewer_turn {
                         button type=button fx-click=(ActionType::toggle_display_by_id("more-turn-actions-menu"))
-                            color=(theme::NIGHT_INK) font-weight=bold padding-y="7px" padding-x="6px"
-                            cursor=pointer { "More ···" }
+                            padding-y=6 padding-x=(theme::SPACE_3)
+                            background=(more_style.background) color=(more_style.ink)
+                            border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((more_style.edge, 3))
+                            border-radius=(theme::RADIUS_PILL) font-size=(theme::TEXT_SM) font-weight=bold
+                            white-space="preserve" cursor=pointer
+                            fx-hover=(ActionType::set_background_self(more_style.hover)) { "More ···" }
                     }
                 }
                 @if !game.completed && viewer_turn {
                     div id="more-turn-actions-menu" hidden position="absolute" bottom="100%" right=0
-                        background=(theme::WHITE) color=(theme::INK) border=(("#d8d1c1", 1)) border-radius="12px"
-                        padding="12px" gap="8px" {
+                        width=240 max-width="100%" margin-bottom=(theme::SPACE_2)
+                        background=(theme::MENU_BG) color=(theme::INK)
+                        border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
+                        border-radius=(theme::RADIUS_LG) padding=(theme::SPACE_3) gap=(theme::SPACE_2) {
+                        div direction="row" justify-content="space-between" align-items="center" {
+                            (ui::eyebrow("MORE MOVES", theme::ACCENT))
+                            button type=button fx-click=(ActionType::no_display_by_id("more-turn-actions-menu"))
+                                color=(theme::INK_MUTED) font-size=(theme::TEXT_LG) font-weight=bold cursor=pointer
+                                padding-x=6 { "×" }
+                        }
                         @if game.exchange_available {
-                            form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                            form hx-post=(compose_action.as_str()) hx-target="#app-page" width="100%" {
                                 (compose_form_fields(game, draft, "BEGIN_EXCHANGE"))
-                                button type=submit padding-y=8 padding-x=12 background=(theme::WHITE) color=(theme::LINK)
-                                    border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Exchange" }
+                                (sheet_submit_button("⇅ Exchange", ButtonVariant::Secondary))
                             }
                         }
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        form hx-post=(compose_action.as_str()) hx-target="#app-page" width="100%" {
                             (compose_form_fields(game, draft, "CONFIRM_PASS"))
-                            button type=submit padding-y=8 padding-x=12 background=(theme::WHITE) color=(theme::LINK)
-                                border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Pass" }
+                            (sheet_submit_button("→ Pass", ButtonVariant::Secondary))
                         }
-                        form hx-post=(compose_action.as_str()) hx-target="#app-page" {
+                        form hx-post=(compose_action.as_str()) hx-target="#app-page" width="100%" {
                             (compose_form_fields(game, draft, "CONFIRM_RESIGN"))
-                            button type=submit padding-y=8 padding-x=12 background=(theme::WHITE) color=(theme::DANGER_INK)
-                                border=((theme::DANGER_EDGE, 1)) border-radius="9px" cursor=pointer { "Resign" }
+                            (sheet_submit_button("⚑ Resign", ButtonVariant::Danger))
                         }
                     }
                 }
             }
         }
-    }
-    .into()
+    })
 }
 
 pub fn confirmed_command_forms(
@@ -649,104 +994,165 @@ pub fn confirmed_command_forms(
 ) -> Container {
     let turn_action = format!("/games/{}/turn", game.game_id);
     let compose_action = format!("/games/{}/compose", game.game_id);
-    container! {
-        div class="primary-action-row" direction="row" overflow-x="auto" overflow-y="hidden" gap="6px" {
-            form hx-post=(turn_action.as_str()) hx-target="#app-page" {
+    let variant = if command == "RESIGN" {
+        ButtonVariant::Danger
+    } else {
+        ButtonVariant::Sunny
+    };
+    one(container! {
+        div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
+            form hx-post=(turn_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                 input type=hidden name="command" value=(command);
                 input type=hidden name="command_id" value=(command_id);
                 input type=hidden name="idempotency_key" value=(idempotency_key);
                 input type=hidden name="expected_revision" value=(game.view.revision);
-                button type=submit class="primary-turn-action" padding-y=10 padding-x=14 background=(theme::PRIMARY) color=(theme::ON_PRIMARY)
-                    border=((theme::PRIMARY_EDGE, 2)) border-radius="11px" font-weight=bold cursor=pointer { (label) }
+                (hero_submit_button(label, variant))
             }
             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                 (compose_form_fields(game, draft, "CANCEL_MODE"))
-                button type=submit padding-y=10 padding-x=14 background=(theme::WHITE) color=(theme::LINK)
-                    border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Cancel" }
+                (dock_submit_button("Cancel"))
             }
         }
-    }
-    .into()
+    })
 }
 
+// ---------------------------------------------------------------------------
+// Scoreboard and results
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::too_many_lines)]
 pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
-    let current_turn_name = game
-        .participants
-        .iter()
-        .find(|participant| participant.player_id == game.view.active_player)
-        .map_or("Player", |participant| participant.display_name.as_str());
+    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
     let turn = if game.completed {
         "Game complete".to_string()
-    } else if game.view.active_player == game.viewer_player {
+    } else if viewer_turn {
         "Your move".to_string()
     } else {
-        format!("{current_turn_name}'s move")
+        format!("{}'s move", active_player_name(game))
     };
-    container! {
-        section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
-            overflow-x="auto" overflow-y="hidden" background=#f4c95d color=#2d2515
-            border=(("#ffe29a", 2)) border-radius="16px" padding-y="6px" padding-x="8px" gap="5px" {
-            div min-width=0 align-items="center" {
-                span id="named-turn-status" font-size="11px" font-weight=bold white-space="preserve" { (turn) }
-                div direction="row" gap="5px" align-items="center" {
-                    span id="live-status-connected" hidden fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "● Live" }
-                    span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                    span id="live-status-disconnected" hidden fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
-                }
-            }
-            div id="participant-scoreboard" direction="row" gap="6px" min-width=0 overflow-x="auto" overflow-y="hidden" {
-                @for participant in &game.participants {
-                    @let public = game.view.players.iter().find(|player| player.player_id == participant.player_id);
-                    @let score = public.map_or(0, |player| player.score);
-                    @let is_viewer = participant.player_id == game.viewer_player;
-                    @let active = public.is_some_and(|player| player.active);
-                    @let leader = public.is_some_and(|player| player.leader);
-                    @let initial = participant.username.chars().next().unwrap_or('?').to_uppercase().to_string();
-                    @let state = if game.completed && leader {
-                        "Leader"
-                    } else if game.completed {
-                        "Completed"
-                    } else if !active {
-                        "Resigned"
-                    } else if participant.player_id == game.view.active_player {
-                        "Playing"
-                    } else {
-                        "Waiting"
-                    };
-                    div id=(format!("player-scoreboard-{}", participant.player_id.as_uuid()))
-                        direction="row" align-items="center" gap="5px" flex="0 0 auto"
-                        background=(if is_viewer { "#fff1bd" } else { "#e1bd63" })
-                        border=((if leader { "#2e7049" } else { "#b08e43" }, 2)) border-radius="999px"
-                        padding-y="3px" padding-x="6px" {
-                        @if let Some(avatar_url) = participant.avatar_url.as_deref() {
-                            image src=(avatar_url) alt=(format!("{} profile avatar", participant.display_name)) width="30" height="30" border-radius="999px";
-                        } @else {
-                            span width="30px" height="30px" border-radius="999px"
-                                background=(if active { "#2e7049" } else { "#776f5d" }) color=(theme::WHITE)
-                                align-items="center" justify-content="center" font-size="14px" font-weight=bold { (initial) }
-                        }
-                        div gap="1px" min-width="70px" {
-                            span font-size="12px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                                (participant.display_name.as_str()) @if is_viewer { " (you)" }
-                            }
-                            span font-size="10px" white-space="preserve" { (state) }
-                        }
-                        span min-width="30px" align-items="center" justify-content="center"
-                            background=(theme::WHITE) border-radius="999px" padding-y="2px" padding-x="5px"
-                            font-size="17px" font-weight=bold { (score) }
+    let pills = game
+        .participants
+        .iter()
+        .enumerate()
+        .map(|(index, participant)| {
+            let public = game
+                .view
+                .players
+                .iter()
+                .find(|player| player.player_id == participant.player_id);
+            let score = public.map_or(0, |player| player.score);
+            let is_viewer = participant.player_id == game.viewer_player;
+            let active = public.is_some_and(|player| player.active);
+            let leader = public.is_some_and(|player| player.leader);
+            let playing = !game.completed && participant.player_id == game.view.active_player;
+            let seat = theme::seat_color(index);
+            let uuid = participant.player_id.as_uuid();
+            let avatar = ui::avatar(
+                &participant.display_name,
+                participant.avatar_url.as_deref(),
+                seat,
+                HEADER_AVATAR,
+            );
+            let name = if is_viewer {
+                format!("{} (you)", participant.display_name)
+            } else {
+                participant.display_name.clone()
+            };
+            let (fill, ink, edge) = if playing {
+                (seat.fill, seat.ink, seat.edge)
+            } else {
+                (theme::NIGHT_RAISED, theme::NIGHT_INK, theme::NIGHT_BORDER)
+            };
+            one(container! {
+                div id=(format!("player-scoreboard-{uuid}"))
+                    direction="row" align-items="center" gap=6
+                    background=(fill) color=(ink)
+                    border=((if playing { theme::WHITE } else { theme::NIGHT_LINE }, theme::EDGE_THIN))
+                    border-bottom=((edge, 4))
+                    border-radius=(theme::RADIUS_PILL) padding-y=2 padding-left=2 padding-right=10
+                    opacity=(if active || game.completed { 1.0 } else { 0.5 }) {
+                    (avatar)
+                    span id=(format!("player-scoreboard-name-{uuid}"))
+                        font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
+                        text-overflow="ellipsis" overflow-x="hidden" max-width=110
+                        hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) {
+                        (name)
+                    }
+                    span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold white-space="preserve" {
+                        @if game.completed && leader { "★ " }
+                        (score)
                     }
                 }
+            })
+        })
+        .collect::<Vec<_>>();
+    one(container! {
+        section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
+            align-items="center" gap=3 overflow-x="hidden" overflow-y="hidden" {
+            div id="participant-scoreboard" direction="row" justify-content="center" gap=6 max-width="100%"
+                min-width=0 overflow-x="auto" overflow-y="hidden" padding-bottom=1 {
+                (pills)
+            }
+            div direction="row" align-items="center" justify-content="center" gap=6 max-width="100%" {
+                span id="live-status-connected" hidden color=(theme::LATEST_MOVE) font-size=(theme::TEXT_XS) font-weight=bold
+                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "●" }
+                span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                span id="live-status-disconnected" hidden color=(theme::DANGER) font-size=(theme::TEXT_XS) font-weight=bold
+                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
+                span id="named-turn-status" font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
+                    text-overflow="ellipsis" overflow-x="hidden"
+                    color=(if viewer_turn { theme::PRIMARY } else { theme::NIGHT_INK_MUTED }) { (turn) }
             }
         }
-    }
-    .into()
+    })
 }
 
+/// Takes the single element out of a `container!` result so callers can splice it into flex
+/// layouts without an extra wrapper `div`.
+fn one(mut items: Vec<Container>) -> Container {
+    if items.len() == 1 {
+        items.remove(0)
+    } else {
+        Container::from(items)
+    }
+}
+
+fn completed_outcome(game: &AuthorizedGamePage) -> (String, bool) {
+    let leaders = game
+        .participants
+        .iter()
+        .filter(|participant| {
+            game.view
+                .players
+                .iter()
+                .any(|player| player.player_id == participant.player_id && player.leader)
+        })
+        .collect::<Vec<_>>();
+    let viewer_won = leaders.len() == 1 && leaders[0].player_id == game.viewer_player;
+    let outcome = if leaders.len() > 1 {
+        format!(
+            "Co-leaders: {}",
+            leaders
+                .iter()
+                .map(|leader| leader.display_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if let Some(leader) = leaders.first() {
+        format!("{} won", leader.display_name)
+    } else {
+        "Game complete".to_string()
+    };
+    (outcome, viewer_won)
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
     let mut standings = game
         .participants
         .iter()
-        .filter_map(|participant| {
+        .enumerate()
+        .filter_map(|(seat, participant)| {
             game.view
                 .players
                 .iter()
@@ -760,68 +1166,114 @@ pub fn completed_game_summary(game: &AuthorizedGamePage) -> Container {
                             .copied()
                             .unwrap_or_default(),
                         player.leader,
+                        theme::seat_color(seat),
                     )
                 })
         })
         .collect::<Vec<_>>();
     standings.sort_by_key(|standing| std::cmp::Reverse(standing.1));
-    let leaders = standings
-        .iter()
-        .filter(|standing| standing.3)
-        .map(|standing| standing.0.display_name.as_str())
-        .collect::<Vec<_>>();
-    let outcome = if leaders.len() > 1 {
-        format!("Co-leaders: {}", leaders.join(", "))
-    } else if let Some(leader) = leaders.first() {
-        format!("{leader} won")
-    } else {
-        "Game complete".to_string()
-    };
-    container! {
-        section id="completed-game-summary" width="100%" background=(theme::WHITE) color=(theme::INK) border=(("#c8b88f", 2))
-            border-radius="12px" padding-y="8px" padding-x="10px" gap="6px" {
-            div width="100%" direction="row" justify-content="space-between" align-items="center" gap="8px" {
-                span font-size="18px" font-weight=bold { (outcome) }
-                button type=button fx-click=(ActionType::no_display_by_id("completed-game-summary"))
-                    background=(theme::WHITE) color=(theme::LINK) border=((theme::SECONDARY_EDGE, 1)) border-radius="999px"
-                    padding-y="4px" padding-x="8px" cursor=pointer { "Close" }
+    let (outcome, viewer_won) = completed_outcome(game);
+    let banner_word = if viewer_won { "WIN" } else { "GG" };
+    let banner = banner_word
+        .chars()
+        .enumerate()
+        .map(|(index, letter)| {
+            let mut tile = ui::tile_face(&letter.to_string(), None, 44);
+            if index % 2 == 1 {
+                tile.translate_y = Some(Number::Integer(5));
             }
-            div id="final-standings" width="100%" overflow-x="auto" overflow-y="hidden" gap="4px" {
-                @for (rank, (participant, score, adjustment, leader)) in standings.iter().enumerate() {
-                    @let is_viewer = participant.player_id == game.viewer_player;
-                    div direction="row" justify-content="space-between" align-items="center" gap="8px"
-                        border-bottom=((theme::BORDER, 1)) padding-y="4px" padding-x="2px" {
-                        span {
-                            @if *leader { span font-weight=bold { (rank + 1) ". " (participant.display_name.as_str()) } }
-                            @else { span { (rank + 1) ". " (participant.display_name.as_str()) } }
-                            @if is_viewer { " (you)" }
-                            @if *leader { " · leader" }
-                        }
-                        span white-space="preserve" {
-                            (score) @if *adjustment != 0 { " (" (format!("{adjustment:+}")) ")" }
+            tile
+        })
+        .collect::<Vec<_>>();
+    let rematch_action = format!("/games/{}/rematch", game.game_id);
+    let rematch_style = ui::button_style(ButtonVariant::Primary);
+    one(container! {
+        section id="completed-game-summary" position="fixed" top=0 right=0 bottom=0 left=0
+            width="100vw" height="100dvh" align-items="center" justify-content="center"
+            background=(theme::SCRIM) padding=(theme::SPACE_4) {
+            section class="results-card" width="100%" max-width=(theme::PAGE_NARROW - 40) max-height="88dvh" overflow-y="auto"
+                background=(theme::MENU_BG) color=(theme::INK)
+                border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 7))
+                border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_5) gap=(theme::SPACE_4) align-items="center" {
+                div width="100%" direction="row" justify-content="end" {
+                    (ui::action_button("Close", ButtonVariant::Ghost, ButtonSize::Small, ActionType::no_display_by_id("completed-game-summary")))
+                }
+                div direction="row" gap=6 align-items="start" { (banner) }
+                div align-items="center" gap=2 text-align="center" {
+                    (ui::eyebrow("FINAL SCORES", theme::ACCENT))
+                    span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XXL) font-weight=bold text-align="center" { (outcome) }
+                    @if let Some(reason) = &game.completion_reason {
+                        span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { "Completed by: " (reason.as_str()) }
+                    }
+                }
+                div id="final-standings" width="100%" overflow-x="hidden" overflow-y="hidden" gap=(theme::SPACE_2) {
+                    @for (rank, (participant, score, adjustment, leader, seat)) in standings.iter().enumerate() {
+                        @let is_viewer = participant.player_id == game.viewer_player;
+                        @let avatar = ui::avatar(&participant.display_name, participant.avatar_url.as_deref(), *seat, 36);
+                        div direction="row" align-items="center" gap=(theme::SPACE_3)
+                            background=(if *leader { theme::SUNNY_SOFT } else { theme::SURFACE })
+                            border=((if *leader { theme::SUNNY } else { theme::BORDER }, theme::EDGE_THIN))
+                            border-bottom=((if *leader { theme::SUNNY_EDGE } else { theme::BORDER_STRONG }, 4))
+                            border-radius=(theme::RADIUS_LG) padding-y=(theme::SPACE_2) padding-x=(theme::SPACE_3) {
+                            span width=30 min-width=30 height=30 border-radius=(theme::RADIUS_PILL)
+                                align-items="center" justify-content="center"
+                                background=(if *leader { theme::SUNNY } else { theme::SURFACE_LAVENDER })
+                                color=(if *leader { theme::ON_SUNNY } else { theme::INK_MUTED })
+                                font-family=(theme::FONT_DISPLAY) font-weight=bold {
+                                @if *leader { "★" } @else { (rank + 1) }
+                            }
+                            (avatar)
+                            div flex=1 min-width=0 gap=1 {
+                                span font-weight=bold white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
+                                    (rank + 1) ". " (participant.display_name.as_str())
+                                    @if is_viewer { " (you)" }
+                                    @if *leader { " · leader" }
+                                }
+                                @if *adjustment != 0 {
+                                    span font-size=(theme::TEXT_XS) font-weight=bold
+                                        color=(if *adjustment > 0 { theme::PRIMARY_INK } else { theme::DANGER_INK }) {
+                                        "Rack adjustment " (format!("{adjustment:+}"))
+                                    }
+                                }
+                            }
+                            span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) font-weight=bold white-space="preserve" {
+                                (score) @if *adjustment != 0 { " (" (format!("{adjustment:+}")) ")" }
+                            }
                         }
                     }
                 }
-            }
-            @if let Some(reason) = &game.completion_reason {
-                span color=(theme::INK_MUTED) { "Completed by: " (reason.as_str()) }
+                div width="100%" direction="row" gap=(theme::SPACE_2) align-items="center" {
+                    form hx-post=(rematch_action) hx-target="#app-page" flex=1 min-width=0 {
+                        button type=submit width="100%" padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
+                            background=(rematch_style.background) color=(rematch_style.ink)
+                            border=((rematch_style.edge, theme::EDGE_THIN)) border-bottom=((rematch_style.edge, 6))
+                            border-radius=(theme::RADIUS_LG) font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG)
+                            font-weight=bold cursor=pointer align-items="center" justify-content="center"
+                            fx-hover=(ActionType::set_background_self(rematch_style.hover)) { "Rematch" }
+                    }
+                    (ui::link_button("/", "Back to games", ButtonVariant::Secondary, ButtonSize::Medium))
+                }
             }
         }
-    }
-    .into()
+    })
 }
+
+// ---------------------------------------------------------------------------
+// Drawers: rules, bag, menu
+// ---------------------------------------------------------------------------
 
 pub fn rules_component(game: &AuthorizedGamePage) -> Container {
     let exchange_requirement = game.rules.minimum_tiles_for_exchange;
     let rack_size = game.rules.rack_size;
     let full_rack_bonus = game.rules.full_rack_bonus;
     let scoreless_turn_limit = game.rules.scoreless_turn_limit;
-    container! {
-        details id="game-rules" width="100%" {
-            summary cursor="pointer" font-weight=bold { "Rules and board key" }
-            div padding-top="12px" gap="9px" color=(theme::INK_MUTED) {
+    one(container! {
+        details id="game-rules" width="100%" background=(theme::SURFACE) border=((theme::BORDER, theme::EDGE_THIN))
+            border-radius=(theme::RADIUS_MD) padding=(theme::SPACE_3) {
+            summary cursor="pointer" font-weight=bold color=(theme::INK) { "How to play" }
+            div padding-top=(theme::SPACE_3) gap=(theme::SPACE_2) color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) {
                 span { "Place tiles in one row or column to form connected words. The opening play must cover the center star. All formed words must be accepted by this game’s pinned dictionary." }
-                span { "A tile scores its printed value. DL and TL multiply a newly placed tile; DW and TW multiply the whole word. Premium squares apply only when first covered." }
+                span { "A tile scores its printed value. 2L and 3L multiply a newly placed tile; 2W and 3W multiply the whole word. Premium squares apply only when first covered." }
                 span { "Playing all " (rack_size) " rack tiles adds a " (full_rack_bonus) "-point full-rack bonus." }
                 span { "Exchange replaces selected tiles and ends your turn. It is available only while at least " (exchange_requirement) " tiles remain in the reserve; exchanged tile identities stay private." }
                 span { "Passing ends your turn without playing. Three uninterrupted complete rounds of passes by all active players end the game. For the classic two-player profile this is " (scoreless_turn_limit) " consecutive passes; the threshold scales with active membership." }
@@ -829,8 +1281,46 @@ pub fn rules_component(game: &AuthorizedGamePage) -> Container {
                 span { "When the game ends, remaining rack values are applied according to the completion reason. Final adjusted scores determine the ordered standings, and equal highest scores produce co-leaders." }
             }
         }
-    }
-    .into()
+    })
+}
+
+/// One swatch in the board key legend.
+fn legend_item(
+    fill: &'static str,
+    ink: &'static str,
+    edge: &'static str,
+    label: &str,
+    meaning: &str,
+) -> Container {
+    let label = label.to_string();
+    let meaning = meaning.to_string();
+    one(container! {
+        div direction="row" align-items="center" gap=(theme::SPACE_2) width="47%" min-width=130 {
+            span width=28 height=28 min-width=28 border-radius=5 background=(fill) color=(ink)
+                border=((edge, 1)) border-bottom=((edge, 3))
+                align-items="center" justify-content="center"
+                font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XS) font-weight=bold { (label) }
+            span font-size=(theme::TEXT_XS) font-weight=bold color=(theme::INK_MUTED) { (meaning) }
+        }
+    })
+}
+
+fn board_key_component() -> Container {
+    one(container! {
+        section id="board-key" gap=(theme::SPACE_2) {
+            h3 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { "Board key" }
+            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
+                (legend_item(theme::PREMIUM_DL, theme::PREMIUM_DL_INK, theme::PREMIUM_DL, "2L", "Double letter"))
+                (legend_item(theme::PREMIUM_TL, theme::PREMIUM_TL_INK, theme::PREMIUM_TL, "3L", "Triple letter"))
+                (legend_item(theme::PREMIUM_DW, theme::PREMIUM_DW_INK, theme::PREMIUM_DW, "2W", "Double word"))
+                (legend_item(theme::PREMIUM_TW, theme::PREMIUM_TW_INK, theme::PREMIUM_TW, "3W", "Triple word"))
+                (legend_item(theme::PREMIUM_START, theme::PREMIUM_START_INK, theme::PREMIUM_START, "★", "Start square"))
+                (legend_item(theme::TILE_PENDING, theme::TILE_PENDING_INK, theme::TILE_PENDING_EDGE, "A", "Your draft"))
+                (legend_item(theme::TILE_HI, theme::TILE_INK, theme::LATEST_MOVE, "A", "Latest move"))
+                (legend_item(theme::SQUARE, theme::PRIMARY_EDGE, theme::PRIMARY, "", "Playable spot"))
+            }
+        }
+    })
 }
 
 pub fn live_status_action(visible_id: &str) -> ActionType {
@@ -845,27 +1335,56 @@ pub fn live_status_action(visible_id: &str) -> ActionType {
 
 pub fn remaining_tiles_component(game: &AuthorizedGamePage) -> Container {
     let faces = game.view.remaining_tile_faces.as_deref();
-    container! {
-        section id="remaining-tiles" gap="8px" {
-            h3 { "Tiles remaining" }
+    one(container! {
+        section id="remaining-tiles" gap=(theme::SPACE_3) {
             @if let Some(count) = game.view.remaining_tile_count {
-                span { (count) " tile" (if count == 1 { "" } else { "s" }) " in the bag" }
+                div direction="row" align-items="center" gap=(theme::SPACE_3)
+                    background=(theme::SUNNY_SOFT) border=((theme::SUNNY, theme::EDGE_THIN))
+                    border-radius=(theme::RADIUS_LG) padding=(theme::SPACE_3) {
+                    span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XXL) font-weight=bold color=(theme::ON_SUNNY) { (count) }
+                    span font-weight=bold color=(theme::ON_SUNNY) { "tile" (if count == 1 { "" } else { "s" }) " in the bag" }
+                }
             }
             @if let Some(faces) = faces {
-                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap="6px" {
+                h3 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { "Tiles remaining" }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=(theme::SPACE_2) {
                     @for face in faces {
-                        span background=(theme::TILE) color=(theme::INK) border=((theme::TILE_EDGE, 1))
-                            border-radius="7px" padding-y="5px" padding-x="8px" {
-                            (face.letter.map_or_else(|| "Blank".to_string(), |letter| letter.to_string()))
-                            " × " (face.count)
+                        @let letter = face.letter.map_or_else(|| "?".to_string(), |letter| letter.to_string());
+                        @let tile = ui::tile_face(&letter, None, 32);
+                        div align-items="center" gap=2 width=40 {
+                            (tile)
+                            span font-size=(theme::TEXT_XS) font-weight=bold color=(theme::INK_MUTED) { "×" (face.count) }
                         }
                     }
                 }
             }
         }
-    }
-    .into()
+    })
 }
+
+/// Shared chrome for the bag and menu drawers.
+fn drawer_shell(id: &str, max_height: &str, children: impl Into<Vec<Container>>) -> Container {
+    let children: Vec<Container> = children.into();
+    let id = id.to_string();
+    let max_height = max_height.to_string();
+    one(container! {
+        aside id=(id) hidden position="fixed" top=64 right=8 width=(DRAWER_WIDTH) max-width="92vw"
+            max-height=(max_height) overflow-y="auto" background=(theme::MENU_BG) color=(theme::INK)
+            border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
+            border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_4) {
+            (children)
+        }
+    })
+}
+
+/// A round header control (back, bag, menu) on the night scene.
+const fn header_control_style() -> ui::ButtonStyle {
+    ui::button_style(ButtonVariant::Night)
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
 pub fn visual_game_page(
@@ -874,7 +1393,7 @@ pub fn visual_game_page(
     error: Option<&str>,
 ) -> Container {
     let game_id = game.game_id.to_string();
-    let short_game_id = game_id.chars().take(8).collect::<String>();
+    let short_game_id = game_id.chars().take(8).collect::<String>().to_uppercase();
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(game, &feedback, draft);
@@ -892,35 +1411,75 @@ pub fn visual_game_page(
     };
     let refresh_game = ActionType::Navigate { url: game_path };
     let turn_feedback_view = turn_feedback(error);
-    container! {
+    let control = header_control_style();
+    let active_name = active_player_name(game).to_string();
+    let active_seat = participant_seat(game, game.view.active_player);
+    let active_avatar = game
+        .participants
+        .iter()
+        .find(|participant| participant.player_id == game.view.active_player)
+        .map(|participant| {
+            ui::avatar(
+                &participant.display_name,
+                participant.avatar_url.as_deref(),
+                active_seat,
+                24,
+            )
+        });
+    let (outcome, _) = completed_outcome(game);
+    let has_bag =
+        game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some();
+    // Keep the wrapper so `#app-page` is rendered (see `definition_page`).
+    Container::from(container! {
         div id="app-page" font-family=(theme::FONT_UI) class="game-scene" data-shared-state-channel=(game_channel.as_str())
             direction="column" width=vw100 height=dvh100 min-height=dvh100
             position="fixed" top=0 right=0 bottom=0 left=0
             overflow-x="hidden" overflow-y="hidden"
-            background=(theme::NIGHT) color=(theme::NIGHT_INK) gap="6px" {
+            background=(theme::NIGHT) color=(theme::NIGHT_INK) gap=4 {
             span id="game-live-refresh" hidden fx-global-shared-state-event=(refresh_game) { }
             header id="scene-controls" width="100%" min-width=0 direction="row"
-                align-items="center" gap="6px" padding-y="8px" padding-x="6px" {
-                div class="header-action-slot header-action-left" min-width=0 flex=1 direction="row" justify-content="start" {
-                    anchor href="/" flex="0 0 auto" background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK) border=((theme::NIGHT_LINE, 1))
-                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold { "← Leave" }
+                align-items="center" gap=(theme::SPACE_2) padding-top=(theme::SPACE_2) padding-x=(theme::SPACE_2) {
+                div class="header-action-slot header-action-left" direction="row" justify-content="start" {
+                    anchor href="/" id="leave-game" width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
+                        background=(control.background) color=(control.ink)
+                        border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                        border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
+                        font-size=(theme::TEXT_LG) font-weight=bold text-decoration="none"
+                        fx-hover=(ActionType::set_background_self(control.hover)) { "←" }
                 }
                 (scoreboard)
-                div class="header-action-slot header-action-right" min-width=0 flex=1 direction="row" justify-content="end" gap="6px" {
-                    @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
+                div class="header-action-slot header-action-right" direction="row" justify-content="end" gap=6 {
+                    @if has_bag {
                         button id="remaining-tiles-button" type=button
                             fx-click=(ActionType::toggle_display_by_id("remaining-tiles-panel"))
-                            background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK) border=((theme::NIGHT_LINE, 1))
-                            border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer {
-                            "Bag"
-                            @if let Some(count) = game.view.remaining_tile_count {
-                                " · " (count)
+                            height=(HEADER_CONTROL) direction="row" align-items="center" gap=5
+                            background=(control.background) color=(control.ink)
+                            border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                            border-radius=(theme::RADIUS_PILL) padding-left=5 padding-right=10
+                            font-weight=bold cursor=pointer white-space="preserve"
+                            fx-hover=(ActionType::set_background_self(control.hover)) {
+                            span width=24 height=24 min-width=24 background=(theme::TILE) color=(theme::TILE_INK)
+                                border-bottom=((theme::TILE_EDGE, 3)) border-radius=6
+                                align-items="center" justify-content="center"
+                                font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XS) font-weight=bold {
+                                @if let Some(count) = game.view.remaining_tile_count { (count) } @else { "?" }
+                            }
+                            span id="remaining-tiles-label" font-size=(theme::TEXT_SM)
+                                hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) {
+                                "Bag"
+                                @if let Some(count) = game.view.remaining_tile_count {
+                                    " · " (count)
+                                }
                             }
                         }
                     }
                     button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
-                        background=(theme::NIGHT_RAISED) color=(theme::NIGHT_INK) border=((theme::NIGHT_LINE, 1))
-                        border-radius="999px" padding-y="7px" padding-x="12px" font-weight=bold cursor=pointer { "Menu ···" }
+                        height=(HEADER_CONTROL) padding-x=(theme::SPACE_3)
+                        background=(control.background) color=(control.ink)
+                        border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                        border-radius=(theme::RADIUS_PILL) font-size=(theme::TEXT_SM) font-weight=bold
+                        white-space="preserve" cursor=pointer
+                        fx-hover=(ActionType::set_background_self(control.hover)) { "Menu ···" }
                 }
             }
             main id="game-layout" class="game-arena" width="100%" min-height=0
@@ -930,21 +1489,39 @@ pub fn visual_game_page(
                     (board)
                 }
             }
-            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center" padding-x="10px" {
-                section id="play-console" class="game-console turn-dock" max-width="100%" align-items="center"
-                    background=(theme::NIGHT_RAISED) border=((theme::NIGHT_BORDER, 3)) border-radius="16px"
-                    padding-y="6px" padding-x="8px" gap="5px" {
-                    @if let Some(completed_summary) = completed_summary {
-                        (completed_summary)
+            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center"
+                padding-x=(theme::SPACE_2) padding-bottom=(theme::SPACE_2) {
+                section id="play-console" class="game-console turn-dock" width="100%" max-width=(DOCK_MAX_WIDTH)
+                    align-items="center" position="relative"
+                    background=(theme::NIGHT_RAISED)
+                    border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((theme::NIGHT_BORDER, 6))
+                    border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_2) gap=(theme::SPACE_2) {
+                    @if game.completed {
+                        section class="dock-message" width="100%" direction="row" align-items="center"
+                            justify-content="space-between" gap=(theme::SPACE_2)
+                            background=(theme::SUNNY) color=(theme::ON_SUNNY)
+                            border=((theme::SUNNY_EDGE, theme::EDGE_THIN)) border-radius=(theme::RADIUS_PILL)
+                            padding-y=4 padding-left=(theme::SPACE_3) padding-right=4 {
+                            span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold
+                                white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
+                                "★ " (outcome)
+                            }
+                            (ui::action_button("Results", ButtonVariant::Secondary, ButtonSize::Small, ActionType::display_by_id("completed-game-summary")))
+                        }
                     } @else if error.is_some() {
                         (turn_feedback_view)
                     } @else if game.view.active_player == game.viewer_player {
                         (draft_preview)
                     } @else {
-                        section class="dock-message" width="100%" direction="row" justify-content="center"
-                            background=(theme::NIGHT_DEEP) border=((theme::NIGHT_LINE, 1)) border-radius="10px" padding-y="4px" padding-x="8px" {
-                            span font-size="13px" font-weight=bold white-space="preserve" text-overflow="ellipsis" {
-                                (game.participants.iter().find(|participant| participant.player_id == game.view.active_player).map_or("Player", |participant| participant.display_name.as_str())) " is playing · rearrange your rack while you wait"
+                        section class="dock-message waiting-banner" width="100%" direction="row" align-items="center"
+                            justify-content="center" gap=(theme::SPACE_2)
+                            background=(active_seat.fill) color=(active_seat.ink)
+                            border=((active_seat.edge, theme::EDGE_THIN)) border-radius=(theme::RADIUS_PILL)
+                            padding-y=4 padding-x=(theme::SPACE_3) {
+                            @if let Some(active_avatar) = active_avatar { (active_avatar) }
+                            span font-size=(theme::TEXT_SM) font-weight=bold white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
+                                span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { (active_name) " is playing" }
+                                " · rearrange your rack while you wait"
                             }
                         }
                     }
@@ -953,77 +1530,75 @@ pub fn visual_game_page(
                         (actions)
                     } @else if !game.completed {
                         @let compose_action = format!("/games/{}/compose", game.game_id);
-                        section id="turn-actions" class="primary-action-row" max-width="100%" direction="row"
-                            justify-content="center" gap="6px" overflow-x="auto" overflow-y="hidden" {
+                        section id="turn-actions" class="primary-action-row" width="100%" max-width="100%" direction="row"
+                            justify-content="center" gap=(theme::SPACE_2) {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "SHUFFLE_RACK"))
-                                button type=submit padding-y=7 padding-x=12 background=(theme::WHITE) color=(theme::LINK)
-                                    border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Shuffle" }
+                                (dock_submit_button("⇄ Shuffle"))
                             }
                             @if !draft.placements.is_empty() {
                                 form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                     (compose_form_fields(game, draft, "CLEAR"))
-                                    button type=submit padding-y=7 padding-x=12 background=(theme::WHITE) color=(theme::LINK)
-                                        border=((theme::SECONDARY_EDGE, 1)) border-radius="9px" cursor=pointer { "Recall" }
+                                    (dock_submit_button("↺ Recall"))
                                 }
                             }
                         }
                     }
                 }
             }
-            @if game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some() {
-                aside id="remaining-tiles-panel" hidden position="fixed" top=62 right=6
-                    width="340px" max-width="92vw" max-height="72vh" overflow-y="auto"
-                    background=(theme::SURFACE_ALT) color=(theme::INK) border=((theme::BORDER_STRONG, 3)) border-radius="18px"
-                    padding-y="16px" padding-x="16px" gap="12px" {
-                    div direction="row" justify-content="space-between" align-items="start" gap="8px" {
-                        h2 { "Bag" }
-                        button type=button fx-click=(ActionType::no_display_by_id("remaining-tiles-panel"))
-                            background=(theme::WHITE) color=(theme::LINK) border=((theme::SECONDARY_EDGE, 1)) border-radius="999px"
-                            padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
+            @if has_bag {
+                (drawer_shell("remaining-tiles-panel", "72vh", container! {
+                    div direction="row" justify-content="space-between" align-items="center" gap=(theme::SPACE_2) {
+                        div gap=2 {
+                            (ui::eyebrow("TILE BAG", theme::ACCENT))
+                            h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) { "Bag" }
+                        }
+                        (drawer_close_button("remaining-tiles-panel"))
                     }
                     (remaining_tiles_component(game))
-                }
+                }))
             }
-            aside id="activity-rail" hidden position="fixed" top=62 right=6 width="340px" max-width="92vw"
-                max-height="78vh" overflow-y="auto" background=(theme::SURFACE_ALT) color=(theme::INK)
-                border=((theme::BORDER_STRONG, 3)) border-radius="18px" padding-y="16px" padding-x="16px" gap="14px" {
-                div direction="row" justify-content="space-between" align-items="start" gap="8px" {
-                    div gap="2px" {
-                        span color=(theme::INK_MUTED) font-size="11px" font-weight=bold { "MATCH " (short_game_id) }
-                        h2 { (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str()) }
+            (drawer_shell("activity-rail", "78vh", container! {
+                div direction="row" justify-content="space-between" align-items="start" gap=(theme::SPACE_2) {
+                    div gap=2 min-width=0 {
+                        (ui::eyebrow(&format!("MATCH {short_game_id}"), theme::ACCENT))
+                        h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) {
+                            (game.opponent_display_name.as_str()) " vs " (game.viewer_display_name.as_str())
+                        }
                     }
-                    button type=button fx-click=(ActionType::no_display_by_id("activity-rail"))
-                        background=(theme::WHITE) color=(theme::LINK) border=((theme::SECONDARY_EDGE, 1)) border-radius="999px"
-                        padding-y="5px" padding-x="9px" cursor=pointer { "Close" }
+                    (drawer_close_button("activity-rail"))
                 }
                 @if let Some(latest) = &game.latest_action {
-                    section id="latest-game-action" background=#e5d6ad border=(("#c7aa68", 1))
-                        border-radius="12px" padding="12px" gap="3px" {
-                        span color=#6d5727 font-size="11px" font-weight=bold { "LATEST" }
-                        span font-weight=bold { (latest.as_str()) }
+                    section id="latest-game-action" background=(theme::SUNNY_SOFT)
+                        border=((theme::SUNNY, theme::EDGE_THIN)) border-bottom=((theme::SUNNY_EDGE, 4))
+                        border-radius=(theme::RADIUS_LG) padding=(theme::SPACE_3) gap=3 {
+                        (ui::eyebrow("LATEST", theme::ON_SUNNY))
+                        span font-weight=bold color=(theme::ON_SUNNY) { (latest.as_str()) }
                     }
                 }
-                section id="recent-activity" gap="8px" {
-                    h3 { "Move history" }
+                section id="recent-activity" gap=(theme::SPACE_2) {
+                    h3 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { "Move history" }
                     (history)
                 }
-                section id="game-reference" width="100%" border-top=(("#d8c9a7", 1))
-                    padding-top="12px" gap="10px" {
+                (board_key_component())
+                section id="game-reference" width="100%" gap=(theme::SPACE_2) {
                     (rules_component(game))
                 }
-            }
-            aside id="game-definition-layer" hidden position="fixed" top=68 right="2%"
-                width="440px" max-width="96%" max-height="70vh" overflow-y="auto"
-                background=(theme::MENU_BG) color=(theme::INK) border=((theme::BORDER_STRONG, 3)) border-radius="18px"
-                padding="18px" gap="12px" {
-                span color=(theme::INK_MUTED) font-size="11px" font-weight=bold { "WORD DEFINITION" }
+            }))
+            aside id="game-definition-layer" hidden position="fixed" top=64 right=8
+                width=(DRAWER_WIDTH + 80) max-width="94%" max-height="72vh" overflow-y="auto"
+                background=(theme::MENU_BG) color=(theme::INK)
+                border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
+                border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_3) {
+                (ui::eyebrow("WORD DEFINITION", theme::ACCENT))
                 span { "Loading definition…" }
+            }
+            @if let Some(completed_summary) = completed_summary {
+                (completed_summary)
             }
             (blank_letter_layer)
         }
-    }
-    .into()
+    })
 }
 
 /// Renders public board/status/history and only the authorized viewer's rack.
@@ -1059,6 +1634,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn turn_action_controls_require_review_before_destructive_commands() {
         block_on(async {
             let database: Arc<dyn Database> = Arc::from(
@@ -1144,6 +1720,29 @@ mod tests {
             assert!(exchange.contains("name=\"command\" value=\"EXCHANGE\""));
             assert!(exchange.contains("Confirm exchange"));
             assert!(!exchange.contains("blank_0"));
+
+            let page = visual_game_page(&game, &TurnDraft::default(), None)
+                .display_to_string(false, false)
+                .expect("game page renders");
+            assert!(page.contains("id=\"app-page\""));
+            assert!(page.contains("Your move"));
+            assert!(page.contains("Menu ···"));
+            assert!(page.contains("board-zoom-controls"));
+            assert!(page.contains("Place tiles to play"));
+            assert!(page.contains("100dvh") || page.contains("dvh"));
+            assert!(!page.contains("<style"));
+            assert!(!page.contains("<script"));
+
+            let summary = completed_game_summary(&game)
+                .display_to_string(false, false)
+                .expect("results render");
+            assert!(summary.contains("id=\"completed-game-summary\""));
+            assert!(summary.contains("id=\"final-standings\""));
+            assert!(summary.contains(&format!("hx-post=\"/games/{game_id}/rematch\"")));
+            assert!(summary.contains("Rematch"));
+            assert!(summary.contains("Back to games"));
+            assert!(summary.contains("href=\"/\""));
+            assert!(summary.contains("Close"));
         });
     }
 }
