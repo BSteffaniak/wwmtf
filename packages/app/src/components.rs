@@ -620,12 +620,25 @@ pub fn viewer_turn_component(view: &GameView, viewer: PlayerId) -> Container {
 /// Renders recoverable validation/error feedback.
 #[must_use]
 pub fn error_component(message: &str) -> Container {
-    container! {
-        section id="game-error" {
-            span { (message) }
+    use crate::theme;
+
+    let mut items = container! {
+        section id="game-error" direction="row" align-items="center" gap=(theme::SPACE_3)
+            background=(theme::DANGER_SOFT) color=(theme::DANGER_INK)
+            border=((theme::DANGER, theme::EDGE_THIN)) border-bottom=((theme::DANGER_EDGE, 4))
+            border-radius=(theme::RADIUS_MD) padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4) {
+            span width=28 height=28 min-width=28 border-radius=(theme::RADIUS_PILL)
+                background=(theme::DANGER) color=(theme::ON_DANGER)
+                align-items="center" justify-content="center"
+                font-family=(theme::FONT_DISPLAY) font-weight=bold { "!" }
+            span font-weight=bold { (message) }
         }
+    };
+    if items.len() == 1 {
+        items.remove(0)
+    } else {
+        items.into()
     }
-    .into()
 }
 
 #[cfg(test)]
