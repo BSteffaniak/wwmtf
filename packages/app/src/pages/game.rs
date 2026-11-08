@@ -1275,7 +1275,7 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
             } else {
                 (theme::NIGHT_RAISED, theme::NIGHT_INK, theme::NIGHT_BORDER)
             };
-            ui::one(container! {
+            let mut pill = ui::one(container! {
                 div id=(format!("player-scoreboard-{uuid}")) class="score-pill"
                     direction="row" align-items="center" gap=6
                     background=(fill) color=(ink)
@@ -1296,7 +1296,14 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
                         (score)
                     }
                 }
-            })
+            });
+            // When the band runs short, opponents' pills give way (their names ellipsize) so the
+            // row never clips; the viewer's pill keeps its natural width so its score stays whole.
+            if !is_viewer {
+                pill.min_width = Some(Number::Integer(0));
+                pill.overflow_x = LayoutOverflow::Hidden;
+            }
+            pill
         })
         .collect::<Vec<_>>();
     // Compact: the band between the back button and the right-hand controls (icon-only on
