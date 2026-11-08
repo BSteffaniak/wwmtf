@@ -7,7 +7,7 @@
 use hyperchad::{
     actions::ActionType,
     router::Container,
-    template::{JustifyContent, LayoutDirection, LayoutOverflow, container, if_responsive},
+    template::{AlignItems, LayoutDirection, LayoutOverflow, container, if_responsive},
     transformer::{Calculation, Number},
 };
 use wwmtf_game_domain::{Coordinate, PremiumSquare};
@@ -18,37 +18,99 @@ use crate::{
         BoardZoom, DraftFeedback, TurnDraft, TurnMode, draft_feedback, draft_token, rack_action,
     },
     theme,
-    ui::{self, ButtonSize, ButtonVariant, Tone},
+    ui::{self, ButtonSize, ButtonVariant},
 };
 
 // ---------------------------------------------------------------------------
-// Layout constants (page-local; candidates for promotion into `theme`).
+// Scene geometry
+//
+// The board viewport fills the whole screen and the HUD (header controls, scoreboard, and the
+// turn dock) floats above it. The board's scroll content is padded by exactly the space each HUD
+// layer occupies, so at the fitted zoom the whole board sits clear of every overlay, and at larger
+// zooms every edge can still be scrolled out from under them.
+//
+// Two layouts share this geometry, switched by the `compact` responsive trigger:
+// * wide (default): the scoreboard and controls sit in side gutters beside a full-height board,
+//   and the dock is a single row (rack beside status and actions).
+// * compact: the controls form a top band and the dock stacks rack, status, and actions.
 // ---------------------------------------------------------------------------
 
 /// Gap between board squares (the frame color shows through as grout).
 const BOARD_GAP: f32 = 2.0;
 /// Frame border width around the board grid.
 const BOARD_FRAME_BORDER: f32 = 5.0;
-/// Horizontal space reserved around the board when fitting it to the viewport.
-const BOARD_RESERVED_WIDTH: f32 = 16.0;
-/// Vertical space reserved for the header and the turn dock when fitting the board.
-const BOARD_RESERVED_HEIGHT: f32 = 296.0;
 /// Upper bound for the fitted board edge on very large screens.
-const BOARD_MAX_EDGE: f32 = 920.0;
+const BOARD_MAX_EDGE: f32 = 1000.0;
+/// Distance between floating HUD layers and the screen edge.
+const HUD_MARGIN: i32 = 8;
+/// Header control size (back, bag, menu buttons).
+const HEADER_CONTROL: i32 = 40;
+/// Header avatar size.
+const HEADER_AVATAR: i32 = 28;
+/// Extra breathing room between a HUD layer and the fitted board.
+const HUD_CLEARANCE: i32 = 6;
+/// Board inset from the left/right screen edges in the compact layout.
+const COMPACT_SIDE_INSET: i32 = 6;
+/// Width of each side gutter holding HUD controls in the wide layout.
+const WIDE_GUTTER: i32 = 240;
+/// Board inset from the top of the screen in the wide layout (controls live in the gutters).
+const WIDE_TOP_INSET: i32 = 12;
+/// Board inset from the top of the screen in the compact layout (below the header band).
+const COMPACT_TOP_INSET: i32 = HUD_MARGIN + HEADER_CONTROL + HUD_CLEARANCE + 2;
+/// Height of the dock's status row (turn badge, draft message, zoom controls).
+const STATUS_HEIGHT: i32 = 36;
+/// Height of the rack tray (tiles plus room for the selected tile's lift).
+const TRAY_HEIGHT: i32 = 74;
+/// Height of the dock's action row.
+const ACTION_HEIGHT: i32 = 48;
+/// Inner padding of the dock.
+const DOCK_PADDING: i32 = 8;
+/// Gap between dock rows.
+const DOCK_GAP: i32 = 6;
+/// Top/side border of the dock.
+const DOCK_EDGE: i32 = 2;
+/// Chunky bottom border of the dock.
+const DOCK_DEPTH: i32 = 6;
+/// Maximum dock width.
+const DOCK_MAX_WIDTH: i32 = 920;
+/// Total dock height in the wide layout: the rack beside status over actions.
+const DOCK_WIDE_HEIGHT: i32 = 2 * DOCK_PADDING
+    + max_i32(TRAY_HEIGHT, STATUS_HEIGHT + DOCK_GAP + ACTION_HEIGHT)
+    + DOCK_EDGE
+    + DOCK_DEPTH;
+/// Total dock height in the compact layout: rack, status, and actions stacked.
+const DOCK_STACKED_HEIGHT: i32 = 2 * DOCK_PADDING
+    + TRAY_HEIGHT
+    + STATUS_HEIGHT
+    + ACTION_HEIGHT
+    + 2 * DOCK_GAP
+    + DOCK_EDGE
+    + DOCK_DEPTH;
+/// Board inset from the bottom of the screen in each layout (above the dock).
+const WIDE_BOTTOM_INSET: i32 = DOCK_WIDE_HEIGHT + HUD_MARGIN + HUD_CLEARANCE;
+const COMPACT_BOTTOM_INSET: i32 = DOCK_STACKED_HEIGHT + HUD_MARGIN + HUD_CLEARANCE;
 /// Largest rack tile edge.
 const RACK_TILE_MAX: f32 = 54.0;
-/// Horizontal space around the seven rack tiles (dock and tray padding, borders, and gaps).
-const RACK_RESERVED_WIDTH: f32 = 100.0;
+/// Horizontal space around seven rack tiles on a phone: dock margins, dock padding, tray padding
+/// and borders, and the six gaps between tiles.
+const RACK_RESERVED_WIDTH: f32 = 78.0;
 /// Rack tiles shown per row.
 const RACK_SLOTS: f32 = 7.0;
-/// Maximum width of the floating turn dock.
-const DOCK_MAX_WIDTH: i32 = 560;
-/// Width of the floating drawers (menu, bag, definitions).
-const DRAWER_WIDTH: i32 = 360;
-/// Header avatar size.
-const HEADER_AVATAR: i32 = 26;
-/// Header control size (back, bag, menu buttons).
-const HEADER_CONTROL: i32 = 38;
+/// Gap between rack tiles.
+const RACK_GAP: i32 = 4;
+/// Horizontal tray padding around the rack tiles.
+const TRAY_PADDING_X: i32 = 6;
+/// Width of the side sheets (menu, definitions) on wide screens.
+const DRAWER_WIDTH: i32 = 400;
+/// Width reserved for the top-right controls (live dot, bag, menu) with and without labels.
+const HUD_CONTROLS_WIDTH: i32 = 196;
+const HUD_CONTROLS_PHONE_WIDTH: i32 = 112;
+/// Size of the zoom buttons in the status row.
+const ZOOM_CONTROL: i32 = 30;
+
+const fn max_i32(left: i32, right: i32) -> i32 {
+    if left > right { left } else { right }
+}
 
 // ---------------------------------------------------------------------------
 // calc() helpers
@@ -58,8 +120,9 @@ fn calc_value(number: Number) -> Calculation {
     Calculation::Number(Box::new(number))
 }
 
-fn calc_px(value: f32) -> Calculation {
-    calc_value(Number::Real(value))
+#[allow(clippy::cast_possible_truncation)]
+fn calc_px(value: impl Into<f64>) -> Calculation {
+    calc_value(Number::Real(value.into() as f32))
 }
 
 fn calc_group(calculation: Calculation) -> Calculation {
@@ -102,82 +165,139 @@ const fn calc_number(calculation: Calculation) -> Number {
     Number::Calc(calculation)
 }
 
-/// Viewport-relative board geometry for one zoom level.
-struct BoardMetrics {
-    square: Calculation,
-    size: f32,
+fn dvw(percent: f32) -> Calculation {
+    calc_value(Number::RealDvw(percent))
 }
 
-impl BoardMetrics {
+fn dvh(percent: f32) -> Calculation {
+    calc_value(Number::RealDvh(percent))
+}
+
+/// A length that is `below` px at or below a `max_width` breakpoint and `above` px wider than it,
+/// as a single `calc()`.
+///
+/// `HyperChad` responsive overrides only accept integer values today, so viewport-relative sizes
+/// that differ per layout use a step term instead: `(max_width + 0.5px - 100dvw)` is positive
+/// exactly when the breakpoint's trigger matches, and scaling then clamping it yields either `0`
+/// or the full difference.
+fn step_length(max_width: i32, below: i32, above: i32) -> Calculation {
+    let difference = below - above;
+    let step = calc_max(
+        calc_px(0),
+        calc_min(
+            calc_px(difference.abs()),
+            calc_times(
+                calc_sub(calc_px(f64::from(max_width) + 0.5), dvw(100.0)),
+                10_000.0,
+            ),
+        ),
+    );
+    if difference >= 0 {
+        calc_add(calc_px(above), step)
+    } else {
+        calc_sub(calc_px(above), step)
+    }
+}
+
+/// A length for the compact layout or the wide layout (see [`step_length`]).
+fn layout_length(compact: i32, wide: i32) -> Calculation {
+    step_length(theme::COMPACT_MAX_WIDTH, compact, wide)
+}
+
+/// Space each HUD layer occupies around the board in the active layout.
+struct SafeArea {
+    top: Calculation,
+    bottom: Calculation,
+    side: Calculation,
+}
+
+fn safe_area() -> SafeArea {
+    SafeArea {
+        top: layout_length(COMPACT_TOP_INSET, WIDE_TOP_INSET),
+        bottom: layout_length(COMPACT_BOTTOM_INSET, WIDE_BOTTOM_INSET),
+        side: layout_length(COMPACT_SIDE_INSET, WIDE_GUTTER),
+    }
+}
+
+/// Viewport-relative board geometry for one zoom level.
+struct BoardGeometry {
+    size: f32,
+    scale: f32,
+    area: SafeArea,
+}
+
+impl BoardGeometry {
     fn new(board_size: u8, zoom: BoardZoom) -> Self {
-        let size = f32::from(board_size);
-        let available = calc_min(
+        #[allow(clippy::cast_precision_loss)]
+        let scale = zoom.fit_percent() as f32 / 100.0;
+        Self {
+            size: f32::from(board_size),
+            scale,
+            area: safe_area(),
+        }
+    }
+
+    /// Largest framed board edge that fits inside the safe area (2px slack avoids rounding into
+    /// a scrollbar).
+    fn fit(&self) -> Calculation {
+        calc_min(
             calc_min(
                 calc_sub(
-                    calc_value(Number::RealDvw(100.0)),
-                    calc_px(BOARD_RESERVED_WIDTH),
+                    calc_sub(dvw(100.0), calc_times(self.area.side.clone(), 2.0)),
+                    calc_px(2),
                 ),
                 calc_sub(
-                    calc_value(Number::RealDvh(100.0)),
-                    calc_px(BOARD_RESERVED_HEIGHT),
+                    calc_sub(
+                        calc_sub(dvh(100.0), self.area.top.clone()),
+                        self.area.bottom.clone(),
+                    ),
+                    calc_px(2),
                 ),
             ),
             calc_px(BOARD_MAX_EDGE),
-        );
-        let grid = calc_sub(
-            calc_group(available),
-            calc_px(BOARD_FRAME_BORDER.mul_add(2.0, (size - 1.0) * BOARD_GAP)),
-        );
-        let fit = calc_over(grid, size);
-        #[allow(clippy::cast_precision_loss)]
-        let scale = zoom.fit_percent() as f32 / 100.0;
-        let square = if zoom.fit_percent() == 100 {
-            fit
-        } else {
-            calc_times(fit, scale)
-        };
-        Self { square, size }
-    }
-
-    /// Square edge length.
-    fn square(&self) -> Number {
-        calc_number(self.square.clone())
-    }
-
-    /// A fraction of the square edge (font sizes).
-    fn scaled(&self, factor: f32) -> Number {
-        calc_number(calc_times(self.square.clone(), factor))
-    }
-
-    /// Offset of the `index`th square from the grid origin, plus `extra` pixels.
-    fn offset(&self, index: u8, extra: f32) -> Calculation {
-        calc_add(
-            calc_times(
-                calc_add(self.square.clone(), calc_px(BOARD_GAP)),
-                f32::from(index),
-            ),
-            calc_px(extra),
         )
     }
 
-    /// Outer edge of the framed board.
-    fn frame(&self) -> Number {
-        calc_number(calc_add(
-            calc_times(self.square.clone(), self.size),
-            calc_px(BOARD_FRAME_BORDER.mul_add(2.0, (self.size - 1.0) * BOARD_GAP)),
-        ))
+    /// Framed board edge at this zoom level.
+    fn frame(&self) -> Calculation {
+        if (self.scale - 1.0).abs() < f32::EPSILON {
+            self.fit()
+        } else {
+            calc_times(self.fit(), self.scale)
+        }
+    }
+
+    /// One square's edge, derived from the frame (used for type sizes).
+    fn square(&self) -> Calculation {
+        calc_over(
+            calc_sub(
+                self.frame(),
+                calc_px(BOARD_FRAME_BORDER.mul_add(2.0, (self.size - 1.0) * BOARD_GAP)),
+            ),
+            self.size,
+        )
+    }
+
+    /// Scroll content width: the frame plus the side insets.
+    fn extent_x(&self) -> Calculation {
+        calc_add(self.frame(), calc_times(self.area.side.clone(), 2.0))
+    }
+
+    /// Scroll content height: the frame plus the top and bottom insets.
+    fn extent_y(&self) -> Calculation {
+        calc_add(
+            calc_add(self.frame(), self.area.top.clone()),
+            self.area.bottom.clone(),
+        )
     }
 }
 
-/// Edge length of one rack tile: as big as fits seven across the dock, capped for desktops.
+/// Edge length of one rack tile: as big as fits seven across a phone dock, capped for desktops.
 fn rack_tile_size() -> Calculation {
     calc_min(
         calc_px(RACK_TILE_MAX),
         calc_over(
-            calc_sub(
-                calc_value(Number::RealDvw(100.0)),
-                calc_px(RACK_RESERVED_WIDTH),
-            ),
+            calc_sub(dvw(100.0), calc_px(RACK_RESERVED_WIDTH)),
             RACK_SLOTS,
         ),
     )
@@ -305,27 +425,26 @@ pub fn draft_feedback_component(
             },
         ),
     };
-    let (background, edge, ink, glyph) = match draft.mode {
-        TurnMode::ConfirmResign => (theme::DANGER_SOFT, theme::DANGER, theme::DANGER_INK, "!"),
+    let (glyph_fill, glyph_ink, text_ink, glyph) = match draft.mode {
+        TurnMode::ConfirmResign => (theme::DANGER, theme::ON_DANGER, theme::NIGHT_INK, "!"),
         TurnMode::Exchange | TurnMode::ConfirmExchange | TurnMode::ConfirmPass => {
-            (theme::SUNNY_SOFT, theme::SUNNY, theme::ON_SUNNY, "?")
+            (theme::SUNNY, theme::ON_SUNNY, theme::NIGHT_INK, "?")
         }
         TurnMode::Play if candidate_valid => {
-            (theme::PRIMARY, theme::PRIMARY_EDGE, theme::ON_PRIMARY, "✓")
+            (theme::PRIMARY, theme::ON_PRIMARY, theme::NIGHT_INK, "✓")
         }
         TurnMode::Play if feedback.candidate.is_some() => {
-            (theme::DANGER_SOFT, theme::DANGER, theme::DANGER_INK, "×")
+            (theme::DANGER, theme::ON_DANGER, theme::DANGER_SOFT, "✕")
         }
-        TurnMode::Play => (theme::NIGHT_DEEP, theme::NIGHT_LINE, theme::NIGHT_INK, "✦"),
+        TurnMode::Play => (theme::NIGHT_DEEP, theme::SUNNY, theme::NIGHT_INK_MUTED, "✦"),
     };
     ui::one(container! {
-        section id="draft-preview" class="dock-message" width="100%" direction="row"
-            align-items="center" justify-content="center" gap=(theme::SPACE_2)
-            padding-y=6 padding-x=(theme::SPACE_3)
-            background=(background) color=(ink) border=((edge, theme::EDGE_THIN))
-            border-radius=(theme::RADIUS_LG) overflow-x="hidden" {
-            span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold { (glyph) }
-            span min-width=0 font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" text-align="center" {
+        section id="draft-preview" class="draft-preview" flex=1 min-width=0 direction="row"
+            align-items="center" gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
+            span width=22 height=22 min-width=22 border-radius=(theme::RADIUS_PILL)
+                background=(glyph_fill) color=(glyph_ink) align-items="center" justify-content="center"
+                font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_SM) font-weight=bold { (glyph) }
+            span min-width=0 color=(text_ink) font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" {
                 (message)
             }
         }
@@ -341,11 +460,16 @@ pub fn draft_error_page(game: &AuthorizedGamePage, draft: &TurnDraft, message: &
 pub fn turn_feedback(message: Option<&str>) -> Container {
     ui::one(container! {
         @if let Some(message) = message {
-            section id="turn-feedback" width="100%" {
-                (ui::with_id(ui::notice(message, Tone::Danger), "game-error"))
+            section id="turn-feedback" min-width=0 max-width="100%" direction="row" align-items="center" {
+                div id="game-error" direction="row" align-items="center" gap=6 min-width=0
+                    background=(theme::DANGER_SOFT) color=(theme::DANGER_INK)
+                    border=((theme::DANGER, 1)) border-radius=(theme::RADIUS_MD) padding-y=3 padding-x=8 {
+                    span font-weight=bold { "!" }
+                    span min-width=0 font-size=(theme::TEXT_XS) font-weight=bold overflow-wrap="anywhere" { (message) }
+                }
             }
         } @else {
-            section id="turn-feedback" width="100%" {}
+            section id="turn-feedback" {}
         }
     })
 }
@@ -417,8 +541,9 @@ fn definition_panel_shell(children: impl Into<Vec<Container>>) -> Container {
     let children: Vec<Container> = children.into();
     // Swapped in as a whole element, so keep the wrapper (see `definition_page`).
     Container::from(container! {
-        aside id="game-definition-layer" class="game-definition-panel" position="fixed"
-            top=64 right=8 width=(DRAWER_WIDTH + 80) max-width="94%" max-height="72vh" overflow-y="auto"
+        aside id="game-definition-layer" class="game-definition-panel" position="fixed" top=(HUD_MARGIN)
+            right=(if_responsive(theme::MOBILE).then::<i32>(HUD_MARGIN).or_else(DRAWER_WIDTH + 16))
+            width=(DRAWER_WIDTH + 40) max-width="96%" max-height="80vh" overflow-y="auto"
             background=(theme::MENU_BG) color=(theme::INK)
             border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
             border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_3) {
@@ -504,29 +629,47 @@ pub fn compose_form_fields(
 // Board
 // ---------------------------------------------------------------------------
 
-/// One round zoom button for the floating control cluster.
+/// One small zoom button for the dock's status row.
 fn zoom_button(
     game: &AuthorizedGamePage,
     draft: &TurnDraft,
     action: &str,
     label: &str,
-    font_size: i32,
 ) -> Container {
     let compose_action = format!("/games/{}/compose", game.game_id);
     let style = ui::button_style(ButtonVariant::Night);
     ui::one(container! {
         form hx-post=(compose_action.as_str()) hx-target="#app-page" {
             (compose_form_fields(game, draft, action))
-            button type=submit width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
+            button type=submit width=(ZOOM_CONTROL + if label.len() > 1 { 10 } else { 0 }) height=(ZOOM_CONTROL)
+                min-width=(ZOOM_CONTROL)
                 background=(style.background) color=(style.ink)
-                border=((style.edge, theme::EDGE_THIN)) border-bottom=((style.edge, 4))
+                border=((theme::NIGHT_LINE, 1)) border-bottom=((style.edge, 3))
                 border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
-                font-family=(theme::FONT_DISPLAY) font-size=(font_size) font-weight=bold cursor=pointer
+                font-family=(theme::FONT_DISPLAY) font-size=(if label.len() > 1 { theme::TEXT_XS } else { theme::TEXT_MD })
+                font-weight=bold cursor=pointer
                 fx-hover=(ActionType::set_background_self(style.hover)) {
                 (label)
             }
         }
     })
+}
+
+/// Zoom out / fit / zoom in, docked in the status row so it never covers the board.
+fn zoom_controls(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
+    ui::one(container! {
+        div id="board-zoom-controls" class="board-zoom-controls" direction="row" align-items="center" gap=4 {
+            (zoom_button(game, draft, "ZOOM_OUT", "−"))
+            (zoom_button(game, draft, "ZOOM_RESET", "Fit"))
+            (zoom_button(game, draft, "ZOOM_IN", "+"))
+        }
+    })
+}
+
+/// Percentage of the frame's inner box at which square `index` starts.
+#[allow(clippy::cast_precision_loss)]
+fn square_percent(index: u8, size: f32) -> f32 {
+    f32::from(index) * 100.0 / size
 }
 
 #[allow(clippy::too_many_lines)]
@@ -569,42 +712,53 @@ pub fn visual_board(
         .candidate
         .as_ref()
         .is_some_and(|candidate| !candidate.is_valid());
-    let metrics = BoardMetrics::new(game.rules.board_size, draft.board_zoom);
-    let square = metrics.square();
-    let tile_font = metrics.scaled(0.5);
-    let points_font = metrics.scaled(0.26);
-    let premium_font = metrics.scaled(0.34);
-    let star_font = metrics.scaled(0.58);
-    let frame = metrics.frame();
+    let geometry = BoardGeometry::new(game.rules.board_size, draft.board_zoom);
+    let size = f32::from(game.rules.board_size);
+    let frame = calc_number(geometry.frame());
+    // Squares inherit the frame's type size; labels scale from it in percent so every renderer
+    // sizes letters relative to the square without per-square calc() values.
+    let letter_size = calc_number(calc_times(geometry.square(), 0.5));
+    let points_font = Number::IntegerPercent(50);
+    let premium_font = Number::IntegerPercent(66);
+    let star_font = Number::IntegerPercent(112);
+    let inherit_font = Number::IntegerPercent(100);
     let score_bubble_position = score_anchor.map(|coordinate| {
         (
-            calc_number(calc_add(
-                metrics.offset(coordinate.x, -8.0),
-                metrics.square.clone(),
+            calc_number(calc_sub(
+                calc_value(Number::RealPercent(square_percent(coordinate.x + 1, size))),
+                calc_px(12),
             )),
-            calc_number(calc_max(metrics.offset(coordinate.y, -14.0), calc_px(-4.0))),
+            calc_number(calc_max(
+                calc_sub(
+                    calc_value(Number::RealPercent(square_percent(coordinate.y, size))),
+                    calc_px(14),
+                ),
+                calc_px(-6),
+            )),
         )
     });
     let picking_tile = draft.selected_tile.is_some() && draft.mode == TurnMode::Play;
-    let zoom_in = zoom_button(game, draft, "ZOOM_IN", "+", theme::TEXT_LG);
-    let zoom_reset = zoom_button(game, draft, "ZOOM_RESET", "Fit", theme::TEXT_XS);
-    let zoom_out = zoom_button(game, draft, "ZOOM_OUT", "−", theme::TEXT_LG);
     ui::one(container! {
         section id="game-board" data-revision=(game.view.revision) data-board-zoom=(format!("{:?}", draft.board_zoom))
-            position="absolute" top=0 right=0 bottom=0 left=0 direction="column" {
-            div class="board-viewport" width="100%" min-height=0 flex=1
+            position="absolute" top=0 right=0 bottom=0 left=0 {
+            div class="board-viewport" position="absolute" top=0 right=0 bottom=0 left=0
                 overflow-x="auto" overflow-y="auto" {
-                div id="board-scroll-content" class="board-scroll-content" width="100%" height="100%" min-width=(frame.clone())
-                    min-height=(frame.clone()) align-items="center"
-                    justify-content=(if_responsive(theme::MOBILE).then::<JustifyContent>(JustifyContent::Start).or_else(JustifyContent::Center))
-                    padding-top=(if_responsive(theme::MOBILE).then::<i32>(theme::SPACE_1).or_else(0)) {
-                    div class="board-frame" data-board-size=(game.rules.board_size)
+                div id="board-scroll-content" class="board-scroll-content"
+                    width="100%" height="100%"
+                    min-width=(calc_number(geometry.extent_x())) min-height=(calc_number(geometry.extent_y()))
+                    padding-top=(if_responsive(theme::COMPACT).then::<i32>(COMPACT_TOP_INSET).or_else(WIDE_TOP_INSET))
+                    padding-bottom=(if_responsive(theme::COMPACT).then::<i32>(COMPACT_BOTTOM_INSET).or_else(WIDE_BOTTOM_INSET))
+                    padding-left=(if_responsive(theme::COMPACT).then::<i32>(COMPACT_SIDE_INSET).or_else(WIDE_GUTTER))
+                    padding-right=(if_responsive(theme::COMPACT).then::<i32>(COMPACT_SIDE_INSET).or_else(WIDE_GUTTER))
+                    align-items="center" justify-content="center" {
+                    div id="board-frame" class="board-frame" data-board-size=(game.rules.board_size)
                         data-board-fit-percent=(draft.board_zoom.fit_percent())
-                        width=(frame.clone()) height=(frame.clone()) min-width=(frame.clone()) position="relative"
+                        width=(frame.clone()) height=(frame.clone()) min-width=(frame.clone()) min-height=(frame.clone())
+                        position="relative" font-size=(letter_size)
                         background=(theme::BOARD_FRAME) border=((theme::BOARD_FRAME_EDGE, 5))
                         border-radius=(theme::RADIUS_MD) gap=(BOARD_GAP) {
                     @for y in 0..game.rules.board_size {
-                        div direction="row" gap=(BOARD_GAP) {
+                        div class="board-row" direction="row" flex=1 min-height=0 gap=(BOARD_GAP) {
                             @for x in 0..game.rules.board_size {
                                 @let coordinate = Coordinate::new(x, y);
                                 @let committed = occupied.get(&coordinate).copied();
@@ -618,18 +772,18 @@ pub fn visual_board(
                                     @let rack_tile = game.view.rack.iter().find(|(id, _, _)| *id == tile_id);
                                     @let label = rack_tile.map_or('?', |(_, letter, _)| blank_letter.unwrap_or(*letter));
                                     @let draft_points = rack_tile.map(|(_, _, points)| *points);
-                                    form hx-post=(action.as_str()) hx-target="#app-page" {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square"
-                                            width=(square.clone()) height=(square.clone())
+                                            width="100%" height="100%" font-size=(inherit_font.clone())
                                             background=(theme::TILE_PENDING) color=(theme::TILE_PENDING_INK)
                                             border=((theme::TILE_PENDING_EDGE, 1)) border-bottom=((theme::TILE_PENDING_EDGE, 4))
                                             border-radius=5 align-items="center" justify-content="center"
                                             font-family=(theme::FONT_DISPLAY) font-weight=bold position="relative" cursor=pointer
                                             fx-hover=(ActionType::set_background_self(theme::WHITE))
                                             fx-click=(ActionType::set_background_self(theme::SQUARE)) {
-                                            span font-size=(tile_font.clone()) { (label) }
+                                            span { (label) }
                                             @if let Some(points) = draft_points {
                                                 span class="board-tile-points" position="absolute" right=2 bottom=0 font-size=(points_font.clone()) { (points) }
                                             }
@@ -637,7 +791,7 @@ pub fn visual_board(
                                     }
                                 } @else if let Some((letter, points)) = committed {
                                     div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" })
-                                        width=(square.clone()) height=(square.clone())
+                                        flex=1 min-width=0
                                         background=(if latest { theme::TILE_HI } else { theme::TILE }) color=(theme::TILE_INK)
                                         border=((if latest { theme::LATEST_MOVE } else { theme::TILE_EDGE }, if latest { 2 } else { 1 }))
                                         border-bottom=((if latest { theme::PRIMARY_EDGE } else { theme::TILE_EDGE }, 4))
@@ -647,17 +801,18 @@ pub fn visual_board(
                                             span class="viewer-tile-marker" position="absolute" top=2 left=2
                                                 width=4 height=4 background=(theme::TILE_EDGE) opacity=0.7 border-radius=(theme::RADIUS_PILL) { }
                                         }
-                                        span font-size=(tile_font.clone()) { (letter) }
+                                        span { (letter) }
                                         span class="board-tile-points" position="absolute" right=2 bottom=0 font-size=(points_font.clone()) { (points) }
                                     }
                                 } @else {
                                     @let (background, ink, label) = square_style(coordinate, game.rules.start, premium);
-                                    form hx-post=(action.as_str()) hx-target="#app-page" {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
                                         (compose_form_fields(game, draft, "PLACE_TILE"))
                                         input type=hidden name="x" value=(x);
                                         input type=hidden name="y" value=(y);
                                         button type=submit class="board-square open-square" data-x=(x) data-y=(y)
-                                            width=(square.clone()) height=(square.clone()) background=(background) color=(ink)
+                                            width="100%" height="100%" font-size=(inherit_font.clone())
+                                            background=(background) color=(ink)
                                             border=(if required { (theme::SUNNY, 2) } else { (background, 0) })
                                             border-radius=4 position="relative" align-items="center" justify-content="center"
                                             font-family=(theme::FONT_DISPLAY) font-weight=bold cursor=pointer
@@ -690,16 +845,8 @@ pub fn visual_board(
                             @if invalid_score { "✕" } @else { (score) }
                         }
                     }
+                    }
                 }
-            }
-            }
-            div id="board-zoom-controls" class="board-zoom-controls" position="absolute" right=10 bottom=10
-                direction=(if_responsive(theme::MOBILE).then::<LayoutDirection>(LayoutDirection::Row).or_else(LayoutDirection::Column))
-                align-items="center" gap=6 padding=4 background=(theme::NIGHT_DEEP)
-                border=((theme::NIGHT_LINE, 1)) border-radius=(theme::RADIUS_PILL) opacity=0.94 {
-                (zoom_in)
-                (zoom_reset)
-                (zoom_out)
             }
         }
     })
@@ -726,12 +873,22 @@ pub fn visual_rack(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
     let tile_size = calc_number(tile.clone());
     let face_font = calc_number(calc_times(tile.clone(), 0.4));
     let points_font = calc_number(calc_times(tile, 0.19));
+    // The tray hugs seven full-size tiles, shrinking to the dock's width on phones.
+    let tray_width = calc_number(calc_min(
+        calc_add(
+            calc_times(calc_px(RACK_TILE_MAX), RACK_SLOTS),
+            calc_px(6 * RACK_GAP + 2 * TRAY_PADDING_X + 2 * theme::EDGE_THIN),
+        ),
+        calc_value(Number::IntegerPercent(100)),
+    ));
     ui::one(container! {
-        section id="player-rack" width="100%" max-width="100%" position="relative" {
-            div class="rack-tray" width="100%" max-width="100%" direction="row" overflow-x="hidden" overflow-y="hidden"
-                justify-content="center" align-items="end" gap=5
+        section id="player-rack" position="relative"
+            width=(tray_width.clone()) min-width=(tray_width.clone()) max-width="100%" {
+            div class="rack-tray" width="100%" max-width="100%" height=(TRAY_HEIGHT) direction="row"
+                overflow-x="hidden" overflow-y="hidden"
+                justify-content="center" align-items="end" gap=(RACK_GAP)
                 background=(theme::NIGHT_DEEP) border=((theme::NIGHT_BORDER, theme::EDGE_THIN))
-                border-radius=(theme::RADIUS_LG) padding-top=12 padding-bottom=8 padding-x=6 {
+                border-radius=(theme::RADIUS_LG) padding-bottom=8 padding-x=(TRAY_PADDING_X) {
                 @for (tile_id, letter, points) in rack {
                     @let placed = draft.placements.iter().any(|placement| placement.tile_id == *tile_id);
                     @let selected = draft.selected_tile == Some(*tile_id) || draft.rack_tile == Some(*tile_id);
@@ -846,9 +1003,21 @@ pub fn visual_blank_letter_layer(game: &AuthorizedGamePage, draft: &TurnDraft) -
 // Turn actions
 // ---------------------------------------------------------------------------
 
-/// A compact icon+label secondary button for the dock (Shuffle, Recall, Cancel).
+/// A compact secondary button for the dock's action row (Shuffle, Recall, Cancel).
 fn dock_submit_button(label: &str) -> Container {
-    ui::submit_button(label, ButtonVariant::Secondary, ButtonSize::Small)
+    let style = ui::button_style(ButtonVariant::Secondary);
+    let label = label.to_string();
+    ui::one(container! {
+        button type=submit height=(ACTION_HEIGHT) padding-x=(theme::SPACE_3)
+            background=(style.background) color=(style.ink)
+            border=((style.edge, theme::EDGE_THIN)) border-bottom=((style.edge, 4))
+            border-radius=(theme::RADIUS_LG) align-items="center" justify-content="center"
+            font-family=(theme::FONT_UI) font-size=(theme::TEXT_SM) font-weight=bold cursor=pointer
+            white-space="preserve"
+            fx-hover=(ActionType::set_background_self(style.hover)) {
+            (label)
+        }
+    })
 }
 
 /// The dominant call to action in the dock ("Play · 12", "Confirm exchange").
@@ -856,8 +1025,8 @@ fn hero_submit_button(label: &str, variant: ButtonVariant) -> Container {
     let style = ui::button_style(variant);
     let label = label.to_string();
     ui::one(container! {
-        button type=submit class="primary-turn-action" width="100%"
-            padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_4)
+        button type=submit class="primary-turn-action" width="100%" height=(ACTION_HEIGHT)
+            padding-x=(theme::SPACE_4)
             background=(style.background) color=(style.ink)
             border=((style.edge, theme::EDGE_THIN)) border-bottom=((style.edge, 6))
             border-radius=(theme::RADIUS_LG) align-items="center" justify-content="center" text-align="center"
@@ -891,7 +1060,7 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
         play_score.map_or_else(|| "Play".to_string(), |score| format!("Play · {score}"));
     let more_style = ui::button_style(ButtonVariant::Night);
     ui::one(container! {
-        section id="turn-actions" class="turn-composer action-hud" width="100%" max-width="100%" position="relative" {
+        section id="turn-actions" class="turn-composer action-hud" width="100%" max-width="100%" height=(ACTION_HEIGHT) position="relative" {
             @if draft.mode == TurnMode::Exchange {
                 div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
@@ -955,8 +1124,8 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
                             (hero_submit_button(&play_label, ButtonVariant::Primary))
                         }
                     } @else {
-                        div class="play-placeholder" flex=1 min-width=0 align-items="center" justify-content="center"
-                            padding-y=(theme::SPACE_3) border=((theme::NIGHT_LINE, theme::EDGE_THIN))
+                        div class="play-placeholder" flex=1 min-width=0 height=(ACTION_HEIGHT) align-items="center" justify-content="center"
+                            border=((theme::NIGHT_LINE, theme::EDGE_THIN))
                             border-radius=(theme::RADIUS_LG) color=(theme::NIGHT_INK_MUTED)
                             font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold
                             white-space="preserve" text-align="center" {
@@ -964,13 +1133,13 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
                         }
                     }
                     @if !game.completed && viewer_turn {
-                        button type=button fx-click=(ActionType::toggle_display_by_id("more-turn-actions-menu"))
-                            padding-y=6 padding-x=(theme::SPACE_3)
+                        button type=button id="more-turn-actions-button" fx-click=(ActionType::toggle_display_by_id("more-turn-actions-menu"))
+                            height=(ACTION_HEIGHT) min-width=(ACTION_HEIGHT) padding-x=(theme::SPACE_3)
                             background=(more_style.background) color=(more_style.ink)
-                            border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((more_style.edge, 3))
-                            border-radius=(theme::RADIUS_PILL) font-size=(theme::TEXT_SM) font-weight=bold
-                            white-space="preserve" cursor=pointer
-                            fx-hover=(ActionType::set_background_self(more_style.hover)) { "More ···" }
+                            border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((more_style.edge, 4))
+                            border-radius=(theme::RADIUS_LG) align-items="center" justify-content="center"
+                            font-size=(theme::TEXT_SM) font-weight=bold white-space="preserve" cursor=pointer
+                            fx-hover=(ActionType::set_background_self(more_style.hover)) { "More" }
                     }
                 }
                 @if !game.completed && viewer_turn {
@@ -1042,16 +1211,10 @@ pub fn confirmed_command_forms(
 // Scoreboard and results
 // ---------------------------------------------------------------------------
 
+/// Score pills for every participant. Compact: a centered row in the top band. Wide: a stacked
+/// list in the left gutter under the back button, clear of the board.
 #[allow(clippy::too_many_lines)]
 pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
-    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
-    let turn = if game.completed {
-        "Game complete".to_string()
-    } else if viewer_turn {
-        "Your move".to_string()
-    } else {
-        format!("{}'s move", active_player_name(game))
-    };
     let pills = game
         .participants
         .iter()
@@ -1076,22 +1239,9 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
                 HEADER_AVATAR,
             );
             let name = if is_viewer {
-                format!("{} (you)", participant.display_name)
+                "You".to_string()
             } else {
                 participant.display_name.clone()
-            };
-            // On phones the viewer's own pill shows just avatar and score to leave room for
-            // opponents' short names.
-            let short_name = if is_viewer {
-                String::new()
-            } else {
-                let mut letters = participant.display_name.chars();
-                let short = letters.by_ref().take(6).collect::<String>();
-                if letters.next().is_some() {
-                    format!("{short}…")
-                } else {
-                    short
-                }
             };
             let (fill, ink, edge) = if playing {
                 (seat.fill, seat.ink, seat.edge)
@@ -1099,25 +1249,18 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
                 (theme::NIGHT_RAISED, theme::NIGHT_INK, theme::NIGHT_BORDER)
             };
             ui::one(container! {
-                div id=(format!("player-scoreboard-{uuid}"))
+                div id=(format!("player-scoreboard-{uuid}")) class="score-pill"
                     direction="row" align-items="center" gap=6
                     background=(fill) color=(ink)
                     border=((if playing { theme::WHITE } else { theme::NIGHT_LINE }, theme::EDGE_THIN))
                     border-bottom=((edge, 4))
-                    border-radius=(theme::RADIUS_PILL) padding-y=2 padding-left=2 padding-right=10
+                    border-radius=(theme::RADIUS_PILL) padding-y=2 padding-left=2 padding-right=12
                     opacity=(if active || game.completed { 1.0 } else { 0.5 }) {
                     (avatar)
-                    @if !short_name.is_empty() {
-                        span id=(format!("player-scoreboard-short-{uuid}"))
-                            font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
-                            hidden=(if_responsive(theme::MOBILE).then::<bool>(false).or_else(true)) {
-                            (short_name)
-                        }
-                    }
-                    span id=(format!("player-scoreboard-name-{uuid}"))
+                    span id=(format!("player-scoreboard-name-{uuid}")) min-width=0
                         font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
-                        text-overflow="ellipsis" overflow-x="hidden" max-width=110
-                        hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) {
+                        text-overflow="ellipsis" overflow-x="hidden"
+                        max-width=(if_responsive(theme::MOBILE).then::<i32>(56).or_else(120)) {
                         (name)
                     }
                     span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold white-space="preserve" {
@@ -1128,26 +1271,45 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
             })
         })
         .collect::<Vec<_>>();
+    // Compact: the band between the back button and the right-hand controls (icon-only on
+    // phones). Wide: the left gutter.
+    let reserved = HUD_MARGIN + HEADER_CONTROL + 8 + HUD_MARGIN + 8;
+    let width = calc_number(calc_min(
+        calc_sub(
+            dvw(100.0),
+            step_length(
+                theme::MOBILE_MAX_WIDTH,
+                reserved + HUD_CONTROLS_PHONE_WIDTH,
+                reserved + HUD_CONTROLS_WIDTH,
+            ),
+        ),
+        layout_length(10_000, WIDE_GUTTER - 2 * HUD_MARGIN),
+    ));
     ui::one(container! {
-        section id="game-awareness" class="player-hud scoreboard-hud" min-width=0 flex=1
-            align-items="center" gap=3 overflow-x="hidden" overflow-y="hidden" {
-            div id="participant-scoreboard" direction="row" gap=6 max-width="100%"
-                justify-content=(if_responsive(theme::MOBILE).then::<JustifyContent>(JustifyContent::Start).or_else(JustifyContent::Center))
-                min-width=0 overflow-x="auto" overflow-y="hidden" padding-bottom=1 {
+        section id="game-awareness" class="player-hud scoreboard-hud" position="absolute"
+            top=(if_responsive(theme::COMPACT).then::<i32>(HUD_MARGIN).or_else(HUD_MARGIN + HEADER_CONTROL + 10))
+            left=(if_responsive(theme::COMPACT).then::<i32>(HUD_MARGIN + HEADER_CONTROL + 8).or_else(HUD_MARGIN))
+            width=(width)
+            align-items=(if_responsive(theme::COMPACT).then::<AlignItems>(AlignItems::Center).or_else(AlignItems::Start)) {
+            div id="participant-scoreboard" max-width="100%" min-width=0 gap=6
+                direction=(if_responsive(theme::COMPACT).then::<LayoutDirection>(LayoutDirection::Row).or_else(LayoutDirection::Column))
+                align-items=(if_responsive(theme::COMPACT).then::<AlignItems>(AlignItems::Center).or_else(AlignItems::Start))
+                overflow-x="auto" overflow-y="hidden" padding-bottom=2 {
                 (pills)
-            }
-            div direction="row" align-items="center" justify-content="center" gap=6 max-width="100%" {
-                span id="live-status-connected" hidden color=(theme::LATEST_MOVE) font-size=(theme::TEXT_XS) font-weight=bold
-                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "●" }
-                span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
-                span id="live-status-disconnected" hidden color=(theme::DANGER) font-size=(theme::TEXT_XS) font-weight=bold
-                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
-                span id="named-turn-status" font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
-                    text-overflow="ellipsis" overflow-x="hidden"
-                    color=(if viewer_turn { theme::PRIMARY } else { theme::NIGHT_INK_MUTED }) { (turn) }
             }
         }
     })
+}
+
+/// Who moves now, as a short label ("Your move", "bob's move", "Game complete").
+fn turn_label(game: &AuthorizedGamePage) -> String {
+    if game.completed {
+        "Game complete".to_string()
+    } else if game.view.active_player == game.viewer_player {
+        "Your move".to_string()
+    } else {
+        format!("{}'s move", active_player_name(game))
+    }
 }
 
 fn completed_outcome(game: &AuthorizedGamePage) -> (String, bool) {
@@ -1429,29 +1591,186 @@ pub fn remaining_tiles_component(game: &AuthorizedGamePage) -> Container {
     })
 }
 
-/// Shared chrome for the bag and menu drawers.
-fn drawer_shell(id: &str, max_height: &str, children: impl Into<Vec<Container>>) -> Container {
-    let children: Vec<Container> = children.into();
-    let id = id.to_string();
-    let max_height = max_height.to_string();
+/// Background of the selected / unselected tab in the game info sheet.
+const TAB_ACTIVE: &str = theme::SURFACE;
+const TAB_INACTIVE: &str = theme::MENU_BG_DEEP;
+
+/// `(tab id, pane id, label)` for each pane of the game info sheet that this game shows.
+fn rail_panes(has_bag: bool) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut panes = vec![("rail-tab-moves", "rail-pane-moves", "Moves")];
+    if has_bag {
+        panes.push(("rail-tab-bag", "remaining-tiles-panel", "Bag"));
+    }
+    panes.push(("rail-tab-info", "rail-pane-info", "Key & rules"));
+    panes
+}
+
+/// Shows one pane of the game info sheet and highlights its tab.
+fn rail_tab_action(has_bag: bool, pane: &str) -> ActionType {
+    let mut actions = Vec::new();
+    for (tab_id, pane_id, _) in rail_panes(has_bag) {
+        if pane_id == pane {
+            actions.push(ActionType::display_by_id(pane_id));
+            actions.push(ActionType::set_background_by_id(TAB_ACTIVE, tab_id));
+        } else {
+            actions.push(ActionType::no_display_by_id(pane_id));
+            actions.push(ActionType::set_background_by_id(TAB_INACTIVE, tab_id));
+        }
+    }
+    ActionType::Multi(actions)
+}
+
+/// Opens the game info sheet on one pane.
+fn open_rail_action(has_bag: bool, pane: &str) -> ActionType {
+    ActionType::Multi(vec![
+        ActionType::display_by_id("activity-rail"),
+        rail_tab_action(has_bag, pane),
+    ])
+}
+
+/// The game info sheet: standings, move history, the bag, and the board key and rules. A full
+/// screen sheet on phones and a right-hand side sheet elsewhere.
+#[allow(clippy::too_many_lines)]
+fn game_info_sheet(game: &AuthorizedGamePage, has_bag: bool) -> Container {
+    let players = game
+        .participants
+        .iter()
+        .enumerate()
+        .map(|(index, participant)| crate::HistoryPlayer {
+            player_id: participant.player_id,
+            display_name: participant.display_name.clone(),
+            label: if participant.player_id == game.viewer_player {
+                "You".to_string()
+            } else {
+                participant.display_name.clone()
+            },
+            avatar_url: participant.avatar_url.clone(),
+            seat: theme::seat_color(index),
+        })
+        .collect::<Vec<_>>();
+    let history = move_history_component(game.game_id, &game.history, &players);
+    let standings = game
+        .participants
+        .iter()
+        .enumerate()
+        .map(|(index, participant)| {
+            let score = game
+                .view
+                .players
+                .iter()
+                .find(|player| player.player_id == participant.player_id)
+                .map_or(0, |player| player.score);
+            let seat = theme::seat_color(index);
+            let is_viewer = participant.player_id == game.viewer_player;
+            ui::one(container! {
+                div direction="row" align-items="center" gap=6 background=(theme::SURFACE)
+                    border=((theme::BORDER, theme::EDGE_THIN)) border-bottom=((seat.edge, 3))
+                    border-radius=(theme::RADIUS_PILL) padding-y=2 padding-left=2 padding-right=10 {
+                    (ui::avatar(&participant.display_name, participant.avatar_url.as_deref(), seat, 24))
+                    span font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve" {
+                        (participant.display_name.as_str())
+                        @if is_viewer { " (you)" }
+                    }
+                    span font-family=(theme::FONT_DISPLAY) font-weight=bold { (score) }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let tabs = rail_panes(has_bag)
+        .into_iter()
+        .enumerate()
+        .map(|(index, (tab_id, pane_id, label))| {
+            ui::one(container! {
+                button type=button id=(tab_id) flex=1 min-width=0 padding-y=8 padding-x=6
+                    background=(if index == 0 { TAB_ACTIVE } else { TAB_INACTIVE }) color=(theme::INK)
+                    border=((theme::BORDER, 1)) border-radius=(theme::RADIUS_MD)
+                    font-size=(theme::TEXT_SM) font-weight=bold cursor=pointer white-space="preserve"
+                    fx-click=(rail_tab_action(has_bag, pane_id)) {
+                    (label)
+                }
+            })
+        })
+        .collect::<Vec<_>>();
     ui::one(container! {
-        aside id=(id) hidden position="fixed" top=64 right=8 width=(DRAWER_WIDTH) max-width="92vw"
-            max-height=(max_height) overflow-y="auto" background=(theme::MENU_BG) color=(theme::INK)
-            border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
-            border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_4) {
-            (children)
+        aside id="activity-rail" class="game-info-sheet" hidden position="fixed" top=0 right=0 bottom=0
+            width=(calc_number(calc_min(calc_value(Number::IntegerPercent(100)), calc_px(DRAWER_WIDTH))))
+            max-width="100%" background=(theme::MENU_BG) color=(theme::INK) font-family=(theme::FONT_UI)
+            border-left=((theme::BORDER_STRONG, theme::EDGE_THIN)) {
+            div class="game-info-header" gap=(theme::SPACE_3) padding=(theme::SPACE_4)
+                border-bottom=((theme::BORDER, 1)) {
+                div direction="row" justify-content="space-between" align-items="start" gap=(theme::SPACE_2) {
+                    div gap=2 min-width=0 {
+                        (ui::eyebrow("THIS MATCH", theme::ACCENT))
+                        h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) { (match_title(game)) }
+                    }
+                    (drawer_close_button("activity-rail"))
+                }
+                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=6 { (standings) }
+                div direction="row" gap=6 padding=4 background=(theme::MENU_BG_DEEP) border-radius=(theme::RADIUS_LG) { (tabs) }
+            }
+            div class="game-info-body" flex=1 min-height=0 overflow-y="auto" padding-x=(theme::SPACE_4) padding-bottom=(theme::SPACE_6) {
+                section id="rail-pane-moves" gap=0 {
+                    section id="recent-activity" gap=0 { (history) }
+                }
+                @if has_bag {
+                    section id="remaining-tiles-panel" hidden padding-top=(theme::SPACE_4) gap=(theme::SPACE_3) {
+                        (remaining_tiles_component(game))
+                    }
+                }
+                section id="rail-pane-info" hidden padding-top=(theme::SPACE_4) gap=(theme::SPACE_4) {
+                    (board_key_component())
+                    section id="game-reference" width="100%" gap=(theme::SPACE_2) {
+                        (rules_component(game))
+                    }
+                }
+            }
         }
     })
 }
 
-/// A round header control (back, bag, menu) on the night scene.
-const fn header_control_style() -> ui::ButtonStyle {
+/// A round night control in the HUD (back, menu).
+const fn hud_control_style() -> ui::ButtonStyle {
     ui::button_style(ButtonVariant::Night)
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+/// The status row: whose move it is, what the draft means, and zoom controls.
+fn dock_status_row(game: &AuthorizedGamePage, draft: &TurnDraft, message: &Container) -> Container {
+    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
+    let active_seat = participant_seat(game, game.view.active_player);
+    let (badge_fill, badge_ink) = if game.completed {
+        (theme::SUNNY, theme::ON_SUNNY)
+    } else if viewer_turn {
+        (theme::PRIMARY, theme::ON_PRIMARY)
+    } else {
+        (active_seat.fill, active_seat.ink)
+    };
+    let turn = turn_label(game);
+    ui::one(container! {
+        div id="dock-status" width="100%" height=(STATUS_HEIGHT) direction="row" align-items="center"
+            gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
+            span id="named-turn-status" padding-y=4 padding-x=10 border-radius=(theme::RADIUS_PILL)
+                background=(badge_fill) color=(badge_ink) font-size=(theme::TEXT_XS) font-weight=bold
+                white-space="preserve" {
+                (turn)
+            }
+            div class="dock-message" flex=1 min-width=0 height=(STATUS_HEIGHT) direction="row" align-items="center"
+                gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
+                (message.clone())
+            }
+            (zoom_controls(game, draft))
+        }
+    })
+}
+
+/// Plain status text for the dock message area.
+fn dock_text(text: &str, color: &'static str) -> Container {
+    let text = text.to_string();
+    ui::one(container! {
+        span min-width=0 color=(color) font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" {
+            (text)
+        }
+    })
+}
 
 #[allow(clippy::too_many_lines)]
 pub fn visual_game_page(
@@ -1460,7 +1779,6 @@ pub fn visual_game_page(
     error: Option<&str>,
 ) -> Container {
     let game_id = game.game_id.to_string();
-    let match_title = match_title(game);
     let feedback = draft_feedback(game, draft);
     let board = visual_board(game, draft, &feedback);
     let draft_preview = draft_feedback_component(game, &feedback, draft);
@@ -1469,7 +1787,6 @@ pub fn visual_game_page(
     let rack = visual_rack(game, draft);
     let actions = visual_turn_actions(game, draft);
     let blank_letter_layer = visual_blank_letter_layer(game, draft);
-    let history = move_history_component(game.game_id, &game.history);
     let game_channel = format!("game:{}", game.game_id);
     let game_path = if draft.has_composed_turn_input() {
         format!("/games/{game_id}?draft_revision={}", game.view.revision)
@@ -1478,124 +1795,119 @@ pub fn visual_game_page(
     };
     let refresh_game = ActionType::Navigate { url: game_path };
     let turn_feedback_view = turn_feedback(error);
-    let control = header_control_style();
-    let active_name = active_player_name(game).to_string();
-    let active_seat = participant_seat(game, game.view.active_player);
-    let active_avatar = game
-        .participants
-        .iter()
-        .find(|participant| participant.player_id == game.view.active_player)
-        .map(|participant| {
-            ui::avatar(
-                &participant.display_name,
-                participant.avatar_url.as_deref(),
-                active_seat,
-                24,
-            )
-        });
+    let control = hud_control_style();
     let (outcome, _) = completed_outcome(game);
     let has_bag =
         game.view.remaining_tile_count.is_some() || game.view.remaining_tile_faces.is_some();
+    let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
+    let message = if game.completed {
+        ui::one(vec![
+            turn_feedback_view,
+            dock_text(&format!("★ {outcome}"), theme::SUNNY),
+        ])
+    } else if error.is_some() {
+        turn_feedback_view
+    } else if viewer_turn {
+        ui::one(vec![turn_feedback_view, draft_preview])
+    } else {
+        let waiting = format!(
+            "{} is playing · plan your next word",
+            active_player_name(game)
+        );
+        ui::one(vec![
+            turn_feedback_view,
+            ui::with_class(
+                dock_text(&waiting, theme::NIGHT_INK_MUTED),
+                "dock-message waiting-banner",
+            ),
+        ])
+    };
+    let status = dock_status_row(game, draft, &message);
+    let compose_action = format!("/games/{}/compose", game.game_id);
+    let dock_width = calc_number(calc_min(
+        calc_px(DOCK_MAX_WIDTH),
+        calc_sub(dvw(100.0), calc_px(2 * HUD_MARGIN)),
+    ));
+    let results_style = ui::button_style(ButtonVariant::Sunny);
     // Keep the wrapper so `#app-page` is rendered (see `definition_page`).
     Container::from(container! {
         div id="app-page" font-family=(theme::FONT_UI) class="game-scene" data-shared-state-channel=(game_channel.as_str())
-            direction="column" width=vw100 height=dvh100 min-height=dvh100
+            width=vw100 height=dvh100 min-height=dvh100
             position="fixed" top=0 right=0 bottom=0 left=0
             overflow-x="hidden" overflow-y="hidden"
-            background=(theme::NIGHT) color=(theme::NIGHT_INK) gap=4 {
+            background=(theme::NIGHT) color=(theme::NIGHT_INK) {
             span id="game-live-refresh" hidden fx-global-shared-state-event=(refresh_game) { }
-            header id="scene-controls" width="100%" min-width=0 direction="row"
-                align-items="center" gap=(theme::SPACE_2) padding-top=(theme::SPACE_2) padding-x=(theme::SPACE_2) {
-                div class="header-action-slot header-action-left" direction="row" justify-content="start" {
-                    anchor href="/" id="leave-game" width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
-                        background=(control.background) color=(control.ink)
-                        border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
-                        border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
-                        font-size=(theme::TEXT_LG) font-weight=bold text-decoration="none"
-                        fx-hover=(ActionType::set_background_self(control.hover)) { "←" }
-                }
-                (scoreboard)
-                div class="header-action-slot header-action-right" direction="row" justify-content="end" gap=6 {
-                    @if has_bag {
-                        button id="remaining-tiles-button" type=button
-                            fx-click=(ActionType::toggle_display_by_id("remaining-tiles-panel"))
-                            height=(HEADER_CONTROL) direction="row" align-items="center" gap=5
-                            background=(control.background) color=(control.ink)
-                            border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
-                            border-radius=(theme::RADIUS_PILL) padding-left=5 padding-right=10
-                            font-weight=bold cursor=pointer white-space="preserve"
-                            fx-hover=(ActionType::set_background_self(control.hover)) {
-                            span width=24 height=24 min-width=24 background=(theme::TILE) color=(theme::TILE_INK)
-                                border-bottom=((theme::TILE_EDGE, 3)) border-radius=6
-                                align-items="center" justify-content="center"
-                                font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XS) font-weight=bold {
-                                @if let Some(count) = game.view.remaining_tile_count { (count) } @else { "?" }
-                            }
-                            span id="remaining-tiles-label" font-size=(theme::TEXT_SM) { "Bag" }
-                        }
-                    }
-                    button type=button fx-click=(ActionType::toggle_display_by_id("activity-rail"))
-                        height=(HEADER_CONTROL) padding-x=(theme::SPACE_3)
-                        background=(control.background) color=(control.ink)
-                        border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
-                        border-radius=(theme::RADIUS_PILL) font-size=(theme::TEXT_SM) font-weight=bold
-                        white-space="preserve" cursor=pointer
-                        fx-hover=(ActionType::set_background_self(control.hover)) { "Menu ···" }
-                }
-            }
-            main id="game-layout" class="game-arena" width="100%" min-height=0
-                flex=1 position="relative" overflow-x="hidden" overflow-y="hidden" {
+            main id="game-layout" class="game-arena" position="absolute" top=0 right=0 bottom=0 left=0
+                overflow-x="hidden" overflow-y="hidden" {
                 section id="board-region" position="absolute" top=0 right=0 bottom=0 left=0
                     overflow-x="hidden" overflow-y="hidden" {
                     (board)
                 }
             }
-            section id="turn-dock-layer" width="100%" flex="0 0 auto" align-items="center"
-                padding-x=(theme::SPACE_2) padding-bottom=(theme::SPACE_2) {
-                section id="play-console" class="game-console turn-dock" width="100%" max-width=(DOCK_MAX_WIDTH)
-                    align-items="center" position="relative"
-                    background=(theme::NIGHT_RAISED)
-                    border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((theme::NIGHT_BORDER, 6))
-                    border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_2) gap=(theme::SPACE_2) {
-                    @if game.completed {
-                        (turn_feedback_view)
-                        section class="dock-message" width="100%" direction="row" align-items="center"
-                            justify-content="space-between" gap=(theme::SPACE_2)
-                            background=(theme::SUNNY) color=(theme::ON_SUNNY)
-                            border=((theme::SUNNY_EDGE, theme::EDGE_THIN)) border-radius=(theme::RADIUS_PILL)
-                            padding-y=4 padding-left=(theme::SPACE_3) padding-right=4 {
-                            span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) font-weight=bold
-                                white-space="preserve" text-overflow="ellipsis" overflow-x="hidden" {
-                                "★ " (outcome)
-                            }
-                            (ui::action_button("Results", ButtonVariant::Secondary, ButtonSize::Small, ActionType::display_by_id("completed-game-summary")))
+            anchor href="/" id="leave-game" position="absolute" top=(HUD_MARGIN) left=(HUD_MARGIN)
+                width=(HEADER_CONTROL) height=(HEADER_CONTROL) min-width=(HEADER_CONTROL)
+                background=(control.background) color=(control.ink)
+                border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                border-radius=(theme::RADIUS_PILL) align-items="center" justify-content="center"
+                font-size=(theme::TEXT_LG) font-weight=bold text-decoration="none"
+                fx-hover=(ActionType::set_background_self(control.hover)) { "←" }
+            (scoreboard)
+            div id="scene-controls" position="absolute" top=(HUD_MARGIN) right=(HUD_MARGIN)
+                direction="row" align-items="center" gap=6 {
+                span id="live-status-connected" hidden color=(theme::LATEST_MOVE) font-size=(theme::TEXT_XS) font-weight=bold
+                    fx-global-shared-state-connected=(live_status_action("live-status-connected")) { "●" }
+                span id="live-status-subscribed" hidden fx-global-shared-state-subscribed=(live_status_action("live-status-connected")) { }
+                span id="live-status-disconnected" hidden color=(theme::DANGER) font-size=(theme::TEXT_XS) font-weight=bold
+                    fx-global-shared-state-disconnected=(live_status_action("live-status-disconnected")) { "● Offline" }
+                @if has_bag {
+                    button id="remaining-tiles-button" type=button
+                        fx-click=(open_rail_action(has_bag, "remaining-tiles-panel"))
+                        height=(HEADER_CONTROL) direction="row" align-items="center" gap=6
+                        background=(control.background) color=(control.ink)
+                        border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                        border-radius=(theme::RADIUS_PILL) padding-left=6 padding-right=(if_responsive(theme::MOBILE).then::<i32>(6).or_else(12))
+                        font-weight=bold cursor=pointer white-space="preserve"
+                        fx-hover=(ActionType::set_background_self(control.hover)) {
+                        span width=26 height=26 min-width=26 background=(theme::TILE) color=(theme::TILE_INK)
+                            border-bottom=((theme::TILE_EDGE, 3)) border-radius=6
+                            align-items="center" justify-content="center"
+                            font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XS) font-weight=bold {
+                            @if let Some(count) = game.view.remaining_tile_count { (count) } @else { "?" }
                         }
-                    } @else if error.is_some() {
-                        (turn_feedback_view)
-                    } @else if game.view.active_player == game.viewer_player {
-                        (turn_feedback_view)
-                        (draft_preview)
-                    } @else {
-                        (turn_feedback_view)
-                        section class="dock-message waiting-banner" width="100%" direction="row" align-items="center"
-                            justify-content="center" gap=(theme::SPACE_2)
-                            background=(active_seat.fill) color=(active_seat.ink)
-                            border=((active_seat.edge, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG)
-                            padding-y=4 padding-x=(theme::SPACE_3) {
-                            @if let Some(active_avatar) = active_avatar { (active_avatar) }
-                            span min-width=0 font-size=(theme::TEXT_SM) font-weight=bold overflow-wrap="anywhere" {
-                                span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { (active_name) " is playing" }
-                                " · plan your next word"
-                            }
-                        }
+                        span id="remaining-tiles-label" font-size=(theme::TEXT_SM)
+                            hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) { "Bag" }
                     }
-                    (rack)
-                    @if !game.completed && game.view.active_player == game.viewer_player {
+                }
+                button type=button id="game-menu-button" fx-click=(ActionType::display_by_id("activity-rail"))
+                    height=(HEADER_CONTROL) padding-x=(theme::SPACE_3)
+                    background=(control.background) color=(control.ink)
+                    border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-bottom=((control.edge, 4))
+                    border-radius=(theme::RADIUS_PILL) font-size=(theme::TEXT_SM) font-weight=bold
+                    direction="row" align-items="center" gap=6 white-space="preserve" cursor=pointer
+                    fx-hover=(ActionType::set_background_self(control.hover)) {
+                    span { "☰" }
+                    span id="game-menu-label" hidden=(if_responsive(theme::MOBILE).then::<bool>(true).or_else(false)) { "Menu" }
+                }
+            }
+            section id="play-console" class="game-console turn-dock" position="absolute"
+                bottom=(HUD_MARGIN) left="50%" translate-x=(Number::IntegerPercent(-50))
+                width=(dock_width.clone()) max-width=(dock_width.clone())
+                height=(if_responsive(theme::COMPACT).then::<i32>(DOCK_STACKED_HEIGHT).or_else(DOCK_WIDE_HEIGHT))
+                direction=(if_responsive(theme::COMPACT).then::<LayoutDirection>(LayoutDirection::Column).or_else(LayoutDirection::Row))
+                align-items="center" gap=(theme::SPACE_2)
+                background=(theme::NIGHT_RAISED)
+                border=((theme::NIGHT_LINE, DOCK_EDGE)) border-bottom=((theme::NIGHT_BORDER, DOCK_DEPTH))
+                border-radius=(theme::RADIUS_XL) padding=(DOCK_PADDING) {
+                (rack)
+                div id="dock-controls" flex=1 min-width=0
+                    width="100%"
+                    gap=(DOCK_GAP) justify-content="center" {
+                    (status)
+                    @if !game.completed && viewer_turn {
                         (actions)
                     } @else if !game.completed {
-                        @let compose_action = format!("/games/{}/compose", game.game_id);
-                        section id="turn-actions" class="primary-action-row" width="100%" max-width="100%" direction="row"
-                            justify-content="center" gap=(theme::SPACE_2) {
+                        section id="turn-actions" class="primary-action-row" width="100%" height=(ACTION_HEIGHT)
+                            direction="row" align-items="center" gap=(theme::SPACE_2) {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "SHUFFLE_RACK"))
                                 (dock_submit_button("⇄ Shuffle"))
@@ -1606,51 +1918,33 @@ pub fn visual_game_page(
                                     (dock_submit_button("↺ Recall"))
                                 }
                             }
+                            div class="play-placeholder" flex=1 min-width=0 height=(ACTION_HEIGHT)
+                                align-items="center" justify-content="center"
+                                border=((theme::NIGHT_LINE, theme::EDGE_THIN)) border-radius=(theme::RADIUS_LG)
+                                color=(theme::NIGHT_INK_MUTED) font-family=(theme::FONT_DISPLAY)
+                                font-size=(theme::TEXT_MD) font-weight=bold white-space="preserve" {
+                                "Waiting for your turn"
+                            }
+                        }
+                    } @else {
+                        div class="primary-action-row" width="100%" height=(ACTION_HEIGHT)
+                            direction="row" align-items="center" gap=(theme::SPACE_2) {
+                            button type=button flex=1 min-width=0 height=(ACTION_HEIGHT)
+                                fx-click=(ActionType::display_by_id("completed-game-summary"))
+                                background=(results_style.background) color=(results_style.ink)
+                                border=((results_style.edge, theme::EDGE_THIN)) border-bottom=((results_style.edge, 6))
+                                border-radius=(theme::RADIUS_LG) align-items="center" justify-content="center"
+                                font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold cursor=pointer
+                                fx-hover=(ActionType::set_background_self(results_style.hover)) { "★ See results" }
+                            (ui::link_button("/", "Back to games", ButtonVariant::Secondary, ButtonSize::Medium))
                         }
                     }
                 }
             }
-            @if has_bag {
-                (drawer_shell("remaining-tiles-panel", "72vh", container! {
-                    div direction="row" justify-content="space-between" align-items="center" gap=(theme::SPACE_2) {
-                        div gap=2 {
-                            (ui::eyebrow("TILE BAG", theme::ACCENT))
-                            h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) { "Bag" }
-                        }
-                        (drawer_close_button("remaining-tiles-panel"))
-                    }
-                    (remaining_tiles_component(game))
-                }))
-            }
-            (drawer_shell("activity-rail", "78vh", container! {
-                div direction="row" justify-content="space-between" align-items="start" gap=(theme::SPACE_2) {
-                    div gap=2 min-width=0 {
-                        (ui::eyebrow("THIS MATCH", theme::ACCENT))
-                        h2 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_XL) {
-                            (match_title)
-                        }
-                    }
-                    (drawer_close_button("activity-rail"))
-                }
-                @if let Some(latest) = &game.latest_action {
-                    section id="latest-game-action" background=(theme::SUNNY_SOFT)
-                        border=((theme::SUNNY, theme::EDGE_THIN)) border-bottom=((theme::SUNNY_EDGE, 4))
-                        border-radius=(theme::RADIUS_LG) padding=(theme::SPACE_3) gap=3 {
-                        (ui::eyebrow("LATEST", theme::ON_SUNNY))
-                        span font-weight=bold color=(theme::ON_SUNNY) { (latest.as_str()) }
-                    }
-                }
-                section id="recent-activity" gap=(theme::SPACE_2) {
-                    h3 font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_MD) { "Move history" }
-                    (history)
-                }
-                (board_key_component())
-                section id="game-reference" width="100%" gap=(theme::SPACE_2) {
-                    (rules_component(game))
-                }
-            }))
-            aside id="game-definition-layer" hidden position="fixed" top=64 right=8
-                width=(DRAWER_WIDTH + 80) max-width="94%" max-height="72vh" overflow-y="auto"
+            (game_info_sheet(game, has_bag))
+            aside id="game-definition-layer" hidden position="fixed" top=(HUD_MARGIN)
+                right=(if_responsive(theme::MOBILE).then::<i32>(HUD_MARGIN).or_else(DRAWER_WIDTH + 16))
+                width=(DRAWER_WIDTH + 40) max-width="96%" max-height="80vh" overflow-y="auto"
                 background=(theme::MENU_BG) color=(theme::INK)
                 border=((theme::BORDER_STRONG, theme::EDGE_THIN)) border-bottom=((theme::BORDER_STRONG, 6))
                 border-radius=(theme::RADIUS_XL) padding=(theme::SPACE_4) gap=(theme::SPACE_3) {
@@ -1793,7 +2087,9 @@ mod tests {
             assert!(page.contains("id=\"game-board\""));
             assert_eq!(page.matches("data-tile-id=").count(), game.view.rack.len());
             assert!(page.contains("Your move"));
-            assert!(page.contains("Menu ···"));
+            assert!(page.contains("Menu"));
+            assert!(page.contains("id=\"board-frame\""));
+            assert!(page.contains("id=\"dock-status\""));
             assert!(page.contains("board-zoom-controls"));
             assert!(page.contains("Place tiles to play"));
             assert!(page.contains("100dvh") || page.contains("dvh"));

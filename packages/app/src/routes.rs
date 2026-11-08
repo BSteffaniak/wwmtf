@@ -291,7 +291,7 @@ impl BoardZoom {
             Self::Fit => 78,
             Self::Compact => 89,
             Self::Normal => 100,
-            Self::Large => 160,
+            Self::Large => 200,
         }
     }
 
@@ -1026,7 +1026,7 @@ pub fn draft_feedback(game: &AuthorizedGamePage, draft: &TurnDraft) -> DraftFeed
         let message = if game.view.board.is_empty() {
             "Start by covering the starred center square."
         } else {
-            "Choose a rack tile, then place it on a highlighted connecting square."
+            "Pick a tile, then tap a highlighted square."
         };
         return DraftFeedback {
             candidate: None,
@@ -3543,7 +3543,7 @@ mod tests {
         assert_eq!(BoardZoom::Fit.fit_percent(), 78);
         assert_eq!(BoardZoom::Compact.fit_percent(), 89);
         assert_eq!(BoardZoom::Normal.fit_percent(), 100);
-        assert_eq!(BoardZoom::Large.fit_percent(), 160);
+        assert_eq!(BoardZoom::Large.fit_percent(), 200);
 
         let legacy = r#"{"selected_tile":null,"selected_blank_letter":null,"placements":[],"rack_tile":null,"exchange_tiles":[],"mode":"Play"}"#;
         let draft: TurnDraft = serde_json::from_str(legacy).expect("legacy draft parses");
@@ -3932,24 +3932,30 @@ mod tests {
             assert!(page.contains("game-arena"));
             assert!(page.contains("player-hud"));
             assert!(page.contains("action-hud"));
-            assert!(page.contains("header-action-left"));
-            assert!(page.contains("header-action-right"));
+            assert!(page.contains("id=\"leave-game\""));
+            assert!(page.contains("id=\"scene-controls\""));
             assert!(page.contains("activity-rail"));
+            assert!(page.contains("game-info-sheet"));
+            assert!(page.contains("id=\"rail-tab-moves\""));
+            assert!(page.contains("id=\"rail-pane-moves\""));
+            assert!(page.contains("id=\"rail-pane-info\""));
             assert!(page.contains("turn-dock"));
-            assert!(page.contains("id=\"turn-dock-layer\""));
-            assert!(page.contains("sx-flex-grow=\"0\""));
-            assert!(page.contains("sx-flex-shrink=\"0\""));
+            assert!(page.contains("id=\"dock-controls\""));
+            assert!(page.contains("id=\"dock-status\""));
+            assert!(page.contains("id=\"board-frame\""));
             assert!(!page.contains("sx-padding-bottom=\"330\""));
             assert!(!page.contains("sx-max-height=\"40vh\""));
             assert!(!page.contains("sx-max-height=\"300px\""));
-            assert!(page.contains("sx-flex-grow=\"1\""));
             assert!(page.contains("sx-position=\"fixed\""));
             assert!(page.contains("sx-height=\"100dvh\""));
             assert!(page.contains("sx-min-height=\"100dvh\""));
             assert!(page.contains("sx-position=\"absolute\""));
             assert!(page.contains("sx-top=\"0\""));
             assert!(page.contains("sx-bottom=\"0\""));
-            assert!(page.contains("sx-max-height=\"78vh\""));
+            assert!(
+                page.contains("sx-translate-x=\"-50%\""),
+                "the dock centers over the board"
+            );
             assert!(page.contains("sx-overflow-y=\"auto\""));
             assert!(page.contains("board-viewport"));
             assert!(page.contains("board-scroll-content"));
@@ -3959,7 +3965,7 @@ mod tests {
             assert!(page.contains("value=\"ZOOM_IN\""));
             assert!(page.contains("value=\"SHUFFLE_RACK\""));
             assert!(page.contains("Shuffle"));
-            assert!(page.contains("Menu ···"));
+            assert!(page.contains("Menu"));
             assert!(!page.contains("primary-turn-action"));
             assert!(page.contains("alice"));
             assert!(page.contains("bob"));
@@ -4701,6 +4707,9 @@ mod tests {
                     text: "WORD".to_string(),
                     score: 4,
                 }],
+                actor: None,
+                points: Some(4),
+                headline: "played".to_string(),
             });
             assert!(game.has_played_word("WORD"));
             let unavailable_lookup = crate::DefinitionLookup::Unavailable(

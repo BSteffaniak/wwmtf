@@ -42,9 +42,9 @@ pub use challenges::{
     create_game_in_transaction, decline_challenge, find_user_by_username,
 };
 pub use components::{
-    GameView, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView, PlayedWordView,
-    PlayerView, PremiumView, RemainingTileFaceView, error_component, final_score_adjustments,
-    game_view, move_history_component, move_history_view,
+    GameView, HistoryPlayer, MoveHistoryError, MoveHistoryView, PendingMoveError, PendingMoveView,
+    PlayedWordView, PlayerView, PremiumView, RemainingTileFaceView, error_component,
+    final_score_adjustments, game_view, move_history_component, move_history_view,
 };
 pub use definitions::{
     DEFAULT_DEFINITION_PROVIDER_BASE_URL, DefinitionError, DefinitionLookup, DefinitionMeaning,

@@ -95,6 +95,13 @@ pub const MOBILE: &str = "mobile";
 /// Viewport width (px) at or below which the `mobile` trigger applies.
 pub const MOBILE_MAX_WIDTH: i32 = 600;
 
+/// Name of the responsive trigger for layouts too narrow for side gutters
+/// (`MaxWidth(COMPACT_MAX_WIDTH)`). The game scene stacks its HUD above and below the board
+/// instead of beside it.
+pub const COMPACT: &str = "compact";
+/// Viewport width (px) at or below which the `compact` trigger applies.
+pub const COMPACT_MAX_WIDTH: i32 = 1200;
+
 /// Every named responsive trigger the page modules reference through `if_responsive(..)`.
 ///
 /// Renderer wiring must register each `(name, trigger)` pair (for example with
@@ -102,12 +109,17 @@ pub const MOBILE_MAX_WIDTH: i32 = 600;
 /// breakpoint overrides.
 #[must_use]
 pub fn responsive_triggers() -> Vec<(String, hyperchad::transformer::ResponsiveTrigger)> {
-    vec![(
-        MOBILE.to_string(),
-        hyperchad::transformer::ResponsiveTrigger::MaxWidth(
-            hyperchad::transformer::Number::Integer(i64::from(MOBILE_MAX_WIDTH)),
-        ),
-    )]
+    [(COMPACT, COMPACT_MAX_WIDTH), (MOBILE, MOBILE_MAX_WIDTH)]
+        .into_iter()
+        .map(|(name, max_width)| {
+            (
+                name.to_string(),
+                hyperchad::transformer::ResponsiveTrigger::MaxWidth(
+                    hyperchad::transformer::Number::Integer(i64::from(max_width)),
+                ),
+            )
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

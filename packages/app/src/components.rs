@@ -269,6 +269,12 @@ pub struct MoveHistoryView {
     pub description: String,
     pub score_summary: String,
     pub played_words: Vec<PlayedWordView>,
+    /// Participant who took the action; `None` for game start/completion.
+    pub actor: Option<PlayerId>,
+    /// Points scored by an accepted play.
+    pub points: Option<u32>,
+    /// Short action phrase shown after the actor's name ("played", "passed", "swapped 3 tiles").
+    pub headline: String,
 }
 
 /// Derives chronological renderer-neutral public history directly from canonical events.
@@ -278,6 +284,7 @@ pub struct MoveHistoryView {
 /// # Errors
 ///
 /// Returns replay or canonical-play analysis errors when the event sequence is invalid.
+#[allow(clippy::too_many_lines)]
 pub fn move_history_view(
     events: &[GameEvent],
     profile: &RuleProfile,
@@ -287,8 +294,14 @@ pub fn move_history_view(
     let mut history = Vec::with_capacity(events.len());
     for event in events {
         let mut played_words = Vec::new();
-        let (kind, description) = match (state.as_ref(), event) {
-            (None, GameEvent::GameStarted { .. }) => ("GAME_STARTED", "Game started.".to_string()),
+        let (kind, description, actor, points, headline) = match (state.as_ref(), event) {
+            (None, GameEvent::GameStarted { .. }) => (
+                "GAME_STARTED",
+                "Game started.".to_string(),
+                None,
+                None,
+                "Game started".to_string(),
+            ),
             (
                 Some(previous),
                 GameEvent::TilesPlayed {
@@ -320,6 +333,9 @@ pub fn move_history_view(
                         "{} played {words} for {score} points.",
                         player_name(*player_id)
                     ),
+                    Some(*player_id),
+                    Some(*score),
+                    "played".to_string(),
                 )
             }
             (
@@ -329,28 +345,45 @@ pub fn move_history_view(
                     returned,
                     ..
                 },
-            ) => (
-                "TILES_EXCHANGED",
-                format!(
-                    "{} exchanged {} tile{}.",
-                    player_name(*player_id),
-                    returned.len(),
-                    if returned.len() == 1 { "" } else { "s" }
-                ),
-            ),
+            ) => {
+                let plural = if returned.len() == 1 { "" } else { "s" };
+                (
+                    "TILES_EXCHANGED",
+                    format!(
+                        "{} exchanged {} tile{plural}.",
+                        player_name(*player_id),
+                        returned.len(),
+                    ),
+                    Some(*player_id),
+                    None,
+                    format!("swapped {} tile{plural}", returned.len()),
+                )
+            }
             (Some(_), GameEvent::TurnPassed { player_id }) => (
                 "TURN_PASSED",
                 format!("{} passed.", player_name(*player_id)),
+                Some(*player_id),
+                None,
+                "passed".to_string(),
             ),
             (Some(_), GameEvent::GameResigned { player_id, .. }) => (
                 "GAME_RESIGNED",
                 format!("{} resigned.", player_name(*player_id)),
+                Some(*player_id),
+                None,
+                "resigned".to_string(),
             ),
             (Some(_), GameEvent::GameCompleted { winner, .. }) => (
                 "GAME_COMPLETED",
                 winner.as_ref().map_or_else(
                     || "Game completed in a tie.".to_string(),
                     |winner| format!("Game completed; {} won.", player_name(*winner)),
+                ),
+                None,
+                None,
+                winner.as_ref().map_or_else(
+                    || "Game over · tie".to_string(),
+                    |winner| format!("Game over · {} won", player_name(*winner)),
                 ),
             ),
             _ => return Err(wwmtf_game_domain::ReplayError::MissingStart.into()),
@@ -370,6 +403,9 @@ pub fn move_history_view(
             description,
             score_summary,
             played_words,
+            actor,
+            points,
+            headline,
         });
     }
     Ok(history)
@@ -405,66 +441,98 @@ pub fn final_score_adjustments(
     Ok(std::collections::BTreeMap::new())
 }
 
-/// Renders chronological move/score history as a playful timeline.
+/// Public identity used to label move-history rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryPlayer {
+    pub player_id: PlayerId,
+    pub display_name: String,
+    /// Row label: the display name, or "You" for the viewer.
+    pub label: String,
+    pub avatar_url: Option<String>,
+    pub seat: crate::theme::SeatColor,
+}
+
+/// Renders move history newest first as compact, scannable rows: who acted, what they did, the
+/// points scored, and tappable word chips that open definitions.
 #[must_use]
 pub fn move_history_component(
     game_id: wwmtf_game_domain::GameId,
     history: &[MoveHistoryView],
+    players: &[HistoryPlayer],
 ) -> Container {
+    use crate::theme;
+
+    let turns = history.iter().filter(|entry| entry.actor.is_some()).count();
     container! {
-        section id="move-history" gap=(crate::theme::SPACE_2) {
-            @if history.is_empty() {
-                div background=(crate::theme::SURFACE_ALT) border=((crate::theme::BORDER, 2))
-                    border-radius=(crate::theme::RADIUS_MD) padding=(crate::theme::SPACE_3) {
-                    span color=(crate::theme::INK_MUTED) { "No moves yet. The first word will start the story." }
+        section id="move-history" gap=0 {
+            @if turns == 0 {
+                div align-items="center" gap=(theme::SPACE_2) padding-y=(theme::SPACE_6) text-align="center" {
+                    span color=(theme::ACCENT) font-size=(theme::TEXT_XXL) font-weight=bold { "✦" }
+                    span font-weight=bold color=(theme::INK) { "No moves yet" }
+                    span color=(theme::INK_MUTED) font-size=(theme::TEXT_SM) { "The first word will start the story." }
                 }
             }
-            div class="move-timeline" gap=(crate::theme::SPACE_2) margin-left=6
-                border-left=((crate::theme::SURFACE_LAVENDER, 3)) padding-left=(crate::theme::SPACE_4) {
-                @for entry in history.iter().rev() {
-                    @let (dot, dot_edge) = history_marker(&entry.kind);
-                    div class="move-entry" position="relative" background=(crate::theme::SURFACE)
-                        border=((crate::theme::BORDER, 2)) border-bottom=((crate::theme::BORDER_STRONG, 3))
-                        border-radius=(crate::theme::RADIUS_MD) padding-y=(crate::theme::SPACE_2)
-                        padding-x=(crate::theme::SPACE_3) gap=(crate::theme::SPACE_1) {
-                        span class="move-entry-dot" position="absolute" left=-29 top=12 width=12 height=12
-                            border-radius=(crate::theme::RADIUS_PILL) background=(dot) border=((dot_edge, 2)) { }
-                        span font-weight=bold color=(crate::theme::INK) { (entry.description.as_str()) }
-                        @if !entry.played_words.is_empty() {
-                            div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=6 {
-                                @for word in &entry.played_words {
-                                    @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
-                                    button type=button class="played-word-definition"
-                                        hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
-                                        fx-click=(ActionType::display_by_id("game-definition-layer"))
-                                        color=(crate::theme::TILE_INK) background=(crate::theme::TILE)
-                                        border=((crate::theme::TILE_EDGE, 1)) border-bottom=((crate::theme::TILE_EDGE, 3))
-                                        border-radius=(crate::theme::RADIUS_PILL) padding-y=3 padding-x=10
-                                        font-family=(crate::theme::FONT_DISPLAY) font-weight=bold cursor=pointer
-                                        fx-hover=(ActionType::set_background_self(crate::theme::TILE_HI)) {
-                                        (word.text.as_str()) " · " (word.score)
+            @for (index, entry) in history.iter().enumerate().rev() {
+                @let player = entry.actor.and_then(|actor| players.iter().find(|player| player.player_id == actor));
+                @let turn_number = history[..=index].iter().filter(|previous| previous.actor.is_some()).count();
+                @if let Some(player) = player {
+                    div class="move-entry" data-kind=(entry.kind.as_str()) direction="row" align-items="start"
+                        gap=(theme::SPACE_3) padding-y=(theme::SPACE_3) padding-x=(theme::SPACE_1)
+                        border-bottom=((theme::BORDER, 1)) {
+                        (crate::ui::avatar(&player.display_name, player.avatar_url.as_deref(), player.seat, 32))
+                        div flex=1 min-width=0 gap=6 {
+                            div direction="row" align-items="center" justify-content="space-between" gap=(theme::SPACE_2) {
+                                span min-width=0 overflow-wrap="anywhere" color=(theme::INK) font-size=(theme::TEXT_SM) {
+                                    span font-weight=bold { (player.label.as_str()) }
+                                    span color=(theme::INK_MUTED) { " " (entry.headline.as_str()) }
+                                }
+                                @if let Some(points) = entry.points {
+                                    span min-width=40 padding-y=2 padding-x=8 border-radius=(theme::RADIUS_PILL)
+                                        background=(theme::PRIMARY_SOFT) color=(theme::PRIMARY_INK)
+                                        align-items="center" justify-content="center"
+                                        font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_SM) font-weight=bold {
+                                        "+" (points)
+                                    }
+                                } @else {
+                                    span color=(theme::INK_SOFT) font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve" {
+                                        "Turn " (turn_number)
+                                    }
+                                }
+                            }
+                            @if !entry.played_words.is_empty() {
+                                div direction="row" overflow-x=(LayoutOverflow::Wrap { grid: false }) gap=6 {
+                                    @for word in &entry.played_words {
+                                        @let panel_href = format!("/games/{game_id}/word-panels/{}", word.text.to_ascii_lowercase());
+                                        button type=button class="played-word-definition"
+                                            hx-get=(panel_href) hx-target="#game-definition-layer" hx-swap="this"
+                                            fx-click=(ActionType::display_by_id("game-definition-layer"))
+                                            direction="row" align-items="center" gap=6
+                                            color=(theme::TILE_INK) background=(theme::TILE)
+                                            border=((theme::TILE_EDGE, 1)) border-bottom=((theme::TILE_EDGE, 3))
+                                            border-radius=(theme::RADIUS_SM) padding-y=3 padding-x=8
+                                            font-family=(theme::FONT_DISPLAY) font-weight=bold cursor=pointer
+                                            fx-hover=(ActionType::set_background_self(theme::TILE_HI)) {
+                                            span { (word.text.as_str()) }
+                                            span font-size=(theme::TEXT_XS) opacity=0.7 { (word.score) }
+                                        }
                                     }
                                 }
                             }
                         }
-                        span color=(crate::theme::INK_SOFT) font-size=(crate::theme::TEXT_XS) font-weight=bold { (entry.score_summary.as_str()) }
+                    }
+                } @else {
+                    div class="move-entry move-entry-milestone" data-kind=(entry.kind.as_str()) direction="row"
+                        align-items="center" justify-content="center" gap=(theme::SPACE_2)
+                        padding-y=(theme::SPACE_3) border-bottom=((theme::BORDER, 1)) {
+                        span color=(theme::ACCENT) font-weight=bold { "✦" }
+                        span color=(theme::INK_MUTED) font-size=(theme::TEXT_XS) font-weight=bold { (entry.headline.as_str()) }
+                        span color=(theme::ACCENT) font-weight=bold { "✦" }
                     }
                 }
             }
         }
     }
     .into()
-}
-
-/// `(fill, edge)` of the timeline dot for one public history entry kind.
-fn history_marker(kind: &str) -> (&'static str, &'static str) {
-    match kind {
-        "TILES_PLAYED" => (crate::theme::PRIMARY, crate::theme::PRIMARY_EDGE),
-        "TILES_EXCHANGED" => (crate::theme::INFO, crate::theme::ACCENT_EDGE),
-        "TURN_PASSED" => (crate::theme::SUNNY, crate::theme::SUNNY_EDGE),
-        "GAME_RESIGNED" => (crate::theme::DANGER, crate::theme::DANGER_EDGE),
-        _ => (crate::theme::ACCENT, crate::theme::ACCENT_EDGE),
-    }
 }
 
 /// Renders recoverable validation/error feedback.
@@ -521,6 +589,7 @@ mod tests {
     #[test]
     fn move_history_word_buttons_target_the_definition_panel() {
         let game_id = GameId::new();
+        let alice = PlayerId::new();
         let history = vec![MoveHistoryView {
             revision: 1,
             kind: "TILES_PLAYED".to_string(),
@@ -530,8 +599,18 @@ mod tests {
                 text: "WORD".to_string(),
                 score: 4,
             }],
+            actor: Some(alice),
+            points: Some(4),
+            headline: "played".to_string(),
         }];
-        let rendered = move_history_component(game_id, &history)
+        let players = vec![HistoryPlayer {
+            player_id: alice,
+            display_name: "Alice".to_string(),
+            label: "Alice".to_string(),
+            avatar_url: None,
+            seat: crate::theme::seat_color(0),
+        }];
+        let rendered = move_history_component(game_id, &history, &players)
             .display_to_string(false, false)
             .expect("history renders");
 

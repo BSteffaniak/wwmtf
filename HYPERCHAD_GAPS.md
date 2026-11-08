@@ -38,6 +38,17 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 - **App metadata:** icon and theme color, mapped to favicon/manifest on HTML and window icon on desktop renderers.
 - **Responsive triggers beyond `MaxWidth`/`MaxHeight`** (min-width, orientation), and responsive values without requiring an explicit element id.
 
+## Responsive values
+
+- **Responsive values for any `Number`.** The template only turns integer responsive values (`i32`/`i64`/`f32`) into a base attribute value; `calc(...)`, percent, and viewport units fail to compile, even though override generation already accepts any `Number`. A generic `From<IfExpression<T: Into<Number>, Responsive>> for Number` would fix it, and an app crate can't add it (orphan rule). Workaround: the game scene builds per-layout sizes as one `calc()` with a clamped step term at the breakpoint (`step_length` in `pages/game.rs`).
+- **Responsive values must be written inline.** Overrides are only generated when the attribute literally contains `if_responsive(...)`. A helper that returns the same `IfExpression` compiles but silently keeps only the default value. It should either work through the type or fail to compile.
+- **`gap` is not responsive.** Workaround: one gap for every layout.
+
+## Overlays and controls
+
+- **Pass-through hit testing for overlay containers** (a renderer-neutral `pointer-events: none` equivalent). A transparent full-width HUD bar blocks taps on the board beneath it. Workaround: every HUD cluster is its own small absolutely positioned element.
+- **Form controls inherit typography.** HTML buttons fall back to the browser's control font size instead of their parent's, so text inside board squares needs an explicit `font-size=100%`. Renderers could normalize controls to inherit font family and size.
+
 ## Layout and feature wiring
 
 - **Single flex properties imply the others.** Setting only `flex-shrink=0` emits `flex-grow:1; flex-basis:0%`, and `flex="0 0 auto"` emits `flex-basis:0`, so fixed-size items stretch or collapse. Workaround: pin fixed-size items with equal `width` and `min-width` and leave flex unset.

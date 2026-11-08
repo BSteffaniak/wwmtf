@@ -710,6 +710,14 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             const rackFaceRects = rackFaces.map(face => face?.getBoundingClientRect());
             const rackPointRects = rackPoints.map(points => points?.getBoundingClientRect());
             const dockRect = dock?.getBoundingClientRect();
+            // The board fills the screen beneath a floating HUD; at the default zoom the framed
+            // board itself must sit clear of every HUD layer.
+            const frameRect = document.querySelector('#board-frame')?.getBoundingClientRect();
+            const hudRects = [
+                '#leave-game', '#scene-controls', '#play-console',
+                ...Array.from(document.querySelectorAll('#participant-scoreboard > *')).map((_, index) => `#participant-scoreboard > :nth-child(${index + 1})`),
+            ].map(selector => document.querySelector(selector)?.getBoundingClientRect()).filter(Boolean);
+            const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
             const ids = Array.from(document.querySelectorAll('[id]')).map(element => element.id);
             return {
                 viewport: document.querySelector('meta[name="viewport"]')?.content ?? null,
@@ -743,7 +751,9 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                     return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight;
                 })(),
                 dockVisibleInViewport: Boolean(dockRect && dockRect.top >= 0 && dockRect.bottom <= innerHeight),
-                boardClearOfDock: Boolean(boardRect && dockRect && boardRect.bottom <= dockRect.top),
+                boardClearOfDock: Boolean(frameRect && dockRect && frameRect.bottom <= dockRect.top),
+                boardClearOfHud: Boolean(frameRect && hudRects.length >= 4 && hudRects.every(rect => !overlaps(frameRect, rect))),
+                boardFullyVisible: Boolean(frameRect && frameRect.left >= 0 && frameRect.top >= 0 && frameRect.right <= innerWidth && frameRect.bottom <= innerHeight),
                 hasRack: Boolean(rack),
                 hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('is playing') || document.body.innerText.includes('Game complete'),
                 hasPreview: Boolean(document.querySelector('#draft-preview')) || document.body.innerText.includes('is playing') || document.body.innerText.includes('Game complete'),
@@ -779,6 +789,8 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"rack tiles do not fit on one contained row at {width}px: {layout!r}")
     if not layout["boardClearOfDock"]:
         raise AcceptanceError(f"fixed rack dock obscures the board at {width}px: {layout!r}")
+    if not layout["boardClearOfHud"] or not layout["boardFullyVisible"]:
+        raise AcceptanceError(f"floating HUD obscures the fitted board at {width}px: {layout!r}")
     if not all(layout[key] for key in [
         "hasRack", "hasActions", "hasPreview", "hasAwareness",
         "hasTurnDock", "hasActivityRail", "hasScene",
