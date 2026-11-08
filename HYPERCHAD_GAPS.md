@@ -51,6 +51,7 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 ## Overlays and controls
 
 - **Pass-through hit testing for overlay containers** (a renderer-neutral `pointer-events: none` equivalent). A transparent full-width HUD bar blocks taps on the board beneath it. Workaround: every HUD cluster is its own small absolutely positioned element.
+- **Scroll position control** (an initial scroll offset, scroll-into-view for an element, or restoring a scroll container's position across a full page load). A zoomed board keeps its scroll through compose responses (the page morph preserves it), but a reload starts at the top-left corner instead of around the start square or the last position. Workaround: the default zoom on phones is chosen so the start square is visible from the top-left.
 - **Form controls inherit typography.** HTML buttons fall back to the browser's control font size instead of their parent's, so text inside board squares needs an explicit `font-size=100%`. Renderers could normalize controls to inherit font family and size.
 
 ## Layout and feature wiring

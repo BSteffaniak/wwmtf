@@ -337,6 +337,11 @@ pub enum TurnMode {
 }
 
 impl TurnDraft {
+    /// Whether the plan is worth saving: composed turn input or a chosen zoom level.
+    fn has_saved_state(&self) -> bool {
+        self.has_composed_turn_input() || !self.board_zoom.is_default()
+    }
+
     pub fn has_composed_turn_input(&self) -> bool {
         self.selected_blank_letter.is_some()
             || !self.placements.is_empty()
@@ -1013,7 +1018,8 @@ async fn persist_draft(
     draft: &TurnDraft,
     now: OffsetDateTime,
 ) -> Result<(), crate::MovePlanError> {
-    if draft.has_composed_turn_input() {
+    // The zoom level is kept with the plan so it survives reloads, live refreshes, and turns.
+    if draft.has_saved_state() {
         save_move_plan(
             database,
             game.game_id,
@@ -1140,8 +1146,10 @@ async fn game_compose_route(
         let _ = persist_draft(database, &game, &draft, now).await;
         let message = if removed_conflicts {
             "The board changed. Conflicting planned tiles returned to your rack; the rest of your plan was preserved and rescored."
-        } else {
+        } else if draft.has_composed_turn_input() {
             "The board changed. Your plan was preserved and rescored against the latest board."
+        } else {
+            return visual_game_page(&game, &draft, None);
         };
         return draft_error_page(&game, &draft, message);
     }
@@ -1440,11 +1448,25 @@ async fn game_turn_route(
                 [TransportInbound::CommandAccepted { .. }]
             ) =>
         {
+            // The submitted plan is spent, but keep the player's zoom level for their next view.
+            let board_zoom = load_move_plan(database, game_id, &user_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|(payload, _)| parse_draft(&payload))
+                .map_or_else(BoardZoom::default, |draft| draft.board_zoom);
+            let draft = TurnDraft {
+                board_zoom,
+                ..TurnDraft::default()
+            };
             let _ = clear_move_plan(database, game_id, &user_id).await;
             match load_authorized_game_page(database, &request.cookies, &game_id.to_string(), now)
                 .await
             {
-                Ok(game) => View::from(game_page(&game)),
+                Ok(game) => {
+                    let _ = persist_draft(database, &game, &draft, now).await;
+                    View::from(visual_game_page(&game, &draft, None))
+                }
                 Err(PresentationError::Unauthenticated) => View::from(error_component(
                     "Your session expired. Sign in and review the accepted turn.",
                 )),
@@ -2408,7 +2430,7 @@ pub async fn game_route(
                 Some(
                     "The board changed. Conflicting planned tiles returned to your rack; the rest of your plan was preserved and rescored.",
                 )
-            } else if board_changed {
+            } else if board_changed && draft.has_composed_turn_input() {
                 Some(
                     "The board changed. Your plan was preserved and rescored against the latest board.",
                 )
@@ -3568,6 +3590,122 @@ mod tests {
         let legacy = r#"{"selected_tile":null,"selected_blank_letter":null,"placements":[],"rack_tile":null,"exchange_tiles":[],"mode":"Play"}"#;
         let draft: TurnDraft = serde_json::from_str(legacy).expect("legacy draft parses");
         assert_eq!(draft.board_zoom, BoardZoom::Normal);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn zoom_level_survives_reloads_and_accepted_turns() {
+        block_on(async {
+            let database: Arc<dyn Database> = Arc::from(
+                switchy_database_connection::builder()
+                    .turso()
+                    .with_in_memory()
+                    .build()
+                    .await
+                    .expect("Turso opens"),
+            );
+            migrate_app(&*database).await.expect("migrations run");
+            let now = OffsetDateTime::UNIX_EPOCH;
+            let alice = register(&*database, "alice", "correct horse battery staple", now)
+                .await
+                .expect("Alice registers");
+            let bob = register(&*database, "bob", "another correct horse battery", now)
+                .await
+                .expect("Bob registers");
+            let challenge = create_challenge(&*database, &alice, &bob, now)
+                .await
+                .expect("challenge creates");
+            let game_id = accept_challenge(&*database, &challenge, &bob, now, 5)
+                .await
+                .expect("game starts");
+            let state = crate::recover_game(&*database, game_id)
+                .await
+                .expect("game loads");
+            let active_user = if crate::player_for_user(&*database, game_id, &alice)
+                .await
+                .expect("Alice is seated")
+                == state.active_player
+            {
+                alice
+            } else {
+                bob
+            };
+            let session = create_session(&*database, &active_user, now, Duration::days(1))
+                .await
+                .expect("session creates");
+            let cookies = std::collections::BTreeMap::from([(
+                SESSION_COOKIE_NAME.to_string(),
+                session.expose().to_string(),
+            )]);
+            let post = |path: String, body: String| {
+                let mut request = RouteRequest::from_path(&path, RequestInfo::default());
+                request.method = "POST".parse().expect("POST parses");
+                request.headers.insert(
+                    "content-type".to_string(),
+                    "application/x-www-form-urlencoded".to_string(),
+                );
+                request.cookies = cookies.clone();
+                request.body = Some(std::sync::Arc::new(body.into()));
+                request
+            };
+            let reload = || async {
+                let mut request =
+                    RouteRequest::from_path(&format!("/games/{game_id}"), RequestInfo::default());
+                request.cookies = cookies.clone();
+                game_route(&*database, &request, now)
+                    .await
+                    .display_to_string(false, false)
+                    .expect("game page renders")
+            };
+
+            // Zooming with nothing composed still saves the zoom level.
+            let zoom = post(
+                format!("/games/{game_id}/compose"),
+                format!(
+                    "action=ZOOM_IN&expected_revision={}&draft={}",
+                    state.revision,
+                    draft_token(&TurnDraft::default())
+                ),
+            );
+            let zoomed = game_compose_route(&*database, &zoom, &game_id.to_string(), now)
+                .await
+                .display_to_string(false, false)
+                .expect("zoom response renders");
+            assert!(zoomed.contains("data-board-zoom=\"Zoomed\""));
+            let reloaded = reload().await;
+            assert!(
+                reloaded.contains("data-board-zoom=\"Zoomed\""),
+                "reload keeps zoom"
+            );
+
+            // An accepted turn spends the plan but keeps the zoom level.
+            let dispatcher = GameSharedStateDispatcher::new(database.clone());
+            let pass = post(
+                format!("/games/{game_id}/turn"),
+                format!(
+                    "command=PASS&command_id={}&idempotency_key={}&expected_revision={}",
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    state.revision
+                ),
+            );
+            let view =
+                game_turn_route(&dispatcher, &*database, &pass, &game_id.to_string(), now).await;
+            let after_turn = view
+                .primary
+                .expect("accepted turn renders the game")
+                .display_to_string(false, false)
+                .expect("accepted turn renders");
+            assert!(
+                after_turn.contains("data-board-zoom=\"Zoomed\""),
+                "turn keeps zoom"
+            );
+
+            // The board moved on, but a zoom-only plan is not reported as a rescored plan.
+            let reloaded = reload().await;
+            assert!(reloaded.contains("data-board-zoom=\"Zoomed\""));
+            assert!(!reloaded.contains("The board changed"));
+        });
     }
 
     #[test]
