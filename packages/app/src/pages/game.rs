@@ -718,6 +718,16 @@ pub fn visual_board(
     // Squares inherit the frame's type size; labels scale from it in percent so every renderer
     // sizes letters relative to the square without per-square calc() values.
     let letter_size = calc_number(calc_times(geometry.square(), 0.5));
+    // Every row and cell gets the same explicit share of the frame. Flex-grown cells would size
+    // borders outside their share, so bordered tiles would come out wider than open squares and
+    // the columns would drift out of line from row to row.
+    let cell = calc_number(calc_over(
+        calc_sub(
+            calc_value(Number::IntegerPercent(100)),
+            calc_px((size - 1.0) * BOARD_GAP),
+        ),
+        size,
+    ));
     let points_font = Number::IntegerPercent(50);
     let premium_font = Number::IntegerPercent(66);
     let star_font = Number::IntegerPercent(112);
@@ -758,7 +768,7 @@ pub fn visual_board(
                         background=(theme::BOARD_FRAME) border=((theme::BOARD_FRAME_EDGE, 5))
                         border-radius=(theme::RADIUS_MD) gap=(BOARD_GAP) {
                     @for y in 0..game.rules.board_size {
-                        div class="board-row" direction="row" flex=1 min-height=0 gap=(BOARD_GAP) {
+                        div class="board-row" direction="row" width="100%" height=(cell.clone()) min-height=(cell.clone()) gap=(BOARD_GAP) {
                             @for x in 0..game.rules.board_size {
                                 @let coordinate = Coordinate::new(x, y);
                                 @let committed = occupied.get(&coordinate).copied();
@@ -772,7 +782,7 @@ pub fn visual_board(
                                     @let rack_tile = game.view.rack.iter().find(|(id, _, _)| *id == tile_id);
                                     @let label = rack_tile.map_or('?', |(_, letter, _)| blank_letter.unwrap_or(*letter));
                                     @let draft_points = rack_tile.map(|(_, _, points)| *points);
-                                    form hx-post=(action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" width=(cell.clone()) height="100%" min-width=(cell.clone()) {
                                         (compose_form_fields(game, draft, "REMOVE_TILE"))
                                         input type=hidden name="tile_id" value=(tile_id);
                                         button type=submit class="board-square pending-square"
@@ -791,7 +801,7 @@ pub fn visual_board(
                                     }
                                 } @else if let Some((letter, points)) = committed {
                                     div class=(if latest { "board-square committed-square latest-move-square" } else if viewer_owned { "board-square committed-square viewer-owned-square" } else { "board-square committed-square" })
-                                        flex=1 min-width=0
+                                        width=(cell.clone()) height="100%" min-width=(cell.clone())
                                         background=(if latest { theme::TILE_HI } else { theme::TILE }) color=(theme::TILE_INK)
                                         border=((if latest { theme::LATEST_MOVE } else { theme::TILE_EDGE }, if latest { 2 } else { 1 }))
                                         border-bottom=((if latest { theme::PRIMARY_EDGE } else { theme::TILE_EDGE }, 4))
@@ -806,7 +816,7 @@ pub fn visual_board(
                                     }
                                 } @else {
                                     @let (background, ink, label) = square_style(coordinate, game.rules.start, premium);
-                                    form hx-post=(action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
+                                    form hx-post=(action.as_str()) hx-target="#app-page" width=(cell.clone()) height="100%" min-width=(cell.clone()) {
                                         (compose_form_fields(game, draft, "PLACE_TILE"))
                                         input type=hidden name="x" value=(x);
                                         input type=hidden name="y" value=(y);
