@@ -87,6 +87,9 @@ const DOCK_STACKED_HEIGHT: i32 = 2 * DOCK_PADDING
 /// Board inset from the bottom of the screen in each layout (above the dock).
 const WIDE_BOTTOM_INSET: i32 = DOCK_WIDE_HEIGHT + HUD_MARGIN + HUD_CLEARANCE;
 const COMPACT_BOTTOM_INSET: i32 = DOCK_STACKED_HEIGHT + HUD_MARGIN + ZOOM_STRIP + HUD_CLEARANCE;
+/// Smallest board square the default zoom shows on compact screens, so tiles stay comfortable to
+/// tap; the board scrolls under the overlays when that is larger than the snug fit.
+const COMFORT_SQUARE: f32 = 36.0;
 /// Largest rack tile edge.
 const RACK_TILE_MAX: f32 = 54.0;
 /// Horizontal space around seven rack tiles on a phone: dock margins, dock padding, tray padding
@@ -223,19 +226,36 @@ fn safe_area() -> SafeArea {
 /// Viewport-relative board geometry for one zoom level.
 struct BoardGeometry {
     size: f32,
-    scale: f32,
+    /// Scale of the default size, or `None` for the snug fit.
+    scale: Option<f32>,
     area: SafeArea,
 }
 
 impl BoardGeometry {
     fn new(board_size: u8, zoom: BoardZoom) -> Self {
         #[allow(clippy::cast_precision_loss)]
-        let scale = zoom.fit_percent() as f32 / 100.0;
+        let scale = zoom.scale_percent().map(|percent| percent as f32 / 100.0);
         Self {
             size: f32::from(board_size),
             scale,
             area: safe_area(),
         }
+    }
+
+    /// Framed edge of a board whose squares are `square` px.
+    fn edge_for_square(&self, square: f32) -> f32 {
+        square.mul_add(
+            self.size,
+            BOARD_FRAME_BORDER.mul_add(2.0, (self.size - 1.0) * BOARD_GAP),
+        )
+    }
+
+    /// Default board edge: the snug fit, but on compact screens never smaller than comfortable
+    /// squares.
+    #[allow(clippy::cast_possible_truncation)]
+    fn default_edge(&self) -> Calculation {
+        let comfortable = self.edge_for_square(COMFORT_SQUARE).ceil() as i32;
+        calc_max(self.fit(), layout_length(comfortable, 0))
     }
 
     /// Largest framed board edge that fits inside the safe area (2px slack avoids rounding into
@@ -261,10 +281,10 @@ impl BoardGeometry {
 
     /// Framed board edge at this zoom level.
     fn frame(&self) -> Calculation {
-        if (self.scale - 1.0).abs() < f32::EPSILON {
-            self.fit()
-        } else {
-            calc_times(self.fit(), self.scale)
+        match self.scale {
+            None => self.fit(),
+            Some(scale) if (scale - 1.0).abs() < f32::EPSILON => self.default_edge(),
+            Some(scale) => calc_times(self.default_edge(), scale),
         }
     }
 
@@ -665,16 +685,22 @@ fn zoom_button(
 }
 
 /// Zoom out / fit / zoom in, floating just above the dock's right end: in the strip reserved
-/// above the compact dock, or in the right gutter beside the board on wide screens. Zooming out
-/// is hidden at the snug fit, where it would do nothing.
+/// above the compact dock, or in the right gutter beside the board on wide screens.
+///
+/// At the snug fit only zooming in is offered. At the default level Fit is the zoom-out step,
+/// shown only on compact screens: on wide screens the default already is the snug fit.
 fn zoom_controls(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
-    let fitted = draft.board_zoom.is_fit();
+    let zoom = draft.board_zoom;
     ui::one(container! {
         div id="board-zoom-controls" class="board-zoom-controls" position="absolute" right=(HUD_MARGIN)
             bottom=(if_responsive(theme::COMPACT).then::<i32>(HUD_MARGIN + DOCK_STACKED_HEIGHT + ZOOM_GAP).or_else(HUD_MARGIN + DOCK_WIDE_HEIGHT + ZOOM_GAP))
             direction="row" align-items="center" gap=4 padding=3
             background=(theme::NIGHT_DEEP) border=((theme::NIGHT_LINE, 1)) border-radius=(theme::RADIUS_PILL) {
-            @if !fitted {
+            @if zoom.is_default() {
+                div id="zoom-fit-control" hidden=(if_responsive(theme::COMPACT).then::<bool>(false).or_else(true)) {
+                    (zoom_button(game, draft, "ZOOM_RESET", "Fit"))
+                }
+            } @else if !zoom.is_fit() {
                 (zoom_button(game, draft, "ZOOM_OUT", "−"))
                 (zoom_button(game, draft, "ZOOM_RESET", "Fit"))
             }
@@ -779,7 +805,7 @@ pub fn visual_board(
                     padding-right=(if_responsive(theme::COMPACT).then::<i32>(COMPACT_SIDE_INSET).or_else(WIDE_GUTTER))
                     align-items="center" justify-content="center" {
                     div id="board-frame" class="board-frame" data-board-size=(game.rules.board_size)
-                        data-board-fit-percent=(draft.board_zoom.fit_percent())
+                        data-board-scale=(draft.board_zoom.scale_percent().map_or_else(|| "fit".to_string(), |percent| percent.to_string()))
                         width=(frame.clone()) height=(frame.clone()) min-width=(frame.clone()) min-height=(frame.clone())
                         position="relative" font-size=(letter_size)
                         background=(theme::BOARD_FRAME) border=((theme::BOARD_FRAME_EDGE, 5))

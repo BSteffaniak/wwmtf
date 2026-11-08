@@ -580,31 +580,45 @@ def assert_responsive_shell(
         raise AcceptanceError(f"{path} content escapes its shell at {width}px: {layout!r}")
 
 
+def set_board_zoom(browser: Browser, target: str) -> None:
+    """Step the board zoom to `target` ("Fit" or "Normal") through the zoom controls."""
+    zoom_level = "document.querySelector('#game-board')?.dataset.boardZoom"
+    for _ in range(4):
+        current = browser.evaluate(zoom_level)
+        if current == target or (target == "Normal" and current == "Compact"):
+            return
+        if target == "Fit":
+            # Fit is offered on compact screens at the default level and always once zoomed in;
+            # the hidden control still submits on wide screens.
+            browser.submit('form:has(input[value="ZOOM_RESET"])')
+        elif current == "Fit":
+            browser.submit('form:has(input[value="ZOOM_IN"])')
+        else:
+            browser.submit('form:has(input[value="ZOOM_OUT"])')
+        browser.wait(f"{zoom_level} !== {json.dumps(current)}")
+    raise AcceptanceError(f"board zoom did not reach {target}")
+
+
 def assert_game_controls(browser: Browser, width: int) -> None:
     set_viewport(browser, width)
     path = browser.evaluate("location.pathname")
     browser.navigate(path)
     browser.wait("Boolean(document.querySelector('#game-board'))")
     square_size = "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
-    # Fit (the default) shows the whole board snugly; zoom out is hidden there.
-    if browser.evaluate("Boolean(document.querySelector('form:has(input[value=\"ZOOM_RESET\"])'))"):
-        browser.submit('form:has(input[value="ZOOM_RESET"])')
-    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
+    zoom_level = "document.querySelector('#game-board')?.dataset.boardZoom"
+    set_board_zoom(browser, "Normal")
+    default_square_size = browser.evaluate(square_size)
     if browser.evaluate("Boolean(document.querySelector('form:has(input[value=\"ZOOM_OUT\"])'))"):
-        raise AcceptanceError(f"zoom out is offered at the snug fit at {width}px")
-    fit_square_size = browser.evaluate(square_size)
+        raise AcceptanceError(f"the default zoom offers a separate zoom-out step at {width}px")
     browser.submit('form:has(input[value="ZOOM_IN"])')
-    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom !== 'Fit'")
+    browser.wait(f"{zoom_level} === 'Zoomed'")
     zoomed_square_size = browser.evaluate(square_size)
-    if zoomed_square_size <= fit_square_size:
+    if zoomed_square_size <= default_square_size:
         raise AcceptanceError(
-            f"zoom in did not enlarge board squares: {fit_square_size} -> {zoomed_square_size}"
+            f"zoom in did not enlarge board squares: {default_square_size} -> {zoomed_square_size}"
         )
-    zoomed = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
     browser.submit('form:has(input[value="ZOOM_IN"])')
-    browser.wait(
-        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(zoomed)}"
-    )
+    browser.wait(f"{zoom_level} === 'Large'")
     large = browser.evaluate(
         """(() => {
             const scroller = document.querySelector('#game-board .board-viewport');
@@ -627,16 +641,25 @@ def assert_game_controls(browser: Browser, width: int) -> None:
     ):
         raise AcceptanceError(f"mobile large-zoom board scrolling is not contained: {large!r}")
     browser.submit('form:has(input[value="ZOOM_OUT"])')
-    browser.wait(f"document.querySelector('#game-board')?.dataset.boardZoom === {json.dumps(zoomed)}")
+    browser.wait(f"{zoom_level} === 'Zoomed'")
     if browser.evaluate(square_size) >= large["squareSize"]:
         raise AcceptanceError("zoom out did not shrink board squares")
     browser.submit('form:has(input[value="ZOOM_RESET"])')
-    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
-    reset_square_size = browser.evaluate(square_size)
-    if abs(reset_square_size - fit_square_size) > 0.5:
+    browser.wait(f"{zoom_level} === 'Fit'")
+    if browser.evaluate("Boolean(document.querySelector('form:has(input[value=\"ZOOM_OUT\"])'))"):
+        raise AcceptanceError(f"zoom out is offered at the snug fit at {width}px")
+    fit_square_size = browser.evaluate(square_size)
+    # Phones start zoomed in past the snug fit for comfortable tapping; wide screens' default
+    # already is the snug fit.
+    if width < 800 and fit_square_size >= default_square_size:
         raise AcceptanceError(
-            f"fit did not restore the snug board: {fit_square_size} -> {reset_square_size}"
+            f"the phone default is not zoomed in past the snug fit: {fit_square_size} vs {default_square_size}"
         )
+    if width > 1200 and abs(fit_square_size - default_square_size) > 0.5:
+        raise AcceptanceError(
+            f"the wide default is not the snug fit: {fit_square_size} vs {default_square_size}"
+        )
+    set_board_zoom(browser, "Normal")
     before_shuffle = browser.evaluate(
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.dataset.tileId).sort().join(',')"
     )
@@ -689,6 +712,10 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
     set_viewport(browser, width)
     browser.navigate(browser.evaluate("location.pathname"))
     browser.wait("Boolean(document.querySelector('#game-board'))")
+    # Overlay clearance is a property of the snug fit; larger zooms scroll under the HUD.
+    prior_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
+    if prior_zoom != "Fit":
+        set_board_zoom(browser, "Fit")
     layout = browser.evaluate(
         """(() => {
             const board = document.querySelector('#game-board');
@@ -769,6 +796,8 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             };
         })()"""
     )
+    if prior_zoom in ("Normal", "Compact"):
+        set_board_zoom(browser, "Normal")
     if layout["viewport"] != "width=device-width, initial-scale=1":
         raise AcceptanceError(f"responsive viewport metadata is missing: {layout!r}")
     if layout["documentOverflow"] != 0:
@@ -800,7 +829,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
         raise AcceptanceError(f"game page contains duplicate IDs: {layout!r}")
     if width >= 800 and layout["boardOverflow"] != 0:
         raise AcceptanceError(f"desktop board unexpectedly scrolls: {layout!r}")
-    # The default zoom fits the whole board inside the viewport; larger zoom
+    # The snug fit shows the whole board inside the viewport; larger zoom
     # levels scroll inside the contained board viewport (see assert_game_controls).
     if width < 800 and (
         layout["boardOverflow"] is None
