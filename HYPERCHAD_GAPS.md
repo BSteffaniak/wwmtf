@@ -33,6 +33,10 @@ The UI redesign stays within current HyperChad primitives (template attributes, 
 - **Element-scoped HTTP lifecycle triggers.** With the vanilla-js `http-events` plugin, a request started without an originating element (shared-state, navigation) dispatches `http-before-request` on the document, and the handler then runs every `fx-http-before-request` action on the page. Per-element pending feedback therefore fires on unrelated requests. Workaround: use `fx-click` on the submit control for immediate pending feedback; the plugin stays disabled.
 - **Clipboard write** (copy text). Workaround: invite links shown in selectable read-only fields.
 
+## Server configuration
+
+- **Configurable HTTP server timeouts** (request-head timeout, keep-alive) for every server adapter. The Actix adapter uses the framework defaults, so a connection that sends nothing for about five seconds gets an unsolicited `408 Request Timeout`. Browsers that preconnect a spare socket and use it later can receive that 408 as a page response. Workaround: production fronts the app with nginx (fresh upstream connection per request), and the browser acceptance harness disables Chrome network prediction.
+
 ## App shell and responsiveness
 
 - **App metadata:** icon and theme color, mapped to favicon/manifest on HTML and window icon on desktop renderers.

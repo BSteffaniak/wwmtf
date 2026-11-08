@@ -86,7 +86,7 @@ const DOCK_STACKED_HEIGHT: i32 = 2 * DOCK_PADDING
     + DOCK_DEPTH;
 /// Board inset from the bottom of the screen in each layout (above the dock).
 const WIDE_BOTTOM_INSET: i32 = DOCK_WIDE_HEIGHT + HUD_MARGIN + HUD_CLEARANCE;
-const COMPACT_BOTTOM_INSET: i32 = DOCK_STACKED_HEIGHT + HUD_MARGIN + HUD_CLEARANCE;
+const COMPACT_BOTTOM_INSET: i32 = DOCK_STACKED_HEIGHT + HUD_MARGIN + ZOOM_STRIP + HUD_CLEARANCE;
 /// Largest rack tile edge.
 const RACK_TILE_MAX: f32 = 54.0;
 /// Horizontal space around seven rack tiles on a phone: dock margins, dock padding, tray padding
@@ -105,8 +105,13 @@ const HUD_CONTROLS_WIDTH: i32 = 196;
 const HUD_CONTROLS_PHONE_WIDTH: i32 = 112;
 /// Widest the action row grows (it sits beside the status on wide screens).
 const ACTIONS_MAX_WIDTH: i32 = 460;
-/// Size of the zoom buttons in the status row.
-const ZOOM_CONTROL: i32 = 30;
+/// Size of the zoom buttons.
+const ZOOM_CONTROL: i32 = 32;
+/// Gap between the dock and the zoom controls floating above its right end.
+const ZOOM_GAP: i32 = 6;
+/// Height reserved above the compact dock for the zoom controls (the wide layout floats them in
+/// the right gutter instead).
+const ZOOM_STRIP: i32 = ZOOM_CONTROL + 2 * ZOOM_GAP;
 
 // ---------------------------------------------------------------------------
 // calc() helpers
@@ -659,12 +664,20 @@ fn zoom_button(
     })
 }
 
-/// Zoom out / fit / zoom in, docked in the status row so it never covers the board.
+/// Zoom out / fit / zoom in, floating just above the dock's right end: in the strip reserved
+/// above the compact dock, or in the right gutter beside the board on wide screens. Zooming out
+/// is hidden at the snug fit, where it would do nothing.
 fn zoom_controls(game: &AuthorizedGamePage, draft: &TurnDraft) -> Container {
+    let fitted = draft.board_zoom.is_fit();
     ui::one(container! {
-        div id="board-zoom-controls" class="board-zoom-controls" direction="row" align-items="center" gap=4 {
-            (zoom_button(game, draft, "ZOOM_OUT", "−"))
-            (zoom_button(game, draft, "ZOOM_RESET", "Fit"))
+        div id="board-zoom-controls" class="board-zoom-controls" position="absolute" right=(HUD_MARGIN)
+            bottom=(if_responsive(theme::COMPACT).then::<i32>(HUD_MARGIN + DOCK_STACKED_HEIGHT + ZOOM_GAP).or_else(HUD_MARGIN + DOCK_WIDE_HEIGHT + ZOOM_GAP))
+            direction="row" align-items="center" gap=4 padding=3
+            background=(theme::NIGHT_DEEP) border=((theme::NIGHT_LINE, 1)) border-radius=(theme::RADIUS_PILL) {
+            @if !fitted {
+                (zoom_button(game, draft, "ZOOM_OUT", "−"))
+                (zoom_button(game, draft, "ZOOM_RESET", "Fit"))
+            }
             (zoom_button(game, draft, "ZOOM_IN", "+"))
         }
     })
@@ -1274,7 +1287,8 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
                     span id=(format!("player-scoreboard-name-{uuid}")) min-width=0
                         font-size=(theme::TEXT_XS) font-weight=bold white-space="preserve"
                         text-overflow="ellipsis" overflow-x="hidden"
-                        max-width=(if_responsive(theme::MOBILE).then::<i32>(56).or_else(120)) {
+                        max-width=(if_responsive(theme::MOBILE).then::<i32>(44).or_else(120))
+                        hidden=(if_responsive(theme::MOBILE).then::<bool>(is_viewer).or_else(false)) {
                         (name)
                     }
                     span font-family=(theme::FONT_DISPLAY) font-size=(theme::TEXT_LG) font-weight=bold white-space="preserve" {
@@ -1315,14 +1329,14 @@ pub fn player_scoreboard_component(game: &AuthorizedGamePage) -> Container {
     })
 }
 
-/// Who moves now, as a short label ("Your move", "bob's move", "Game complete").
+/// Who moves now, as a short label ("Your move", "bob is playing", "Game complete").
 fn turn_label(game: &AuthorizedGamePage) -> String {
     if game.completed {
         "Game complete".to_string()
     } else if game.view.active_player == game.viewer_player {
         "Your move".to_string()
     } else {
-        format!("{}'s move", active_player_name(game))
+        format!("{} is playing", active_player_name(game))
     }
 }
 
@@ -1748,7 +1762,7 @@ const fn hud_control_style() -> ui::ButtonStyle {
 }
 
 /// The status row: whose move it is, what the draft means, and zoom controls.
-fn dock_status_row(game: &AuthorizedGamePage, draft: &TurnDraft, message: &Container) -> Container {
+fn dock_status_row(game: &AuthorizedGamePage, message: &Container) -> Container {
     let viewer_turn = !game.completed && game.view.active_player == game.viewer_player;
     let active_seat = participant_seat(game, game.view.active_player);
     let (badge_fill, badge_ink) = if game.completed {
@@ -1763,6 +1777,7 @@ fn dock_status_row(game: &AuthorizedGamePage, draft: &TurnDraft, message: &Conta
         div id="dock-status" flex=1 min-width=0 width="100%" height=(STATUS_HEIGHT) direction="row" align-items="center"
             gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
             span id="named-turn-status" padding-y=4 padding-x=10 border-radius=(theme::RADIUS_PILL)
+                max-width="50%" overflow-x="hidden" text-overflow="ellipsis"
                 background=(badge_fill) color=(badge_ink) font-size=(theme::TEXT_XS) font-weight=bold
                 white-space="preserve" {
                 (turn)
@@ -1771,7 +1786,6 @@ fn dock_status_row(game: &AuthorizedGamePage, draft: &TurnDraft, message: &Conta
                 gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
                 (message.clone())
             }
-            (zoom_controls(game, draft))
         }
     })
 }
@@ -1824,10 +1838,7 @@ pub fn visual_game_page(
     } else if viewer_turn {
         ui::one(vec![turn_feedback_view, draft_preview])
     } else {
-        let waiting = format!(
-            "{} is playing · plan your next word",
-            active_player_name(game)
-        );
+        let waiting = "Meanwhile, plan your next word".to_string();
         ui::one(vec![
             turn_feedback_view,
             ui::with_class(
@@ -1836,7 +1847,7 @@ pub fn visual_game_page(
             ),
         ])
     };
-    let status = dock_status_row(game, draft, &message);
+    let status = dock_status_row(game, &message);
     let compose_action = format!("/games/{}/compose", game.game_id);
     let dock_width = calc_number(calc_min(
         calc_px(DOCK_MAX_WIDTH),
@@ -1954,6 +1965,7 @@ pub fn visual_game_page(
                     }
                 }
             }
+            (zoom_controls(game, draft))
             (game_info_sheet(game, has_bag))
             aside id="game-definition-layer" hidden position="fixed" top=(HUD_MARGIN)
                 right=(if_responsive(theme::MOBILE).then::<i32>(HUD_MARGIN).or_else(DRAWER_WIDTH + 16))

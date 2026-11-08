@@ -274,40 +274,48 @@ pub struct TurnDraft {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum BoardZoom {
-    Fit,
-    Compact,
+    /// The whole board fills the space between the HUD overlays exactly.
     #[default]
+    Fit,
+    /// Older drafts' smaller-than-fit level; now shown snug like [`Self::Fit`].
+    Compact,
+    /// Older drafts' default level; now shown snug like [`Self::Fit`].
     Normal,
+    /// Enlarged squares; the board scrolls under the overlays.
+    Zoomed,
+    /// Largest squares for comfortable tapping on phones.
     Large,
 }
 
 impl BoardZoom {
     /// Board square size as a percentage of the size that fits the visible play area.
     ///
-    /// `Normal` (the default) fits the whole board; zooming in enlarges squares for touch,
-    /// zooming out leaves breathing room around the board.
+    /// `Fit` (the default) fits the whole board snugly; zooming in enlarges squares for touch.
+    /// Zooming out never goes below the snug fit.
     pub const fn fit_percent(self) -> u32 {
         match self {
-            Self::Fit => 78,
-            Self::Compact => 89,
-            Self::Normal => 100,
+            Self::Fit | Self::Compact | Self::Normal => 100,
+            Self::Zoomed => 150,
             Self::Large => 200,
         }
     }
 
+    /// Whether this level shows the whole board (zooming out has no effect).
+    pub const fn is_fit(self) -> bool {
+        matches!(self, Self::Fit | Self::Compact | Self::Normal)
+    }
+
     const fn zoom_out(self) -> Self {
         match self {
-            Self::Fit | Self::Compact => Self::Fit,
-            Self::Normal => Self::Compact,
-            Self::Large => Self::Normal,
+            Self::Fit | Self::Compact | Self::Normal | Self::Zoomed => Self::Fit,
+            Self::Large => Self::Zoomed,
         }
     }
 
     const fn zoom_in(self) -> Self {
         match self {
-            Self::Fit => Self::Compact,
-            Self::Compact => Self::Normal,
-            Self::Normal | Self::Large => Self::Large,
+            Self::Fit | Self::Compact | Self::Normal => Self::Zoomed,
+            Self::Zoomed | Self::Large => Self::Large,
         }
     }
 }
@@ -3535,19 +3543,25 @@ mod tests {
     #[test]
     fn board_zoom_is_bounded_and_defaults_for_older_drafts() {
         assert_eq!(BoardZoom::Fit.zoom_out(), BoardZoom::Fit);
-        assert_eq!(BoardZoom::Fit.zoom_in(), BoardZoom::Compact);
-        assert_eq!(BoardZoom::Compact.zoom_out(), BoardZoom::Fit);
-        assert_eq!(BoardZoom::Compact.zoom_in(), BoardZoom::Normal);
-        assert_eq!(BoardZoom::Normal.zoom_in(), BoardZoom::Large);
+        assert_eq!(BoardZoom::Fit.zoom_in(), BoardZoom::Zoomed);
+        assert_eq!(BoardZoom::Zoomed.zoom_in(), BoardZoom::Large);
         assert_eq!(BoardZoom::Large.zoom_in(), BoardZoom::Large);
-        assert_eq!(BoardZoom::Fit.fit_percent(), 78);
-        assert_eq!(BoardZoom::Compact.fit_percent(), 89);
-        assert_eq!(BoardZoom::Normal.fit_percent(), 100);
+        assert_eq!(BoardZoom::Large.zoom_out(), BoardZoom::Zoomed);
+        assert_eq!(BoardZoom::Zoomed.zoom_out(), BoardZoom::Fit);
+        // Older drafts' levels open at the snug fit and zoom like it.
+        for legacy in [BoardZoom::Compact, BoardZoom::Normal] {
+            assert!(legacy.is_fit());
+            assert_eq!(legacy.fit_percent(), 100);
+            assert_eq!(legacy.zoom_in(), BoardZoom::Zoomed);
+            assert_eq!(legacy.zoom_out(), BoardZoom::Fit);
+        }
+        assert_eq!(BoardZoom::Fit.fit_percent(), 100);
+        assert_eq!(BoardZoom::Zoomed.fit_percent(), 150);
         assert_eq!(BoardZoom::Large.fit_percent(), 200);
 
         let legacy = r#"{"selected_tile":null,"selected_blank_letter":null,"placements":[],"rack_tile":null,"exchange_tiles":[],"mode":"Play"}"#;
         let draft: TurnDraft = serde_json::from_str(legacy).expect("legacy draft parses");
-        assert_eq!(draft.board_zoom, BoardZoom::Normal);
+        assert_eq!(draft.board_zoom, BoardZoom::Fit);
     }
 
     #[test]
@@ -3960,8 +3974,9 @@ mod tests {
             assert!(page.contains("board-viewport"));
             assert!(page.contains("board-scroll-content"));
             assert!(page.contains("board-zoom-controls"));
-            assert!(page.contains("value=\"ZOOM_OUT\""));
-            assert!(page.contains("value=\"ZOOM_RESET\""));
+            // The default snug fit offers only zooming in.
+            assert!(!page.contains("value=\"ZOOM_OUT\""));
+            assert!(!page.contains("value=\"ZOOM_RESET\""));
             assert!(page.contains("value=\"ZOOM_IN\""));
             assert!(page.contains("value=\"SHUFFLE_RACK\""));
             assert!(page.contains("Shuffle"));
@@ -4261,7 +4276,7 @@ mod tests {
             assert_eq!(original_members, shuffled_members);
             assert_eq!(reloaded.view.revision, initial_revision);
             assert!(shuffled.contains("pending-square"));
-            assert!(shuffled.contains("data-board-zoom=\"Normal\""));
+            assert!(shuffled.contains("data-board-zoom=\"Fit\""));
 
             let rack_only_draft = TurnDraft {
                 selected_tile: Some(first.id.get()),

@@ -390,6 +390,14 @@ class Browser:
 
     @classmethod
     def launch(cls, chrome: str, debugging_port: int, profile: pathlib.Path) -> "Browser":
+        # Disable network prediction. Chrome otherwise opens a spare preconnected socket on most
+        # navigations and leaves it idle; the application server answers an idle new connection
+        # with "408 Request Timeout" after about five seconds, and a navigation that picks up that
+        # socket at the same moment renders Chrome's HTTP 408 error page instead of the app.
+        # Production is unaffected: nginx sends each request on a fresh upstream connection.
+        preferences = profile / "Default" / "Preferences"
+        preferences.parent.mkdir(parents=True, exist_ok=True)
+        preferences.write_text(json.dumps({"net": {"network_prediction_options": 2}}))
         process = subprocess.Popen(
             [
                 chrome,
@@ -577,37 +585,25 @@ def assert_game_controls(browser: Browser, width: int) -> None:
     path = browser.evaluate("location.pathname")
     browser.navigate(path)
     browser.wait("Boolean(document.querySelector('#game-board'))")
-    original_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
-    original_square_size = browser.evaluate(
-        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
-    )
-    browser.submit('form:has(input[value="ZOOM_OUT"])')
-    browser.wait(
-        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(original_zoom)}"
-    )
-    compact_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
-    compact_square_size = browser.evaluate(
-        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
-    )
-    if compact_square_size >= original_square_size:
+    square_size = "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
+    # Fit (the default) shows the whole board snugly; zoom out is hidden there.
+    if browser.evaluate("Boolean(document.querySelector('form:has(input[value=\"ZOOM_RESET\"])'))"):
+        browser.submit('form:has(input[value="ZOOM_RESET"])')
+    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
+    if browser.evaluate("Boolean(document.querySelector('form:has(input[value=\"ZOOM_OUT\"])'))"):
+        raise AcceptanceError(f"zoom out is offered at the snug fit at {width}px")
+    fit_square_size = browser.evaluate(square_size)
+    browser.submit('form:has(input[value="ZOOM_IN"])')
+    browser.wait("document.querySelector('#game-board')?.dataset.boardZoom !== 'Fit'")
+    zoomed_square_size = browser.evaluate(square_size)
+    if zoomed_square_size <= fit_square_size:
         raise AcceptanceError(
-            f"zoom out did not shrink board squares: {original_square_size} -> {compact_square_size}"
+            f"zoom in did not enlarge board squares: {fit_square_size} -> {zoomed_square_size}"
         )
+    zoomed = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
     browser.submit('form:has(input[value="ZOOM_IN"])')
     browser.wait(
-        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(compact_zoom)}"
-    )
-    restored_square_size = browser.evaluate(
-        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
-    )
-    if restored_square_size <= compact_square_size:
-        raise AcceptanceError(
-            f"zoom in did not enlarge board squares: {compact_square_size} -> {restored_square_size}"
-        )
-    restored_zoom = browser.evaluate("document.querySelector('#game-board')?.dataset.boardZoom")
-    browser.submit('form:has(input[value="ZOOM_IN"])')
-    browser.wait(
-        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(restored_zoom)}"
+        f"document.querySelector('#game-board')?.dataset.boardZoom !== {json.dumps(zoomed)}"
     )
     large = browser.evaluate(
         """(() => {
@@ -620,7 +616,7 @@ def assert_game_controls(browser: Browser, width: int) -> None:
             };
         })()"""
     )
-    if large["squareSize"] <= restored_square_size:
+    if large["squareSize"] <= zoomed_square_size:
         raise AcceptanceError(f"large zoom did not enlarge board squares: {large!r}")
     if large["documentOverflow"] != 0:
         raise AcceptanceError(f"large zoom overflows the page at {width}px: {large!r}")
@@ -630,14 +626,16 @@ def assert_game_controls(browser: Browser, width: int) -> None:
         or large["boardRight"] > width
     ):
         raise AcceptanceError(f"mobile large-zoom board scrolling is not contained: {large!r}")
+    browser.submit('form:has(input[value="ZOOM_OUT"])')
+    browser.wait(f"document.querySelector('#game-board')?.dataset.boardZoom === {json.dumps(zoomed)}")
+    if browser.evaluate(square_size) >= large["squareSize"]:
+        raise AcceptanceError("zoom out did not shrink board squares")
     browser.submit('form:has(input[value="ZOOM_RESET"])')
     browser.wait("document.querySelector('#game-board')?.dataset.boardZoom === 'Fit'")
-    fit_square_size = browser.evaluate(
-        "document.querySelector('#game-board .board-square')?.getBoundingClientRect().width"
-    )
-    if fit_square_size >= compact_square_size:
+    reset_square_size = browser.evaluate(square_size)
+    if abs(reset_square_size - fit_square_size) > 0.5:
         raise AcceptanceError(
-            f"fit did not produce the smallest board squares: {compact_square_size} -> {fit_square_size}"
+            f"fit did not restore the snug board: {fit_square_size} -> {reset_square_size}"
         )
     before_shuffle = browser.evaluate(
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.dataset.tileId).sort().join(',')"
@@ -714,7 +712,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
             // board itself must sit clear of every HUD layer.
             const frameRect = document.querySelector('#board-frame')?.getBoundingClientRect();
             const hudRects = [
-                '#leave-game', '#scene-controls', '#play-console',
+                '#leave-game', '#scene-controls', '#play-console', '#board-zoom-controls',
                 ...Array.from(document.querySelectorAll('#participant-scoreboard > *')).map((_, index) => `#participant-scoreboard > :nth-child(${index + 1})`),
             ].map(selector => document.querySelector(selector)?.getBoundingClientRect()).filter(Boolean);
             const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -752,7 +750,7 @@ def assert_responsive_game_layout(browser: Browser, width: int) -> None:
                 })(),
                 dockVisibleInViewport: Boolean(dockRect && dockRect.top >= 0 && dockRect.bottom <= innerHeight),
                 boardClearOfDock: Boolean(frameRect && dockRect && frameRect.bottom <= dockRect.top),
-                boardClearOfHud: Boolean(frameRect && hudRects.length >= 4 && hudRects.every(rect => !overlaps(frameRect, rect))),
+                boardClearOfHud: Boolean(frameRect && hudRects.length >= 5 && hudRects.every(rect => !overlaps(frameRect, rect))),
                 boardFullyVisible: Boolean(frameRect && frameRect.left >= 0 && frameRect.top >= 0 && frameRect.right <= innerWidth && frameRect.bottom <= innerHeight),
                 hasRack: Boolean(rack),
                 hasActions: Boolean(document.querySelector('#turn-actions')) || document.body.innerText.includes('is playing') || document.body.innerText.includes('Game complete'),
@@ -1004,11 +1002,44 @@ def compose_word(actor: Browser, selected: list[dict[str, str]]) -> None:
         )
 
 
-def play_valid_word(actor: Browser, observer: Browser) -> None:
-    rack = actor.evaluate(
-        "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => ({ id: tile.getAttribute('data-tile-id'), letter: tile.querySelector('span')?.textContent?.trim() }))"
+RACK_TILES_EXPRESSION = "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => ({ id: tile.getAttribute('data-tile-id'), letter: tile.querySelector('span')?.textContent?.trim() }))"
+
+
+def exchange_whole_rack(actor: Browser, observer: Browser) -> None:
+    rack = actor.evaluate(RACK_TILES_EXPRESSION)
+    actor.submit('#turn-actions form:has(input[value="BEGIN_EXCHANGE"])')
+    actor.wait("document.body.innerText.includes('0 tile(s) selected for exchange')")
+    for count, tile in enumerate(rack, start=1):
+        actor.submit(
+            f'#player-rack form:has(input[value="TOGGLE_EXCHANGE"]):has(input[name="tile_id"][value="{tile["id"]}"])'
+        )
+        actor.wait(f"document.body.innerText.includes('{count} tile(s) selected for exchange')")
+    actor.submit('#turn-actions form:has(input[value="REVIEW_EXCHANGE"])')
+    actor.wait(f"document.body.innerText.includes('Exchange {len(rack)} selected tile(s)?')")
+    revision = observer.evaluate("document.querySelector('#game-board')?.getAttribute('data-revision')")
+    actor.submit('#turn-actions form:has(input[value="EXCHANGE"])')
+    observer.wait(
+        f'document.querySelector(\'#game-board\')?.getAttribute("data-revision") !== {json.dumps(revision)}'
     )
-    selected = word_from_rack(rack, accepted=True)
+
+
+def play_valid_word(actor: Browser, observer: Browser) -> tuple[Browser, Browser]:
+    """Play a dictionary word, returning the (actor, observer) pair that actually played.
+
+    Racks are random, so occasionally a rack spells no bundled word. That player then exchanges
+    the whole rack (which, unlike passing, never counts toward ending the game) and the other
+    player takes their turn.
+    """
+    for _ in range(4):
+        try:
+            selected = word_from_rack(actor.evaluate(RACK_TILES_EXPRESSION), accepted=True)
+            break
+        except AcceptanceError:
+            exchange_whole_rack(actor, observer)
+            actor, observer = observer, actor
+            wait_for_turn(actor)
+    else:
+        raise AcceptanceError("no rack spelled a bundled word after repeated exchanges")
     compose_word(actor, selected)
     preview = actor.evaluate(
         "document.querySelector('#draft-preview')?.innerText ?? ''"
@@ -1059,6 +1090,7 @@ def play_valid_word(actor: Browser, observer: Browser) -> None:
     observer.wait(
         f'document.querySelectorAll(\'#game-board .open-square\').length < {observer_open_squares}'
     )
+    return actor, observer
 
 
 def submit_invalid_word(browser: Browser) -> None:
@@ -1108,11 +1140,13 @@ def exercise_rack_and_exchange(browser: Browser, width: int, *, submit_exchange:
     original_order = browser.evaluate(
         "Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',')"
     )
-    browser.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{first_tile}"])')
+    browser.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[name="tile_id"][value="{first_tile}"])')
     browser.wait(
         f'document.querySelector(\'[data-tile-id="{first_tile}"]\')?.classList.contains("rack-tile-selected")'
     )
-    browser.submit('#player-rack form:has(input[value="SWAP_RACK_TILES"]):not(:has(input[value="' + first_tile + '"]))')
+    # Match the tile id by field name: other hidden inputs (such as expected_revision) can share
+    # the same numeric value.
+    browser.submit('#player-rack form:has(input[value="SWAP_RACK_TILES"]):not(:has(input[name="tile_id"][value="' + first_tile + '"]))')
     browser.wait(
         f"Array.from(document.querySelectorAll('#player-rack [data-tile-id]')).map(tile => tile.getAttribute('data-tile-id')).join(',') !== {json.dumps(original_order)}"
     )
@@ -1178,7 +1212,7 @@ def assert_live_lobby(alice: Browser, bob: Browser) -> None:
     bob.wait("Boolean(document.querySelector('#game-board'))")
     # Exercise the full-page compose response while waiting for the opponent.
     tile = bob.evaluate("document.querySelector('#player-rack [data-tile-id]').getAttribute('data-tile-id')")
-    bob.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[value="{tile}"])')
+    bob.submit(f'form:has(input[value="PICK_RACK_TILE"]):has(input[name="tile_id"][value="{tile}"])')
     bob.wait(f'document.querySelector(\'[data-tile-id="{tile}"]\').classList.contains("rack-tile-selected")')
     alice.navigate(alice.evaluate('location.pathname'))
     bob.navigate(bob.evaluate('location.pathname'))
@@ -1475,7 +1509,7 @@ def run() -> None:
                 else bob
             )
             valid_observer = bob if valid_actor is alice else alice
-            play_valid_word(valid_actor, valid_observer)
+            valid_actor, valid_observer = play_valid_word(valid_actor, valid_observer)
             valid_actor.wait("Boolean(document.querySelector('.played-word-definition'))")
             definition_path = valid_actor.evaluate("location.pathname")
             valid_actor.evaluate("document.querySelector('.played-word-definition').click()")
