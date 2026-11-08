@@ -31,7 +31,7 @@ use crate::{
 //
 // Two layouts share this geometry, switched by the `compact` responsive trigger:
 // * wide (default): the scoreboard and controls sit in side gutters beside a full-height board,
-//   and the dock is a single row (rack beside status and actions).
+//   and the dock is the centered rack over one row holding the status and the actions.
 // * compact: the controls form a top band and the dock stacks rack, status, and actions.
 // ---------------------------------------------------------------------------
 
@@ -73,11 +73,9 @@ const DOCK_EDGE: i32 = 2;
 const DOCK_DEPTH: i32 = 6;
 /// Maximum dock width.
 const DOCK_MAX_WIDTH: i32 = 920;
-/// Total dock height in the wide layout: the rack beside status over actions.
-const DOCK_WIDE_HEIGHT: i32 = 2 * DOCK_PADDING
-    + max_i32(TRAY_HEIGHT, STATUS_HEIGHT + DOCK_GAP + ACTION_HEIGHT)
-    + DOCK_EDGE
-    + DOCK_DEPTH;
+/// Total dock height in the wide layout: the centered rack over one row of status and actions.
+const DOCK_WIDE_HEIGHT: i32 =
+    2 * DOCK_PADDING + TRAY_HEIGHT + DOCK_GAP + ACTION_HEIGHT + DOCK_EDGE + DOCK_DEPTH;
 /// Total dock height in the compact layout: rack, status, and actions stacked.
 const DOCK_STACKED_HEIGHT: i32 = 2 * DOCK_PADDING
     + TRAY_HEIGHT
@@ -105,12 +103,10 @@ const DRAWER_WIDTH: i32 = 400;
 /// Width reserved for the top-right controls (live dot, bag, menu) with and without labels.
 const HUD_CONTROLS_WIDTH: i32 = 196;
 const HUD_CONTROLS_PHONE_WIDTH: i32 = 112;
+/// Widest the action row grows (it sits beside the status on wide screens).
+const ACTIONS_MAX_WIDTH: i32 = 460;
 /// Size of the zoom buttons in the status row.
 const ZOOM_CONTROL: i32 = 30;
-
-const fn max_i32(left: i32, right: i32) -> i32 {
-    if left > right { left } else { right }
-}
 
 // ---------------------------------------------------------------------------
 // calc() helpers
@@ -290,6 +286,14 @@ impl BoardGeometry {
             self.area.bottom.clone(),
         )
     }
+}
+
+/// Width of the dock's action row: full width on phones, capped beside the status elsewhere.
+fn actions_width() -> Number {
+    calc_number(calc_min(
+        calc_value(Number::IntegerPercent(100)),
+        calc_px(ACTIONS_MAX_WIDTH),
+    ))
 }
 
 /// Edge length of one rack tile: as big as fits seven across a phone dock, capped for desktops.
@@ -1070,7 +1074,7 @@ pub fn visual_turn_actions(game: &AuthorizedGamePage, draft: &TurnDraft) -> Cont
         play_score.map_or_else(|| "Play".to_string(), |score| format!("Play · {score}"));
     let more_style = ui::button_style(ButtonVariant::Night);
     ui::one(container! {
-        section id="turn-actions" class="turn-composer action-hud" width="100%" max-width="100%" height=(ACTION_HEIGHT) position="relative" {
+        section id="turn-actions" class="turn-composer action-hud" width=(actions_width()) max-width="100%" height=(ACTION_HEIGHT) position="relative" {
             @if draft.mode == TurnMode::Exchange {
                 div class="primary-action-row" direction="row" align-items="center" gap=(theme::SPACE_2) {
                     form hx-post=(compose_action.as_str()) hx-target="#app-page" flex=1 min-width=0 {
@@ -1756,7 +1760,7 @@ fn dock_status_row(game: &AuthorizedGamePage, draft: &TurnDraft, message: &Conta
     };
     let turn = turn_label(game);
     ui::one(container! {
-        div id="dock-status" width="100%" height=(STATUS_HEIGHT) direction="row" align-items="center"
+        div id="dock-status" flex=1 min-width=0 width="100%" height=(STATUS_HEIGHT) direction="row" align-items="center"
             gap=(theme::SPACE_2) overflow-x="hidden" overflow-y="hidden" {
             span id="named-turn-status" padding-y=4 padding-x=10 border-radius=(theme::RADIUS_PILL)
                 background=(badge_fill) color=(badge_ink) font-size=(theme::TEXT_XS) font-weight=bold
@@ -1903,20 +1907,19 @@ pub fn visual_game_page(
                 bottom=(HUD_MARGIN) left="50%" translate-x=(Number::IntegerPercent(-50))
                 width=(dock_width.clone()) max-width=(dock_width.clone())
                 height=(if_responsive(theme::COMPACT).then::<i32>(DOCK_STACKED_HEIGHT).or_else(DOCK_WIDE_HEIGHT))
-                direction=(if_responsive(theme::COMPACT).then::<LayoutDirection>(LayoutDirection::Column).or_else(LayoutDirection::Row))
-                align-items="center" gap=(theme::SPACE_2)
+                align-items="center" gap=(DOCK_GAP)
                 background=(theme::NIGHT_RAISED)
                 border=((theme::NIGHT_LINE, DOCK_EDGE)) border-bottom=((theme::NIGHT_BORDER, DOCK_DEPTH))
                 border-radius=(theme::RADIUS_XL) padding=(DOCK_PADDING) {
                 (rack)
-                div id="dock-controls" flex=1 min-width=0
-                    width="100%"
-                    gap=(DOCK_GAP) justify-content="center" {
+                div id="dock-controls" flex=1 min-width=0 width="100%"
+                    direction=(if_responsive(theme::COMPACT).then::<LayoutDirection>(LayoutDirection::Column).or_else(LayoutDirection::Row))
+                    align-items="center" gap=(DOCK_GAP) {
                     (status)
                     @if !game.completed && viewer_turn {
                         (actions)
                     } @else if !game.completed {
-                        section id="turn-actions" class="primary-action-row" width="100%" height=(ACTION_HEIGHT)
+                        section id="turn-actions" class="primary-action-row" width=(actions_width()) height=(ACTION_HEIGHT)
                             direction="row" align-items="center" gap=(theme::SPACE_2) {
                             form hx-post=(compose_action.as_str()) hx-target="#app-page" {
                                 (compose_form_fields(game, draft, "SHUFFLE_RACK"))
@@ -1937,7 +1940,7 @@ pub fn visual_game_page(
                             }
                         }
                     } @else {
-                        div class="primary-action-row" width="100%" height=(ACTION_HEIGHT)
+                        div class="primary-action-row" width=(actions_width()) height=(ACTION_HEIGHT)
                             direction="row" align-items="center" gap=(theme::SPACE_2) {
                             button type=button flex=1 min-width=0 height=(ACTION_HEIGHT)
                                 fx-click=(ActionType::display_by_id("completed-game-summary"))
